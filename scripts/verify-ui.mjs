@@ -21,6 +21,8 @@ try {
   assert.equal(await page.locator('#path-preview').innerText(), '"C:/Projects/我的项目/a b.md"\n"C:/Projects/other.txt"');
   await page.locator('#copy-manual').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '"C:/Projects/我的项目/a b.md"\n"C:/Projects/other.txt"');
+  await page.locator('#path-preview').click({ button: 'right' });
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '"C:/Projects/我的项目/a b.md"\n"C:/Projects/other.txt"');
   report.push('multi-file Windows formatting and actual browser clipboard');
   await page.locator('input[name="pathMode"][value="relative"]').locator('..').click();
   assert.equal(await page.locator('#copy-preview').isDisabled(), true);

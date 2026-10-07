@@ -151,6 +151,7 @@
   $('#reset-settings').addEventListener('click', () => { settings = { ...engine.DEFAULT_SETTINGS, launchAtLogin: settings.launchAtLogin }; applyControls(); savePreferences(); toast('已恢复默认复制偏好'); });
   $$('[data-sample]').forEach(button => button.addEventListener('click', () => { samplePlatform = button.dataset.sample; $$('[data-sample]').forEach(item => item.classList.toggle('active', item === button)); updatePreview(); }));
   $('#copy-preview').addEventListener('click', copyOutput);
+  $('#path-preview').addEventListener('contextmenu', event => { event.preventDefault(); clearTimeout(longPress); copyOutput(); });
   $('#pick-files').addEventListener('click', () => pick('file'));
   $('#pick-folders').addEventListener('click', () => pick('directory'));
   $('#pick-base').addEventListener('click', () => pick('base'));

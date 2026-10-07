@@ -112,8 +112,13 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
-      - name: Install the exact Android SDK packages
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Set up Android SDK and the exact build packages
+        uses: android-actions/setup-android@v3
+        with:
+          # Command-line tools 16.0 supports the JDK 17 used by this project.
+          cmdline-tools-version: '12266719'
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+          log-accepted-android-sdk-licenses: 'false'
       - name: Load required release signing key
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}

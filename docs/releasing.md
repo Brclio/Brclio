@@ -40,7 +40,7 @@
 - `Brclio-0.1.0-android.apk`：正式签名 APK。
 - `SHA256SUMS.txt`：以上六个包的 SHA-256。
 
-macOS 明确使用 `macos-15`（arm64）和 `macos-15-intel`（x64）原生构建，避免 `macos-latest` 迁移造成架构变化。Android 使用 JDK 17、SDK 35 和 Build Tools 35.0.0。
+macOS 明确使用 `macos-15`（arm64）和 `macos-15-intel`（x64）原生构建，避免 `macos-latest` 迁移造成架构变化。Android 使用 JDK 17、SDK 35 和 Build Tools 35.0.0；两个工作流均通过 `android-actions/setup-android@v3` 显式安装 SDK 并设置工具路径，固定使用兼容 JDK 17 的 Command-line Tools 16.0（12266719），不依赖 runner 的预装 `sdkmanager`。
 
 在只存放本次六个安装包的目录中，可手动生成或校验清单：
 
@@ -57,4 +57,4 @@ node scripts/checksums.mjs release-files --version 0.1.0 --verify
 
 软件更新功能依赖公开 Release 的固定资产名称和 `SHA256SUMS.txt`。不要在已发布版本中替换同名安装包；保持 Android 签名连续，并通过新的稳定版本发布更新。
 
-参考：[GitHub runner 架构与标签](https://github.com/actions/runner-images/blob/main/README.md)、[Actions artifact 合并下载](https://github.com/actions/upload-artifact/blob/main/docs/MIGRATION.md)、[GitHub CLI release create](https://cli.github.com/manual/gh_release_create)、[Playwright CI](https://playwright.dev/docs/ci-intro)。
+参考：[GitHub runner 架构与标签](https://github.com/actions/runner-images/blob/main/README.md)、[Android SDK setup v3](https://github.com/android-actions/setup-android/tree/v3)、[Actions artifact 合并下载](https://github.com/actions/upload-artifact/blob/main/docs/MIGRATION.md)、[GitHub CLI release create](https://cli.github.com/manual/gh_release_create)、[Playwright CI](https://playwright.dev/docs/ci-intro)。
