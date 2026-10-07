@@ -3,6 +3,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('brclio', Object.freeze({
+  reportReady: () => ipcRenderer.invoke('brclio:ready'),
   getPlatform: () => ipcRenderer.invoke('brclio:platform'),
   getSettings: () => ipcRenderer.invoke('brclio:settings:get'),
   saveSettings: settings => ipcRenderer.invoke('brclio:settings:save', settings),

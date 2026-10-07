@@ -41,7 +41,9 @@ try {
     window.__copiedTexts = [];
     window.__activeSaves = 0;
     window.__peakSaves = 0;
+    window.__readyCalls = 0;
     window.brclio = {
+      reportReady: async () => { window.__readyCalls++; },
       getPlatform: async () => ({ platform: 'darwin', packaged: true, capabilities: { systemIntegration: true } }),
       getSettings: async () => ({ quoteMode: 'single', separator: 'forward', launchAtLogin: true }),
       getIntegrationStatus: () => new Promise(resolve => { window.__finishInit = resolve; }),
@@ -69,6 +71,7 @@ try {
   assert.equal(await quote.evaluate(element => element === document.activeElement), false);
   assert.equal(await quote.inputValue(), 'none');
   assert.deepEqual(await page.evaluate(() => window.__savedCalls), []);
+  assert.equal(await page.evaluate(() => window.__readyCalls), 0);
   // Incoming paths can arrive while preference initialization is still pending.
   await page.evaluate(() => {
     window.__incoming([{ path: '/work/a b.txt', name: 'a b.txt', kind: 'file' }]);
@@ -76,6 +79,7 @@ try {
   });
   await page.waitForFunction(() => document.body.dataset.ready === 'true');
   assert.equal(await page.evaluate(() => document.body.inert), false);
+  assert.equal(await page.evaluate(() => window.__readyCalls), 1);
   assert.equal(await quote.inputValue(), 'single');
   assert.equal(await page.locator('#path-preview').innerText(), "'/work/a b.txt'");
   await page.locator('#copy-preview').click();
@@ -95,6 +99,51 @@ try {
   assert.equal(await quote.inputValue(), 'none');
   report.push('native settings saves stay serialized and resetting copy preferences preserves login startup');
   await page.close();
+
+  const failed = await browser.newPage();
+  observe(failed);
+  await failed.addInitScript(() => {
+    window.__readyCalls = 0;
+    window.brclio = {
+      getPlatform: async () => ({ platform: 'darwin', version: '0.1.3', capabilities: {} }),
+      getSettings: async () => { throw new Error('隔离初始化失败'); },
+      getIntegrationStatus: async () => ({ supported: false }),
+      reportReady: async () => { window.__readyCalls++; },
+      onPaths: () => () => {},
+    };
+  });
+  await failed.goto(url);
+  await failed.waitForFunction(() => document.body.dataset.ready === 'true');
+  assert.equal(await failed.evaluate(() => window.__readyCalls), 0);
+  assert.equal(await failed.evaluate(() => document.body.dataset.initialized), undefined);
+  report.push('failed native initialization never acknowledges healthy update startup');
+  await failed.close();
+
+  const updating = await browser.newPage();
+  observe(updating);
+  await updating.addInitScript(() => {
+    window.__updateCalls = [];
+    window.brclio = {
+      getPlatform: async () => ({ platform: 'android', version: '0.1.3', capabilities: {} }),
+      getSettings: async () => ({}), getIntegrationStatus: async () => ({ supported: false }),
+      onPaths: () => () => {},
+      checkForUpdates: async () => ({ status: 'available', version: '0.1.4' }),
+      downloadUpdate: async () => { window.__updateCalls.push('download'); return { status: 'downloaded', version: '0.1.4' }; },
+      installUpdate: async () => { window.__updateCalls.push('install'); return { status: 'installing', message: '安装后尝试自动打开；系统限制时请点击打开。' }; },
+    };
+  });
+  await updating.goto(url);
+  await updating.waitForFunction(() => document.body.dataset.initialized === 'true');
+  assert.equal(await updating.locator('#about-dialog .subtle-tag').textContent(), 'VERSION 0.1.3');
+  await updating.locator('[data-view="settings"]').click();
+  await updating.locator('#check-update').click();
+  await updating.locator('#download-update').click();
+  await updating.waitForFunction(() => window.__updateCalls.length === 2);
+  assert.deepEqual(await updating.evaluate(() => window.__updateCalls), ['download', 'install']);
+  assert.match(await updating.locator('#update-status-detail').innerText(), /系统限制时请点击打开/);
+  assert.equal(await updating.locator('#check-update').isDisabled(), true);
+  report.push('one download-and-install click continues to native installation and preserves Android system guidance');
+  await updating.close();
 
   const android = await browser.newPage({ viewport: { width: 390, height: 950 } });
   observe(android);

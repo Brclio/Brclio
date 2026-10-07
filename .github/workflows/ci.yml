@@ -11,6 +11,10 @@ permissions:
   contents: read
 
 jobs:
+  windows-update:
+    name: Windows native automatic update
+    uses: ./.github/workflows/windows-update.yml
+
   test:
     name: Shared core and desktop tests
     runs-on: ubuntu-24.04

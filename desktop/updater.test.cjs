@@ -33,7 +33,7 @@ async function setup(t, overrides = {}) {
     return new Response(bytes);
   };
   const updater = createUpdater({ currentVersion: '0.1.0', directory, platform: 'darwin', architecture: 'arm64', fetch,
-    onState: state => states.push(state), openPath: async filename => { opened.push(filename); return ''; }, ...overrides.options });
+    onState: state => states.push(state), installPackage: async descriptor => { opened.push(descriptor); return { installerStarted: true }; }, ...overrides.options });
   return { updater, directory, calls, opened, states, latest };
 }
 
@@ -74,17 +74,26 @@ test('download verifies SHA256 and byte size before installer can open, then ver
   await updater.check();
   const ready = await updater.download();
   assert.equal(ready.status, 'downloaded'); assert.equal(ready.progress, 100);
-  assert.equal(ready.manualInstall, true);
+  assert.equal(ready.manualInstall, false);
   assert.equal(opened.length, 0);
   const filename = path.join(directory, 'Brclio-0.2.0-mac-arm64.dmg');
   assert.deepEqual(await fs.readFile(filename), bytes);
-  assert.equal((await updater.install()).installerOpened, true);
-  assert.deepEqual(opened, [filename]);
+  assert.equal((await updater.install()).installerStarted, true);
+  assert.deepEqual(opened, [{ filename, expected: digest, size: bytes.length, version: '0.2.0' }]);
+  assert.equal((await updater.install()).status, 'restarting');
+  assert.equal(opened.length, 1);
+  assert.ok(states.some(state => state.status === 'preparing'));
+});
+
+test('tampered verified package cannot begin replacement', async t => {
+  const { updater, directory, opened } = await setup(t);
+  await updater.check(); await updater.download();
+  const filename = path.join(directory, 'Brclio-0.2.0-mac-arm64.dmg');
   await fs.writeFile(filename, Buffer.from('changed'));
   const failed = await updater.install();
   assert.equal(failed.status, 'error'); assert.match(failed.error, /已变更/);
-  assert.equal(opened.length, 1);
-  assert.ok(states.some(state => state.status === 'downloading'));
+  assert.equal(opened.length, 0);
+  assert.equal(failed.canInstall, false);
 });
 
 test('bad hash removes partial download, prevents installation and permits retry', async t => {
@@ -159,10 +168,10 @@ test('network failure is actionable and later check succeeds', async t => {
 
 test('concurrent install requests share verification and open the installer only once', async t => {
   const opened = [];
-  const { updater } = await setup(t, { options: { openPath: async filename => {
-    opened.push(filename);
+  const { updater } = await setup(t, { options: { installPackage: async descriptor => {
+    opened.push(descriptor);
     await new Promise(resolve => setTimeout(resolve, 25));
-    return '';
+    return { installerStarted: true };
   } } });
   await updater.check();
   await updater.download();
@@ -171,5 +180,28 @@ test('concurrent install requests share verification and open the installer only
   assert.equal(first, second);
   const results = await Promise.all([first, second]);
   assert.equal(opened.length, 1);
-  assert.ok(results.every(state => state.installerOpened === true));
+  assert.ok(results.every(state => state.installerStarted === true));
+});
+
+test('preparation failure preserves verified download for retry and never quits', async t => {
+  let fail = true; let quits = 0;
+  const { updater, calls } = await setup(t, { options: {
+    installPackage: async () => { if (fail) throw new Error('安装目录不可写'); return { installerStarted: true }; },
+    afterStart: () => { quits++; },
+  } });
+  await updater.check(); await updater.download();
+  assert.equal((await updater.install()).canInstall, true);
+  assert.equal(updater.state().status, 'error'); assert.equal(quits, 0);
+  const requests = calls.length; fail = false;
+  assert.equal((await updater.install()).status, 'restarting');
+  assert.equal(calls.length, requests); assert.equal(quits, 1);
+  await updater.install(); await updater.check(); await updater.download();
+  assert.equal(quits, 1); assert.equal(calls.length, requests);
+});
+
+test('startup result requires healthy-launch acknowledgement before displaying success', async t => {
+  const { updater } = await setup(t);
+  assert.equal(updater.restoreResult({ status: 'installed' }).status, 'idle');
+  assert.equal(updater.restoreResult({ status: 'installed', launchAcknowledged: true }).status, 'installed');
+  assert.equal(updater.restoreResult({ status: 'error', error: '已恢复旧版' }).error, '已恢复旧版');
 });

@@ -10,6 +10,8 @@ const { createIntegration } = require('./integration.cjs');
 const { getCopyPaths } = require('./arguments.cjs');
 const { getCopyPathsFromURL, getCopyPathsFromURLs } = require('./deep-link.cjs');
 const { createUpdater } = require('./updater.cjs');
+const { createMacInstaller } = require('./mac-installer.cjs');
+const { createWindowsInstaller } = require('./windows-installer.cjs');
 
 app.setName('Brclio');
 app.setPath('userData', process.env.BRCLIO_USER_DATA
@@ -20,8 +22,12 @@ if (process.platform === 'win32') app.setAppUserModelId('com.brclio.toolbox');
 let initialPaths;
 let startupError;
 try { initialPaths = getCopyPaths(process.argv) || (process.platform === 'darwin' ? getCopyPathsFromURLs(process.argv) : null); } catch (error) { startupError = error; }
-const gotLock = app.requestSingleInstanceLock({ copyPaths: initialPaths });
+const updateLaunchArgs = process.argv.filter((value, index, argv) =>
+  ['--brclio-update-job', '--brclio-update-token'].includes(value) || ['--brclio-update-job', '--brclio-update-token'].includes(argv[index - 1]));
+const gotLock = app.requestSingleInstanceLock({ copyPaths: initialPaths, updateLaunchArgs });
 let mainWindow;
+let rendererReady = false;
+let pendingUpdateLaunchArgs = updateLaunchArgs;
 let pendingPaths = [];
 let copyQueue = Promise.resolve();
 let idleExit;
@@ -32,11 +38,34 @@ const settings = createSettingsStore(app.getPath('userData'));
 const integration = createIntegration({ launch: {
   executable: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged,
 } });
+const installerOptions = { executable: process.execPath, userData: app.getPath('userData'), parentPid: process.pid };
+const installer = process.platform === 'darwin' ? createMacInstaller(installerOptions)
+  : process.platform === 'win32' ? createWindowsInstaller(installerOptions) : null;
 const updater = createUpdater({ currentVersion: app.getVersion(), directory: path.join(app.getPath('userData'), 'updates'),
-  fetch: (url, options) => net.fetch(url, options), openPath: filename => shell.openPath(filename),
+  fetch: (url, options) => net.fetch(url, options),
+  installPackage: descriptor => {
+    if (!app.isPackaged || !installer) throw new Error('请使用安装版 Brclio 进行在线更新。');
+    return installer.start(descriptor);
+  },
   onState: state => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('brclio:update', state); },
-  afterOpen: () => { if (process.platform === 'win32') setTimeout(() => app.quit(), 500); },
+  afterStart: () => setTimeout(() => app.quit(), 500),
 });
+
+async function acknowledgeUpdate() {
+  if (!rendererReady || !installer || !pendingUpdateLaunchArgs.length) return;
+  const argv = pendingUpdateLaunchArgs;
+  pendingUpdateLaunchArgs = [];
+  try {
+    await installer.acknowledgeLaunch(argv, app.getVersion());
+    // The helper records success after it sees our ACK. Never claim success
+    // solely because the renderer loaded or because a process was spawned.
+    for (let attempt = 0; attempt < 600; attempt++) {
+      const result = await installer.readResult({ consume: true });
+      if (result) { updater.restoreResult(result); break; }
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  } catch (error) { console.error('Update launch acknowledgement failed:', error.message); }
+}
 
 async function describePaths(paths) {
   return Promise.all(paths.map(async filePath => {
@@ -61,6 +90,7 @@ function createWindow() {
     return mainWindow;
   }
   if (process.platform === 'darwin') app.dock?.show();
+  rendererReady = false;
   mainWindow = new BrowserWindow({
     width: 1220, height: 850, minWidth: 780, minHeight: 620,
     title: 'Brclio', backgroundColor: '#f7f4ee', show: false,
@@ -74,7 +104,7 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     if (pendingPaths.length) { mainWindow.webContents.send('brclio:paths', pendingPaths); pendingPaths = []; }
   });
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('closed', () => { mainWindow = null; rendererReady = false; });
   mainWindow.loadFile(indexPath);
   return mainWindow;
 }
@@ -90,6 +120,7 @@ function handle(channel, callback) {
 }
 
 function registerIPC() {
+  handle('brclio:ready', () => { rendererReady = true; void acknowledgeUpdate(); return { ready: true }; });
   handle('brclio:platform', () => ({ platform: process.platform, version: app.getVersion(),
     capabilities: { filePicker: true, folderPicker: true, systemIntegration: ['darwin', 'win32'].includes(process.platform) },
     homePath: app.getPath('home'), packaged: app.isPackaged,
@@ -178,13 +209,21 @@ if (!gotLock) {
     }
   });
   app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => {
+    if (Array.isArray(additionalData?.updateLaunchArgs) && additionalData.updateLaunchArgs.length === 4
+        && additionalData.updateLaunchArgs.filter(value => value === '--brclio-update-job').length === 1
+        && additionalData.updateLaunchArgs.filter(value => value === '--brclio-update-token').length === 1
+        && additionalData.updateLaunchArgs.every(value => typeof value === 'string')) {
+      pendingUpdateLaunchArgs = additionalData.updateLaunchArgs;
+      if (rendererReady) void acknowledgeUpdate();
+    }
     const selected = additionalData?.copyPaths;
     if (Array.isArray(selected) && selected.length && selected.every(item => typeof item === 'string' && !item.includes('\0'))) {
       copyFromMenu(selected);
     } else createWindow();
   });
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     registerIPC();
+    if (installer && !pendingUpdateLaunchArgs.length) updater.restoreResult(await installer.readResult({ consume: true }).catch(() => null));
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),
       { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },

@@ -27,6 +27,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
     @Volatile private var state = JSONObject().put("status", "up-to-date").put("currentVersion", currentVersion)
     @Volatile private var connection: HttpsURLConnection? = null
     @Volatile private var closed = false
+    @Volatile private var installationWindowOpen = false
     private var latest: UpdateRelease? = null
     private var downloaded: File? = null
     private var downloadedSha256: String? = null
@@ -109,7 +110,9 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
             digest.digest().hex()
         }
         check(actual == downloadedSha256) { "安装包已改变，请重新下载。" }
-        verifyPackage(apk, release)
+        val targetVersionCode = verifyPackage(apk, release)
+        // Keep another check/download/install from replacing the APK while the system reads it.
+        installationWindowOpen = true
         onMain {
             try {
                 if (!activity.packageManager.canRequestPackageInstalls()) {
@@ -117,14 +120,17 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                     callback(snapshot().put("requiresPermission", true).put("message", "允许 Brclio 安装更新后，请返回再次点击安装。"), null)
                 } else {
                     val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.updates", apk)
+                    UpdateRelaunchReceiver.remember(activity, targetVersionCode)
                     activity.startActivity(Intent(Intent.ACTION_VIEW).apply {
                         setDataAndType(uri, "application/vnd.android.package-archive")
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         clipData = ClipData.newRawUri("Brclio 更新", uri)
                     })
-                    callback(snapshot().put("installerOpened", true).put("message", "已打开 Android 安装界面。完成后重新打开 Brclio。"), null)
+                    callback(snapshot().put("installerOpened", true).put("message", "请确认覆盖安装。完成后将尝试自动打开 Brclio；若系统限制，请点击安装器中的“打开”。"), null)
                 }
             } catch (exception: Exception) {
+                installationWindowOpen = false
+                UpdateRelaunchReceiver.clear(activity)
                 val message = exception.message ?: "无法打开 Android 安装界面。"
                 publish("error", release, error = message)
                 callback(null, message)
@@ -134,6 +140,10 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
     }
 
     private fun run(callback: (JSONObject?, String?) -> Unit, action: () -> JSONObject?) {
+        if (installationWindowOpen) {
+            callback(null, "请先完成系统安装或授权窗口，返回 Brclio 后再重试。")
+            return
+        }
         if (!busy.compareAndSet(false, true)) { callback(snapshot(), null); return }
         worker.execute {
             try {
@@ -165,6 +175,15 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
     }
 
     private fun snapshot() = JSONObject(state.toString())
+
+    fun onResume() {
+        if (!installationWindowOpen) return
+        installationWindowOpen = false
+        // Returning without a package replacement means the installation was cancelled,
+        // or the unknown-source permission screen closed. It is not consent to a later update.
+        UpdateRelaunchReceiver.clear(activity)
+    }
+
     private fun onMain(action: () -> Unit) {
         activity.runOnUiThread {
             if (!closed && !activity.isFinishing && !activity.isDestroyed) {
@@ -229,7 +248,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
     }
 
     @Suppress("DEPRECATION")
-    private fun verifyPackage(apk: File, release: UpdateRelease) {
+    private fun verifyPackage(apk: File, release: UpdateRelease): Long {
         val manager = activity.packageManager
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
         val archive = manager.getPackageArchiveInfo(apk.absolutePath, flags) ?: error("下载的文件不是有效 Android 安装包。")
@@ -245,6 +264,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         }
         val trusted = certificateDigests(installed)
         check(trusted.isNotEmpty() && trusted == certificateDigests(archive)) { "安装包签名不匹配，已阻止安装。" }
+        return archiveCode
     }
 
     fun close() {

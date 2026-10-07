@@ -234,6 +234,11 @@ class MainActivity : Activity() {
         flushIncomingPaths()
     }
 
+    override fun onResume() {
+        super.onResume()
+        updater?.onResume()
+    }
+
     private fun acceptIntent(received: Intent?) {
         if (received?.action !in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE, Intent.ACTION_VIEW)) return
         selectedUris(received ?: return).forEach { uri ->

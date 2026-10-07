@@ -1,0 +1,41 @@
+name: Windows NSIS update verification
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nsis-update:
+    name: Real old-install to new-install update and rollback
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Verify contracts and parse the real PowerShell helper
+        run: npm test
+      - run: npm run sync
+      - name: Build the actual NSIS package without publishing
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win --x64 --publish never
+      - name: Verify real silent replacement, launch ACK, preservation, and rollback
+        env:
+          BRCLIO_ALLOW_INSTALL_SMOKE: '1'
+          BRCLIO_WINDOWS_BASELINE_VERSION: '0.1.2'
+        run: node desktop/windows-installer-smoke.cjs
+      - name: Preserve the native Windows verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis-update-verification
+          path: artifacts/windows-update-smoke.json
+          if-no-files-found: ignore
+          retention-days: 14

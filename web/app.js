@@ -213,29 +213,36 @@
   function renderUpdate(state) {
     updateState = state || { status: 'error', error: '未能读取更新状态。' };
     const status = updateState.status;
-    const busy = status === 'checking' || status === 'downloading';
+    const busy = ['checking', 'downloading', 'preparing', 'restarting', 'installing'].includes(status);
     $('#check-update').disabled = busy;
     $('#download-update').hidden = status !== 'available';
-    $('#install-update').hidden = status !== 'downloaded';
+    $('#install-update').hidden = status !== 'downloaded' && !(status === 'error' && updateState.canInstall);
+    $('#install-update').disabled = busy;
     $('#update-progress').hidden = status !== 'downloading';
     const percent = Math.max(0, Math.min(100, Number(updateState.progress) || 0));
     $('#update-progress-bar').value = percent;
     $('#update-progress-label').textContent = `${Math.round(percent)}%`;
     const version = updateState.version ? `v${updateState.version}` : '新版本';
-    const titles = { idle: '保持顺手，也保持最新。', checking: '正在检查 GitHub 最新版本…', 'up-to-date': '已经是最新版本。', available: `${version} 已经准备好。`, downloading: `正在下载 ${version}…`, downloaded: '安装包已下载，校验通过。', error: '这次更新未完成，可以重试。', unsupported: '请在客户端中检查和安装更新。', installing: '请在系统安装界面中继续。' };
+    const titles = { idle: '保持顺手，也保持最新。', checking: '正在检查 GitHub 最新版本…', 'up-to-date': '已经是最新版本。', available: `${version} 已经准备好。`, downloading: `正在下载 ${version}…`, downloaded: '安装包已下载，校验通过。', preparing: '正在准备覆盖安装…', restarting: '正在更新，Brclio 即将重新打开…', installed: '更新完成，欢迎回来。', error: '这次更新未完成，可以重试。', unsupported: '请在客户端中检查和安装更新。', installing: '请在系统安装界面中继续。' };
     $('#update-status-title').textContent = titles[status] || titles.idle;
-    const details = { idle: '从 GitHub 检查新版本，下载并校验安装包。', checking: '只读取版本信息，不会自动下载安装包。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.0'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成后会核对 SHA-256，确保安装包完整。', downloaded: platform.platform === 'darwin' ? '打开磁盘映像后，将 Brclio 拖入 Applications，再重新打开。' : '点击下方按钮，交给系统安装程序完成更新。', unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: '完成安装后重新打开 Brclio，即可查看新版本。' };
-    $('#update-status-detail').textContent = status === 'error' ? updateState.error || '网络连接失败，请检查网络后重试。' : details[status] || details.idle;
+    const details = { idle: '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.0'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
+    $('#update-status-detail').textContent = status === 'error' ? updateState.error || '网络连接失败，请检查网络后重试。' : updateState.message || details[status] || details.idle;
     $('#update-notes').hidden = !updateState.notes || !['available', 'downloaded'].includes(status);
     $('#update-notes').textContent = (updateState.notes || '').slice(0, 1600);
-    $('#install-update').textContent = platform.platform === 'darwin' ? '打开 DMG 安装' : '打开安装程序';
+    $('#download-update').textContent = '下载并安装更新';
+    $('#install-update').textContent = status === 'error' ? '重试安装' : '安装更新';
   }
   async function performUpdate(method) {
     try {
       if (method === 'checkForUpdates') renderUpdate({ status: 'checking' });
       else if (method === 'downloadUpdate') renderUpdate({ ...updateState, status: 'downloading', progress: 0 });
+      else if (method === 'installUpdate') renderUpdate({ ...updateState, status: 'preparing' });
       const state = await host[method]();
-      if (method === 'installUpdate' && state?.installerOpened) renderUpdate({ ...state, status: 'installing' });
+      if (method === 'downloadUpdate' && state?.status === 'downloaded') {
+        renderUpdate(state);
+        await saveQueue;
+        await performUpdate('installUpdate');
+      }
       else if (state?.status) {
         renderUpdate(state);
         if (state.requiresPermission) $('#update-status-detail').textContent = '请在系统设置中允许 Brclio 安装应用，然后返回并再次点击安装。';
@@ -247,17 +254,21 @@
   $('#download-update').addEventListener('click', () => performUpdate('downloadUpdate'));
   $('#install-update').addEventListener('click', () => performUpdate('installUpdate'));
   $('#about-update').addEventListener('click', () => { $('#about-dialog').close(); setView('settings'); performUpdate('checkForUpdates'); });
-  host.onUpdateState?.(renderUpdate);
+  host.onUpdateState?.(state => {
+    renderUpdate(state);
+    if (state?.status === 'installed') host.getIntegrationStatus().then(status => { integration = status; refreshIntegration(); }).catch(() => {});
+  });
 
   host.onPaths(paths => acceptPaths(paths, '已导入'));
   async function init() {
     try {
-      const [info, saved, status] = await Promise.all([host.getPlatform(), host.getSettings(), host.getIntegrationStatus()]);
+      const [info, saved, status, update] = await Promise.all([host.getPlatform(), host.getSettings(), host.getIntegrationStatus(), host.getUpdateState?.()]);
       platform = info; integration = status; settings = engine.normalizeSettings(saved);
       if (samples[platform.platform]) { samplePlatform = platform.platform; $$('[data-sample]').forEach(button => button.classList.toggle('active', button.dataset.sample === samplePlatform)); }
       $$('.version').forEach(item => { item.textContent = `v${platform.version || '0.1.0'}`; });
       $('#current-version').textContent = `v${platform.version || '0.1.0'}`;
-      $('#update-platform-hint').textContent = platform.platform === 'darwin' ? 'macOS 安装包尚未公证；下载校验后打开 DMG，手动拖入 Applications。' : platform.platform === 'android' ? '首次安装更新时，需要允许 Brclio 安装应用。' : platform.platform === 'browser' ? '浏览器仅提供界面预览；在线更新在 Windows、macOS 和安卓客户端中使用。' : '安装时可能出现系统权限提示，按安装程序指引继续。';
+      $('#about-dialog .subtle-tag').textContent = `VERSION ${platform.version || '0.1.0'}`;
+      $('#update-platform-hint').textContent = platform.platform === 'darwin' ? '下载校验后自动覆盖当前安装并重新打开。尚未公证，首次运行可能需要在系统设置中允许打开。' : platform.platform === 'android' ? '需确认系统安装；系统限制自动打开时，请点击安装器的“打开”。' : platform.platform === 'browser' ? '浏览器仅提供界面预览；在线更新在 Windows、macOS 和安卓客户端中使用。' : '下载校验后覆盖当前安装并自动打开，保留设置和右键菜单。';
       $('#platform-label').textContent = platformNames[platform.platform] || platform.platform;
       $('#environment-detail').textContent = `${platformNames[platform.platform] || platform.platform} · v${platform.version || '0.1.0'}`;
       if (platform.platform === 'browser' || platform.platform === 'android' || platform.packaged === false) {
@@ -266,6 +277,9 @@
       }
       if (platform.platform === 'win32' || platform.platform === 'android') $('#search-shortcut').textContent = 'Ctrl K';
       applyControls(); refreshIntegration(); setSaveStatus('设置已保存');
+      renderUpdate(update || { status: 'idle' });
+      await host.reportReady?.();
+      document.body.dataset.initialized = 'true';
     } catch (error) { $('#platform-label').textContent = '设置读取失败'; setSaveStatus('读取失败', true); toast(error.message, true); }
     finally { document.body.inert = false; document.body.dataset.ready = 'true'; }
   }

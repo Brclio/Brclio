@@ -1,7 +1,7 @@
 {
   "name": "brclio-toolbox",
   "productName": "Brclio",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Brclio 跨平台工具箱 · 从复制路径开始",
   "author": "Brclio",
   "private": true,

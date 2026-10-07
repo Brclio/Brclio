@@ -64,12 +64,12 @@ async function fileDigest(filename) {
 }
 
 function createUpdater(options) {
-  const { currentVersion, directory, fetch: fetchURL, openPath } = options;
+  const { currentVersion, directory, fetch: fetchURL, installPackage } = options;
   const platform = options.platform || process.platform;
   const architecture = options.architecture || process.arch;
   const publish = options.onState || (() => {});
   let state = { status: 'idle', currentVersion, version: null, notes: '', progress: 0,
-    downloadedBytes: 0, totalBytes: 0, error: null, assetName: null, manualInstall: platform === 'darwin', releaseURL: RELEASE_URL };
+    downloadedBytes: 0, totalBytes: 0, error: null, assetName: null, manualInstall: false, canInstall: false, releaseURL: RELEASE_URL };
   let release = null; let verified = null; let checking = null; let downloading = null; let installing = null;
   function snapshot() { return { ...state }; }
   function change(patch) { state = { ...state, ...patch }; publish(snapshot()); return snapshot(); }
@@ -94,9 +94,10 @@ function createUpdater(options) {
 
   function check() {
     if (checking) return checking;
+    if (state.installerStarted) return Promise.resolve(snapshot());
     if (downloading || installing) return Promise.resolve(snapshot());
     checking = (async () => {
-      change({ status: 'checking', error: null, progress: 0, downloadedBytes: 0, installerOpened: false });
+      change({ status: 'checking', error: null, progress: 0, downloadedBytes: 0, installerStarted: false, canInstall: false });
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), options.requestTimeout || 20000);
       try {
@@ -115,6 +116,7 @@ function createUpdater(options) {
 
   function download() {
     if (downloading) return downloading;
+    if (state.installerStarted) return Promise.resolve(snapshot());
     if (installing) return Promise.resolve(snapshot());
     const operation = (async () => {
       if (checking) await checking;
@@ -126,7 +128,7 @@ function createUpdater(options) {
       let idleTimer; let manifestTimer;
       const totalTimer = setTimeout(() => controller.abort(), options.downloadTimeout || 10 * 60 * 1000);
       const refreshIdle = () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => controller.abort(), options.idleTimeout || 45000); };
-      change({ status: 'downloading', error: null, progress: 0, downloadedBytes: 0, totalBytes: selected.size, installerOpened: false });
+      change({ status: 'downloading', error: null, progress: 0, downloadedBytes: 0, totalBytes: selected.size, canInstall: false });
       try {
         verified = null;
         await fs.mkdir(directory, { recursive: true });
@@ -140,7 +142,7 @@ function createUpdater(options) {
         const existing = await fs.stat(destination).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
         if (existing?.size === selected.size && await fileDigest(destination) === expected) {
           verified = { filename: destination, expected, size: selected.size };
-          return change({ status: 'downloaded', progress: 100, downloadedBytes: selected.size });
+          return change({ status: 'downloaded', progress: 100, downloadedBytes: selected.size, canInstall: true });
         }
         const response = await request(selected.downloadURL, controller.signal);
         if (!response.body) throw new Error('安装包下载内容为空。');
@@ -163,7 +165,7 @@ function createUpdater(options) {
         if (count !== selected.size || hash.digest('hex') !== expected) throw new Error('安装包 SHA256 校验失败，请重新下载。');
         await fs.rename(partial, destination);
         verified = { filename: destination, expected, size: selected.size };
-        return change({ status: 'downloaded', progress: 100, downloadedBytes: count });
+        return change({ status: 'downloaded', progress: 100, downloadedBytes: count, canInstall: true });
       } catch (error) {
         controller.abort();
         await fs.rm(partial, { force: true }).catch(() => {});
@@ -177,25 +179,36 @@ function createUpdater(options) {
 
   function install() {
     if (installing) return installing;
-    if (state.status !== 'downloaded' || !verified) return Promise.resolve(failure(new Error('请先下载并校验安装包。')));
+    if (state.installerStarted) return Promise.resolve(snapshot());
+    if (!verified) return Promise.resolve(failure(new Error('请先下载并校验安装包。')));
     const selected = verified;
     const operation = (async () => {
+      change({ status: 'preparing', error: null });
       try {
         const stats = await fs.stat(selected.filename);
         if (stats.size !== selected.size || await fileDigest(selected.filename) !== selected.expected) {
-          verified = null; throw new Error('安装包已变更，请重新下载。');
+          verified = null; change({ canInstall: false }); throw new Error('安装包已变更，请重新下载。');
         }
-        const error = await openPath(selected.filename);
-        if (error) throw new Error(`无法打开安装包：${error}`);
-        options.afterOpen?.();
-        return change({ installerOpened: true });
+        if (typeof installPackage !== 'function') throw new Error('请使用安装版 Brclio 进行在线更新。');
+        const result = await installPackage({ ...selected, version: release.version });
+        if (!result?.installerStarted) throw new Error('安装程序尚未准备就绪，请重试。');
+        const next = change({ status: 'restarting', installerStarted: true, canInstall: false, automaticInstall: true });
+        options.afterStart?.();
+        return next;
       } catch (error) { return failure(error); }
     })();
     installing = operation;
     operation.finally(() => { if (installing === operation) installing = null; });
     return operation;
   }
-  return { state: snapshot, check, download, install };
+  function restoreResult(result) {
+    if (result?.status === 'installed' && result.launchAcknowledged === true) {
+      return change({ status: 'installed', version: currentVersion, message: result.warning || '已完成覆盖安装，Brclio 已自动打开。', error: null });
+    }
+    if (result?.status === 'error') return failure(new Error(result.error || result.message || '上次安装未完成，请重试。'));
+    return snapshot();
+  }
+  return { state: snapshot, check, download, install, restoreResult };
 }
 
 module.exports = { createUpdater, parseRelease, compareVersions, checksumFor, API_URL };

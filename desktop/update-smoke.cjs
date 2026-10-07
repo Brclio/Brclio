@@ -66,13 +66,16 @@ async function main() {
     await expect(page.locator('#download-update')).toBeVisible();
     await page.click('#download-update');
     await expect(page.locator('#update-progress')).toBeVisible();
-    await expect(page.locator('#update-status-title')).toHaveText('安装包已下载，校验通过。');
-    await expect(page.locator('#install-update')).toHaveText('打开 DMG 安装');
-    await expect(page.locator('#update-status-detail')).toContainText('拖入 Applications');
+    await expect(page.locator('#update-status-title')).toHaveText('这次更新未完成，可以重试。');
+    await expect(page.locator('#install-update')).toHaveText('重试安装');
+    await expect(page.locator('#update-status-detail')).toContainText(packagedExecutable ? '磁盘' : '安装版');
+    assert.deepEqual(await fs.readFile(path.join(updates, `Brclio-${updateVersion}-mac-${process.arch}.dmg`)), Buffer.from(fixtureText));
+    const requests = await application.evaluate(() => globalThis.__updateSmoke.calls.length);
     await page.click('#install-update');
-    await expect(page.locator('#update-status-title')).toHaveText('请在系统安装界面中继续。');
-    assert.equal(await application.evaluate(() => globalThis.__updateSmoke.opened.length), 1);
-    console.log('PASS native update IPC/UI: metadata-only check, streamed progress, failed-hash cleanup, retry, verified download and explicit manual DMG install (installer launch mocked).');
+    await expect(page.locator('#update-status-title')).toHaveText('这次更新未完成，可以重试。');
+    assert.equal(await application.evaluate(() => globalThis.__updateSmoke.calls.length), requests);
+    assert.equal(await application.evaluate(() => globalThis.__updateSmoke.opened.length), 0);
+    console.log('PASS native update IPC/UI: metadata-only check, streamed progress, failed-hash cleanup, download-to-install continuation, safe preparation failure and cached installation retry. Real native replacement is tested separately.');
   } finally {
     if (application) await application.close();
     await fs.rm(temporary, { recursive: true, force: true });
