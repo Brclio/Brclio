@@ -9,6 +9,10 @@
 
 !macro customCheckAppRunning
   System::Call 'kernel32::SetEnvironmentVariable(t "BRCLIO_NSIS_EXECUTABLE", t "$INSTDIR\${APP_EXECUTABLE_FILENAME}") i.r0'
+  ${If} $0 == 0
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
   StrCpy $R2 0
   ${Do}
     !insertmacro BrclioQueryApp

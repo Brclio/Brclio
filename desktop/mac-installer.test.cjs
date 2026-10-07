@@ -1,6 +1,9 @@
 'use strict';
 
-const test = require('node:test');
+const nativeTest = require('node:test');
+// These filesystem transaction tests depend on Unix ownership/private modes.
+// Windows has its own real NSIS suite; Linux still exercises all Mac contracts.
+const test = (name, callback) => nativeTest(name, { skip: process.platform === 'win32' }, callback);
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');

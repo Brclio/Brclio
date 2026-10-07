@@ -11,6 +11,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { pathToFileURL } = require('node:url');
 const { _electron: electron, expect } = require('@playwright/test');
 const { bundleInfo, verifyBundle, identity } = require('./mac-installer-helper.cjs');
 
@@ -90,14 +91,21 @@ async function main() {
         { name: 'SHA256SUMS.txt', size: 128, browser_download_url: prefix + 'SHA256SUMS.txt' },
       ] };
       globalThis.__macInstallSmokeRequests = [];
+      const originalFetch = net.fetch.bind(net);
       net.fetch = async url => {
         globalThis.__macInstallSmokeRequests.push(url);
         if (url === 'https://api.github.com/repos/Brclio/Brclio/releases/latest') return new Response(JSON.stringify(release));
         if (url === prefix + 'SHA256SUMS.txt') return new Response(`${fixture.expected}  ${assetName}\n`);
-        if (url === prefix + assetName) return new Response(require('node:stream').Readable.toWeb(require('node:fs').createReadStream(fixture.dmg)));
+        if (url === prefix + assetName) {
+          // Electron's real net stack supports file: URLs; no Node require is
+          // available inside Playwright's main-process evaluation context.
+          const source = await originalFetch(fixture.fileURL);
+          if (!source.ok) throw new Error('Cannot stream the real local DMG.');
+          return new Response(source.body);
+        }
         throw new Error('Unexpected update request: ' + url);
       };
-    }, { version: targetVersion, architecture, dmg, size, expected });
+    }, { version: targetVersion, architecture, fileURL: pathToFileURL(dmg).href, size, expected });
     await page.click('[data-view="settings"]');
     await page.click('#check-update');
     await expect(page.locator('#update-status-title')).toHaveText(`v${targetVersion} 已经准备好。`);
