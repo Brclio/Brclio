@@ -10,6 +10,7 @@ const { EventEmitter } = require('node:events');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { createWindowsInstaller, HELPER } = require('./windows-installer.cjs');
+const { QUERY_SCRIPT } = require('./windows-registry.cjs');
 
 async function fixture(t, { readyError, spawnError, readyTimeout } = {}) {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-windows-install-test-'));
@@ -166,9 +167,12 @@ test('Windows PowerShell parser accepts the complete helper without executing in
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-powershell-parse-'));
   t.after(() => fs.rm(temporary, { recursive: true, force: true }));
   const helper = path.join(temporary, 'helper.ps1');
+  const registry = path.join(temporary, 'registry.ps1');
   const parser = path.join(temporary, 'parse.ps1');
   await fs.writeFile(helper, '\uFEFF' + HELPER);
+  await fs.writeFile(registry, '\uFEFF' + QUERY_SCRIPT);
   await fs.writeFile(parser, 'param([string]$Source)\n$tokens=$null; $errors=$null\n[System.Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors) | Out-Null\nif ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }\n');
   const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-File', parser, helper], { timeout: 30000 });
+  await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-File', parser, registry], { timeout: 30000 });
 });

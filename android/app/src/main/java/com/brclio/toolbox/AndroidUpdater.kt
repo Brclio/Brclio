@@ -182,6 +182,9 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         // Returning without a package replacement means the installation was cancelled,
         // or the unknown-source permission screen closed. It is not consent to a later update.
         UpdateRelaunchReceiver.clear(activity)
+        // The shared UI may be in "installing" with its buttons disabled. The same
+        // verified download is available again after cancellation/permission return.
+        onMain { emit(snapshot()) }
     }
 
     private fun onMain(action: () -> Unit) {

@@ -7,6 +7,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { launchCommand } = require('./arguments.cjs');
 const { createFinderExtension } = require('./finder-extension.cjs');
+const { readWindowsEntries } = require('./windows-registry.cjs');
 
 const OWNER = 'com.brclio.toolbox';
 const MENU_LABEL = '复制路径 · Brclio';
@@ -82,10 +83,18 @@ function createIntegration(options) {
   const workflowPath = path.join(home, 'Library', 'Services', WORKFLOW_NAME);
   const markerPath = path.join(workflowPath, 'Contents', 'brclio-owner.json');
   const entries = windowsEntries(launch);
+  const nativeRegistry = platform === 'win32' && !options.run;
+  const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   let pending = Promise.resolve();
   const finder = platform === 'darwin' ? createFinderExtension({ launch, run }) : null;
 
   async function query(key, name) {
+    if (nativeRegistry) {
+      const command = key.endsWith('\\command');
+      const item = (await readWindowsEntries(run, powershell)).find(entry => entry.key === (command ? key.slice(0, -8) : key));
+      if (!item) return null;
+      return command ? item.command : ({ BrclioOwner: item.owner, Icon: item.icon, MultiSelectModel: item.model })[name] ?? (name ? null : item.label);
+    }
     try {
       const result = await run(registry, ['query', key, ...(name ? ['/v', name] : ['/ve'])]);
       return result.stdout.match(/REG_SZ\s+(.*)/)?.[1]?.trim() ?? null;
@@ -98,15 +107,19 @@ function createIntegration(options) {
     try { await run(registry, ['query', key]); return true; }
     catch (error) { if (error.code === 1) return false; throw error; }
   }
+  async function windowsSnapshot() {
+    if (nativeRegistry) return readWindowsEntries(run, powershell);
+    return Promise.all(entries.map(async entry => ({ key: entry.key, exists: await keyExists(entry.key),
+      owner: await query(entry.key, 'BrclioOwner'), label: await query(entry.key), icon: await query(entry.key, 'Icon'),
+      model: await query(entry.key, 'MultiSelectModel'), command: await query(`${entry.key}\\command`) })));
+  }
   async function readMarker() {
     try { return JSON.parse(await fs.readFile(markerPath, 'utf8')); }
     catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
   }
   async function status() {
     if (platform === 'win32') {
-      const found = await Promise.all(entries.map(async entry => ({
-        owner: await query(entry.key, 'BrclioOwner'), command: await query(`${entry.key}\\command`),
-      })));
+      const found = await windowsSnapshot();
       const owned = found.every(item => item.owner === OWNER);
       const installed = owned && found.every((item, index) => item.command === entries[index].command);
       return { installed, supported: true, stale: owned && !installed, menuLabel: MENU_LABEL,
@@ -128,15 +141,11 @@ function createIntegration(options) {
 
   async function setWindows(enabled) {
     // Refuse to replace or remove a key that belongs to another application.
-    const snapshots = [];
-    for (const entry of entries) {
-      const exists = await keyExists(entry.key);
-      const owner = await query(entry.key, 'BrclioOwner');
+    const snapshots = await windowsSnapshot();
+    for (const { exists, owner } of snapshots) {
       if (exists && owner !== OWNER) {
         throw new Error('发现不属于 Brclio 的同名右键菜单，已保留原有设置。');
       }
-      snapshots.push({ exists, owner, label: await query(entry.key), icon: await query(entry.key, 'Icon'),
-        model: await query(entry.key, 'MultiSelectModel'), command: await query(`${entry.key}\\command`) });
     }
     if (!enabled) {
       for (const entry of entries) if (await query(entry.key, 'BrclioOwner') === OWNER) await run(registry, ['delete', entry.key, '/f']);

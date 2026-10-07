@@ -1,6 +1,6 @@
 # Android 客户端
 
-Android 客户端使用 Kotlin Activity 和离线 WebView，共用 `web/` 中的 Brclio 界面。包名为 `com.brclio.toolbox`，调试包为 `com.brclio.toolbox.debug`，当前版本 `0.1.0`，最低 Android 8.0（API 26）。
+Android 客户端使用 Kotlin Activity 和离线 WebView，共用 `web/` 中的 Brclio 界面。包名为 `com.brclio.toolbox`，调试包为 `com.brclio.toolbox.debug`，当前版本 `0.1.3`，最低 Android 8.0（API 26）。
 
 ## 使用方式
 
@@ -26,7 +26,15 @@ Android 没有跨所有文件管理器的统一右键扩展接口，因此本版
 
 下载在原生后台线程执行，展示字节数和百分比；连接 15 秒、读取 30 秒超时，整次下载最多 10 分钟，最多跟随 6 次 HTTPS 重定向。仅接受 GitHub 官方下载域名。下载大小必须与 Release 记录一致，并通过 SHA-256、包名、版本号、版本代码和当前应用签名证书校验。失败会删除临时文件，用户可以重试。
 
-校验通过的 APK 存在应用私有缓存 `updates/` 中，仅使用受限 `FileProvider` URI 交给系统安装程序。首次安装需进入系统设置允许 Brclio 安装应用，再返回点击安装。打开安装程序只是交给系统继续操作；完成安装并重新打开 Brclio、确认版本后，才算更新成功。应用进程重启后会清理旧下载缓存，需要重新下载。调试包和正式包使用不同包名及签名，因此不能互相作为原位更新安装。
+在设置中检查新版本后，点击“下载并安装更新”。校验通过的 APK 存在应用私有缓存 `updates/` 中，随后使用受限 `FileProvider` URI 交给系统安装程序。首次安装需进入系统设置允许 Brclio 安装应用，再返回点击“安装更新”。覆盖安装仍需用户在系统界面中确认，客户端不执行静默安装。
+
+Brclio 在打开安装程序前，将本次用户发起安装的目标 `versionCode` 和时间保存到私有偏好。覆盖完成后，不对外导出的 `UpdateRelaunchReceiver` 接收仅系统可发送的 `ACTION_MY_PACKAGE_REPLACED` 广播：先清除一次性标记，再检查已安装版本代码与目标一致，且请求在 30 分钟内，才尝试打开 Brclio。缺失、过期、版本不符或无法清除的标记不会触发启动。取消安装或关闭授权页、原更新 Activity 返回前台时，会清除标记；打开系统窗口失败时同样清除，避免后续无关安装意外拉起客户端。
+
+授权页或安装器打开期间，原生更新操作会暂时锁定，拒绝再次检查、下载或安装，防止重复打开窗口或覆盖安装器正在读取的 APK。原更新 Activity 返回前台后会解锁，并通过 `brclio:update` 重新发送已下载状态，让界面退出安装中的等待状态、恢复安装按钮。在应用进程仍然存在时，取消后可再次安装已校验的下载包。应用进程重启后会清理旧下载缓存，需要重新下载。
+
+安装后自动打开受 Android 的后台 Activity 启动限制约束。Android 15（API 35）模拟器实测：系统已成功覆盖安装，Receiver 也收到广播并消费标记，但 `ActivityTaskManager` 以 `BAL_BLOCK` 拦截自动进入前台。此时请点击系统安装成功页中的“打开”（英文系统为“Open”）；该入口已实际验证，可进入 `0.1.3`（`versionCode 4`），关于窗口版本正确，重启后设置仍保留。不能将启动请求已提交或安装界面已打开视为更新成功，需确认新版客户端实际打开。本地签名包验收不代表所有 Android 版本、厂商设备均能自动返回。[Android 官方后台启动限制](https://developer.android.com/guide/components/activities/secure-bal)、[MY_PACKAGE_REPLACED 广播](https://developer.android.com/reference/android/content/Intent#ACTION_MY_PACKAGE_REPLACED)。
+
+调试包和正式包使用不同包名及签名，因此不能互相作为原位更新安装。
 
 ## 构建
 

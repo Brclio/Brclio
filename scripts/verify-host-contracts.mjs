@@ -129,7 +129,8 @@ try {
       onPaths: () => () => {},
       checkForUpdates: async () => ({ status: 'available', version: '0.1.4' }),
       downloadUpdate: async () => { window.__updateCalls.push('download'); return { status: 'downloaded', version: '0.1.4' }; },
-      installUpdate: async () => { window.__updateCalls.push('install'); return { status: 'installing', message: '安装后尝试自动打开；系统限制时请点击打开。' }; },
+      installUpdate: async () => { window.__updateCalls.push('install'); return { status: 'downloaded', installerOpened: true, message: '安装后尝试自动打开；系统限制时请点击打开。' }; },
+      onUpdateState: callback => { window.__emitUpdate = callback; return () => {}; },
     };
   });
   await updating.goto(url);
@@ -142,6 +143,9 @@ try {
   assert.deepEqual(await updating.evaluate(() => window.__updateCalls), ['download', 'install']);
   assert.match(await updating.locator('#update-status-detail').innerText(), /系统限制时请点击打开/);
   assert.equal(await updating.locator('#check-update').isDisabled(), true);
+  await updating.evaluate(() => window.__emitUpdate({ status: 'downloaded', version: '0.1.4' }));
+  assert.equal(await updating.locator('#check-update').isDisabled(), false);
+  assert.equal(await updating.locator('#install-update').isVisible(), true);
   report.push('one download-and-install click continues to native installation and preserves Android system guidance');
   await updating.close();
 

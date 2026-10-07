@@ -14,6 +14,7 @@ const { createWindowsInstaller } = require('./windows-installer.cjs');
 const { parseRelease, checksumFor, compareVersions } = require('./updater.cjs');
 const { createIntegration, REGISTRY_KEYS, OWNER } = require('./integration.cjs');
 const { createSettingsStore } = require('./settings.cjs');
+const { readWindowsEntries } = require('./windows-registry.cjs');
 
 const run = promisify(execFile);
 const root = path.join(__dirname, '..');
@@ -117,7 +118,9 @@ async function main() {
     const current = await store.read();
     await store.write({ ...current, quoteMode: 'double', separator: 'forward', trailingSlash: true });
     const baselineIntegration = createIntegration({ launch: { executable, appPath: installDirectory, packaged: true } });
-    assert.equal((await baselineIntegration.set(true)).installed, true, 'The fixture must have actual owned HKCU context menus before upgrading.');
+    const seeded = await baselineIntegration.set(true);
+    report.baseline.integration = { status: seeded, unicodeValues: await readWindowsEntries(run, powershell) };
+    assert.equal(seeded.installed, true, 'The fixture must have actual owned HKCU context menus before upgrading.');
     report.checks.push('Legacy configuration and real owned menu keys were seeded directly; the released baseline IPC bug was not bypassed in the new client.');
     const settingsBefore = await fs.readFile(path.join(userData, 'settings.json'), 'utf8');
     await fs.writeFile(path.join(userData, 'user-sentinel.txt'), 'preserve user files');

@@ -243,6 +243,7 @@
         await saveQueue;
         await performUpdate('installUpdate');
       }
+      else if (method === 'installUpdate' && state?.installerOpened) renderUpdate({ ...state, status: 'installing' });
       else if (state?.status) {
         renderUpdate(state);
         if (state.requiresPermission) $('#update-status-detail').textContent = '请在系统设置中允许 Brclio 安装应用，然后返回并再次点击安装。';
