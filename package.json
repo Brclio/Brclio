@@ -1,7 +1,7 @@
 {
   "name": "brclio-toolbox",
   "productName": "Brclio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Brclio 跨平台工具箱 · 从复制路径开始",
   "author": "Brclio",
   "private": true,
@@ -43,9 +43,10 @@
         "dmg",
         "zip"
       ],
-      "identity": null,
+      "identity": "-",
       "artifactName": "Brclio-${version}-mac-${arch}.${ext}",
-      "icon": "resources/icon.icns"
+      "icon": "resources/icon.icns",
+      "hardenedRuntime": false
     },
     "win": {
       "target": [

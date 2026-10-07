@@ -77,8 +77,6 @@ jobs:
             arch: x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -88,8 +86,34 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run sync
-      - name: Build installers without publishing
-        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+      - name: Build Windows installer without publishing
+        if: matrix.platform == 'win'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win --${{ matrix.arch }} --publish never
+      - name: Build and sign macOS installers without publishing
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac --"$BUILD_ARCH" --publish never --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false --config.forceCodeSigning=true
+      - name: Verify final macOS packages and launch the packaged client
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+        run: |
+          node scripts/verify-mac-package.mjs --dir release --version "$RELEASE_VERSION" --arch "$RELEASE_ARCH" --smoke --report "artifacts/mac-package-$RELEASE_ARCH.json"
+      - name: Save macOS package verification report
+        if: always() && matrix.platform == 'mac'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-package-verification-${{ matrix.arch }}
+          path: artifacts/mac-package-${{ matrix.arch }}.json
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.platform }}-${{ matrix.arch }}

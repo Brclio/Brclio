@@ -26,7 +26,9 @@
 | macOS Intel | `Brclio-版本-mac-x64.dmg` | 打开 DMG，将 Brclio 拖入 Applications |
 | Android 8.0+ | `Brclio-版本-android.apk` | 允许当前来源安装应用，交给系统安装器 |
 
-首版 Windows / macOS 安装包未配置开发者代码签名，macOS 未公证。系统可能要求在安全设置中确认安装。macOS 更新会下载并校验 DMG，仍需手动拖入 Applications，然后重新打开软件。Android APK 使用项目固定的私有发布密钥签名，后续更新必须沿用同一密钥。
+macOS 从 v0.1.1 起使用完整的 ad-hoc 应用签名，修复 v0.1.0 的“应用已损坏”打包缺陷；目前尚无 Developer ID 签名和 Apple 公证。首次打开可能提示无法验证开发者：先尝试打开，再到 **系统设置 → 隐私与安全性 → 仍要打开**，确认“打开”。这是对 Brclio 单个应用的允许，详见 [Apple 官方说明](https://support.apple.com/zh-cn/102445)。如果仍提示“已损坏”，请确认已替换为 v0.1.1 或更新版本。
+
+Windows 尚未配置 Authenticode 发行签名。macOS 更新会下载并校验 DMG，仍需手动拖入 Applications，然后重新打开软件。Android APK 使用项目固定的私有发布密钥签名，后续更新必须沿用同一密钥。
 
 右键入口需在软件中点击启用；可随时停用。移动了桌面软件的位置后，可在软件中修复入口。Windows 多选系统菜单目前仅针对单个项目，软件内与 macOS 支持多项路径复制。
 

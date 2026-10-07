@@ -51,6 +51,7 @@ async function main() {
     const platform = await page.evaluate(() => window.brclio.getPlatform());
     assert.equal(platform.platform, process.platform);
     if (packagedExecutable) assert.equal(platform.packaged, true);
+    if (process.env.BRCLIO_SMOKE_VERSION) assert.equal(platform.version, process.env.BRCLIO_SMOKE_VERSION);
     assert.equal((await page.evaluate(() => window.brclio.getSettings())).pathMode, 'absolute');
     const integration = await page.evaluate(() => window.brclio.getIntegrationStatus());
     assert.equal(integration.supported, ['darwin', 'win32'].includes(process.platform));
