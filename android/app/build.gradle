@@ -1,0 +1,100 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+def signingKeys = ['ANDROID_SIGNING_STORE_FILE', 'ANDROID_SIGNING_STORE_PASSWORD',
+                   'ANDROID_SIGNING_KEY_ALIAS', 'ANDROID_SIGNING_KEY_PASSWORD']
+def signingValues = signingKeys.collectEntries { [(it): System.getenv(it)] }
+def hasReleaseSigning = signingValues.values().every { it != null && !it.isBlank() }
+
+// Gradle can build independently from npm; both clients use the same source UI.
+def syncWebAssets = tasks.register('syncWebAssets', Sync) {
+    from(rootProject.projectDir.parentFile) {
+        include 'web/**', 'core/**'
+        exclude 'web/path-engine.js'
+    }
+    from(new File(rootProject.projectDir.parentFile, 'core')) {
+        include 'path-engine.cjs'
+        rename 'path-engine.cjs', 'path-engine.js'
+        into 'web'
+    }
+    into layout.projectDirectory.dir('src/main/assets')
+    doFirst {
+        if (!new File(rootProject.projectDir.parentFile, 'web/index.html').isFile()) {
+            throw new GradleException('Missing shared web/index.html.')
+        }
+        if (!new File(rootProject.projectDir.parentFile, 'core/path-engine.cjs').isFile()) {
+            throw new GradleException('Missing shared core/path-engine.cjs.')
+        }
+    }
+}
+
+android {
+    namespace 'com.brclio.toolbox'
+    compileSdk 35
+    buildToolsVersion '35.0.0'
+
+    defaultConfig {
+        applicationId 'com.brclio.toolbox'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+    }
+
+    buildFeatures { buildConfig true }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile rootProject.file(signingValues.ANDROID_SIGNING_STORE_FILE)
+                storePassword signingValues.ANDROID_SIGNING_STORE_PASSWORD
+                keyAlias signingValues.ANDROID_SIGNING_KEY_ALIAS
+                keyPassword signingValues.ANDROID_SIGNING_KEY_PASSWORD
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
+        release {
+            minifyEnabled false
+            if (hasReleaseSigning) signingConfig signingConfigs.release
+        }
+    }
+
+    lint { abortOnError true }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+tasks.named('preBuild').configure { dependsOn syncWebAssets }
+
+// A release must be signed explicitly; do not label an unsigned APK as release.
+gradle.taskGraph.whenReady { graph ->
+    if (!hasReleaseSigning && graph.allTasks.any {
+        it.project == project && it.name in ['packageRelease', 'assembleRelease', 'bundleRelease']
+    }) {
+        throw new GradleException('Release signing requires four ANDROID_SIGNING_* variables. See docs/android.md.')
+    }
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+    implementation 'androidx.core:core:1.15.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20250517'
+}

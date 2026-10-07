@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<!-- Adapted from Brclio Design System assets/template-app.html. © Brclio · CC BY-NC-SA 4.0 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="theme-color" content="#fefcf6">
+  <title>Brclio · 复制路径</title>
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="path-engine.js" defer></script>
+  <script src="bridge.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="6" height="6" rx="1.5"/><rect x="14.5" y="3.5" width="6" height="6" rx="1.5"/><rect x="3.5" y="14.5" width="6" height="6" rx="1.5"/><rect x="14.5" y="14.5" width="6" height="6" rx="1.5"/></symbol>
+    <symbol id="i-path" viewBox="0 0 24 24"><path d="M4 7h6a3 3 0 0 1 3 3v4a3 3 0 0 0 3 3h4M16 13l4 4-4 4"/><circle cx="4" cy="7" r="2.5"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 11h18"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h8m4 0h4M4 17h3m4 0h9"/><circle cx="14" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.2"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 14h8m-8 3h5"/></symbol>
+    <symbol id="i-mouse" viewBox="0 0 24 24"><path d="m5 3 14 9-7 1-3 7Z"/><path d="m13 14 5 7"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1Zm0 0v15"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></symbol>
+  </defs></svg>
+
+  <aside class="app-sidebar" aria-label="主导航">
+    <a class="brand" href="#copy" aria-label="Brclio首页"><span class="brand-mark">b<span>.</span></span><span><strong>Brclio</strong><small>你的日常，小事顺手。</small></span></a>
+    <button class="search-trigger" id="open-search"><svg class="icon"><use href="#i-search"/></svg><span>搜索工具</span><kbd id="search-shortcut">⌘ K</kbd></button>
+    <p class="nav-label">工作空间 <span>WORKSPACE</span></p>
+    <nav class="nav-main">
+      <button class="nav-item" data-view="tools"><svg class="icon"><use href="#i-grid"/></svg>全部工具<span class="nav-count">1</span></button>
+      <div class="nav-divider"></div>
+      <p class="nav-label tools-label">文件工具</p>
+      <button class="nav-item active" data-view="copy"><svg class="icon"><use href="#i-path"/></svg>复制路径<span class="active-dot"></span></button>
+    </nav>
+    <div class="sidebar-note"><svg class="icon"><use href="#i-spark"/></svg><p>从一个小工具开始。<br><span>好用的功能，会慢慢长出来。</span></p></div>
+    <nav class="nav-bottom">
+      <button class="nav-item" data-view="settings"><svg class="icon"><use href="#i-sliders"/></svg>通用设置</button>
+      <button class="nav-item" id="about-button"><svg class="icon"><use href="#i-info"/></svg>关于 Brclio</button>
+    </nav>
+    <div class="platform-status"><span class="status-dot"></span><span id="platform-label">正在载入</span><span class="version">v0.1.0</span></div>
+  </aside>
+
+  <div class="app-shell">
+    <header class="app-header"><div class="breadcrumbs"><span>工具箱</span><svg class="icon"><use href="#i-chevron"/></svg><strong id="breadcrumb-current">复制路径</strong></div><div class="header-actions"><span id="save-status" class="save-status"><svg class="icon"><use href="#i-check"/></svg><span>设置已保存</span></span><button class="icon-button" id="help-button" aria-label="打开使用指南" title="使用指南"><svg class="icon"><use href="#i-book"/></svg></button></div></header>
+    <main class="app-content">
+      <section id="view-copy" class="view active" aria-labelledby="copy-title">
+        <div class="page-heading"><div class="tool-icon"><svg class="icon"><use href="#i-path"/></svg><span class="tiny-spark">✦</span></div><div><div class="eyebrow">FILE TOOLS <span>/ 001</span></div><h1 id="copy-title">复制路径 <span class="version-badge">首个工具</span></h1><p>从文件到剪贴板，只差一次右键。</p></div><button class="text-button heading-help" id="inline-help">使用指南 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+        <div class="integration-banner"><div class="banner-icon"><svg class="icon"><use href="#i-mouse"/></svg></div><div class="banner-copy"><strong id="integration-title">让复制路径，出现在右键菜单里</strong><p id="integration-description">在文件或文件夹上右键，即可按照你的偏好复制路径。</p></div><button class="button button-outline" id="integration-button">启用右键菜单 <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+        <div class="workspace-grid">
+          <section class="settings-panel" aria-labelledby="preferences-title">
+            <div class="panel-heading"><h2 id="preferences-title">复制偏好</h2><span class="small-label">按你的习惯来</span></div>
+            <div class="setting-block"><div class="setting-title"><label id="path-mode-label">路径类型</label><span class="subtle-tag">默认绝对路径</span></div><div class="segmented path-mode" role="group" aria-labelledby="path-mode-label"><label class="segment"><input type="radio" name="pathMode" value="absolute" checked><span><svg class="icon"><use href="#i-folder"/></svg>绝对路径<small>完整的文件位置</small></span></label><label class="segment"><input type="radio" name="pathMode" value="relative"><span><svg class="icon"><use href="#i-path"/></svg>相对路径<small>相对于基准文件夹</small></span></label></div><p class="field-hint" id="path-mode-hint">无论文件在哪里，都能准确找到它。</p><div id="base-path-field" class="base-path-field" hidden><label for="base-path">基准文件夹</label><div class="input-action"><input class="app-input" id="base-path" placeholder="输入基准文件夹的绝对路径" spellcheck="false"><button class="icon-button" id="pick-base" aria-label="选择基准文件夹"><svg class="icon"><use href="#i-folder"/></svg></button></div><p class="field-hint">例如以项目根目录为起点。跨磁盘路径无法转换。</p></div></div>
+            <div class="setting-row"><div><label for="quote-mode">路径引号</label><p>为复制的路径加上一对引号</p></div><select id="quote-mode" class="app-select"><option value="none">不加引号</option><option value="double">双引号 “ ”</option><option value="single">单引号 ‘ ’</option><option value="auto">有空格时加双引号</option></select></div>
+            <div class="setting-row"><div><span id="separator-label" class="setting-label">路径分隔符</span><p>保留系统格式，或自由切换</p></div><div class="segmented compact" role="group" aria-labelledby="separator-label"><label class="segment"><input type="radio" name="separator" value="native" checked><span>系统默认</span></label><label class="segment"><input type="radio" name="separator" value="forward"><span>/</span></label><label class="segment"><input type="radio" name="separator" value="backward"><span>\</span></label></div></div>
+            <div class="setting-row"><div><label for="trailing-slash">文件夹末尾保留分隔符</label><p>一眼分清文件和文件夹</p></div><input class="switch" id="trailing-slash" type="checkbox" role="switch"></div>
+            <div class="setting-row"><div><label for="join-with">多选路径的连接方式</label><p>一次复制多个文件时使用</p></div><select id="join-with" class="app-select"><option value="newline">每条路径一行</option><option value="space">用空格连接</option><option value="comma">用逗号连接</option></select></div>
+            <div class="panel-bottom"><span><svg class="icon"><use href="#i-check"/></svg>修改后自动保存</span><button class="text-button" id="reset-settings">恢复默认</button></div>
+          </section>
+          <aside class="preview-panel" aria-labelledby="preview-title"><div class="panel-heading"><h2 id="preview-title"><span class="preview-dot"></span>实时预览</h2><span class="preview-example-tag" id="source-tag">示例路径</span></div><p class="preview-intro">剪贴板里的内容，长这样。</p><div class="filter-bar" id="sample-platforms" role="group" aria-label="示例路径平台"><button class="filter-tag active" data-sample="darwin">macOS</button><button class="filter-tag" data-sample="win32">Windows</button><button class="filter-tag" data-sample="android">Android</button></div><div class="sample-file"><svg class="icon"><use href="#i-file"/></svg><span id="sample-name">项目说明.md</span><span id="sample-count">1 个文件</span></div><div class="code-clean"><pre id="path-preview" aria-live="polite"></pre><span id="preview-error" role="alert" hidden></span></div><div class="preview-tags"><span id="preview-mode-tag">绝对路径</span><span id="preview-quote-tag">无引号</span><span id="preview-separator-tag">系统分隔符</span></div><button class="button button-primary copy-preview" id="copy-preview"><svg class="icon"><use href="#i-copy"/></svg>复制预览路径</button><p class="preview-footnote" id="preview-footnote">这是一条示例路径，可放心试试。</p><div class="preview-tip"><span class="handwritten">A little tip</span><p>设置一次，之后每次右键<br>都会用你喜欢的格式。</p><svg class="tip-arrow" viewBox="0 0 52 34" fill="none" aria-hidden="true"><path d="M3 5c15 24 36 23 41 3m-10 3 11-6 4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div></aside>
+        </div>
+        <section class="quick-panel" aria-labelledby="quick-title"><div class="quick-heading"><div><h2 id="quick-title">现在就复制一条路径</h2><p>选择文件、文件夹，或粘贴完整路径。桌面客户端也支持拖入。</p></div><div class="picker-actions"><button class="button button-soft" id="pick-files"><svg class="icon"><use href="#i-file"/></svg>选择文件</button><button class="button button-soft" id="pick-folders"><svg class="icon"><use href="#i-folder"/></svg>选择文件夹</button></div></div><div class="path-entry" id="drop-zone"><textarea id="manual-paths" class="app-input" rows="2" aria-label="输入完整路径，每行一条" placeholder="粘贴绝对路径，每行一条…" spellcheck="false"></textarea><button class="button button-primary" id="copy-manual"><svg class="icon"><use href="#i-copy"/></svg>复制路径</button></div><div class="quick-bottom"><span id="selection-status">路径只在本机处理，不会上传。</span><button class="text-button" id="clear-paths" hidden>清空选择</button></div></section>
+        <footer class="page-footer"><span>少一点重复，多一点顺手。</span><span>Made with care by <strong>Brclio</strong><i>✦</i></span></footer>
+      </section>
+
+      <section id="view-tools" class="view" aria-labelledby="tools-title" hidden><div class="page-heading"><div><div class="eyebrow">YOUR EVERYDAY TOOLKIT</div><h1 id="tools-title">小工具，大顺手。</h1><p>把每天重复的小事，交给工具箱。</p></div><span class="tool-total">1 个工具，持续生长中</span></div><label class="tool-search"><svg class="icon"><use href="#i-search"/></svg><input id="tool-filter" placeholder="搜索工具名称或功能" aria-label="筛选工具"></label><div id="tool-results"><button class="tool-card icon-card" data-view="copy"><span class="card-icon-area"><svg class="icon"><use href="#i-path"/></svg></span><span class="card-content"><span class="small-label">文件工具 / 001</span><strong class="card-title">复制路径</strong><span class="card-desc">右键复制文件和文件夹路径，格式由你决定。</span></span><svg class="icon"><use href="#i-arrow"/></svg></button></div><p id="no-tools" class="empty-state" hidden>没有找到这个工具，试试“路径”或“文件”。</p><div class="growing-note"><svg class="icon"><use href="#i-spark"/></svg><h2>下一件顺手的小事，正在路上。</h2><p>工具箱采用独立模块结构，后续功能会陆续加入。</p></div></section>
+      <section id="view-settings" class="view" aria-labelledby="settings-title" hidden><div class="page-heading"><div><div class="eyebrow">MAKE YOURSELF AT HOME</div><h1 id="settings-title">通用设置</h1><p>一个安静、顺手的工具箱。</p></div></div><div class="general-settings"><div class="setting-row"><div><label for="launch-at-login">开机启动</label><p id="login-hint">登录电脑后，自动打开 Brclio</p></div><input class="switch" type="checkbox" role="switch" id="launch-at-login"></div><div class="setting-row"><div><span class="setting-label">当前运行环境</span><p id="environment-detail">正在读取</p></div><svg class="icon"><use href="#i-monitor"/></svg></div><div class="setting-row"><div><span class="setting-label">本地偏好</span><p>路径与格式设置保存在当前设备。</p></div><span class="subtle-tag">无需账号</span></div></div><section class="update-panel" aria-labelledby="update-title"><div class="panel-heading"><h2 id="update-title">版本更新</h2><span class="subtle-tag" id="current-version">v0.1.0</span></div><div class="update-body"><svg class="icon"><use href="#i-spark"/></svg><div><strong id="update-status-title">保持顺手，也保持最新。</strong><p id="update-status-detail">从 GitHub 检查新版本，下载并校验安装包。</p></div></div><div class="update-progress" id="update-progress" hidden><progress id="update-progress-bar" value="0" max="100"></progress><span id="update-progress-label">0%</span></div><p class="update-notes" id="update-notes" hidden></p><div class="update-actions"><button class="button button-outline" id="check-update">检查新版本</button><button class="button button-primary" id="download-update" hidden>下载安装包</button><button class="button button-primary" id="install-update" hidden>打开安装程序</button></div><p class="field-hint" id="update-platform-hint">下载完成后由系统安装程序继续安装。</p></section><div class="privacy-note"><svg class="icon"><use href="#i-check"/></svg><p>复制路径不读取文件内容，也不会上传你的文件。<br>所有路径格式转换都在本机完成。</p></div></section>
+    </main>
+  </div>
+
+  <dialog class="modal-content" id="help-dialog"><div class="dialog-heading"><span class="eyebrow">A SMALL GUIDE</span><button class="icon-button" data-close aria-label="关闭使用指南"><svg class="icon"><use href="#i-close"/></svg></button></div><h2>一条路径，随手复制。</h2><div class="guide-steps"><div><span>01</span><section><h3>设好你喜欢的格式</h3><p>默认复制绝对路径，不带引号。选择相对路径时，请先设置基准文件夹。</p></section></div><div><span>02</span><section><h3>开启系统入口</h3><p>Windows：启用后在文件或文件夹上右键。Windows 11 通常位于“显示更多选项”。macOS：启用后在 Finder 右键的“快速操作”或“服务”中选择“Brclio 复制路径”。</p></section></div><div><span>03</span><section><h3>复制，粘贴，继续工作</h3><p>也可以在软件中选择文件、文件夹，或粘贴路径。安卓通过文件选择器或文件管理器的“分享 → Brclio”导入，再长按选中路径或点击复制。</p></section></div></div><p class="guide-note">安卓部分来源提供内容 URI，软件会保留真实 URI。引号是文本格式，不等于终端命令的安全转义。</p><button class="button button-primary" data-close>知道了，开始用</button></dialog>
+  <dialog class="modal-content about-dialog" id="about-dialog"><div class="dialog-heading"><span class="eyebrow">STAY CURIOUS. KEEP BUILDING.</span><button class="icon-button" data-close aria-label="关闭关于窗口"><svg class="icon"><use href="#i-close"/></svg></button></div><img src="assets/avatar.png" alt="Brclio 头像" width="76" height="76"><h2>Brclio</h2><p>让日常的小事，变得顺手一点。</p><span class="subtle-tag">VERSION 0.1.0</span><div class="about-author"><strong>Brclio · 黄家宝</strong><p>程序员 / 编程教育者 / 作者 / 独立开发者<br>写代码，教编程，做产品</p></div><p class="design-credit">界面基于 Brclio Design System<br>© 2026 Brclio · CC BY-NC-SA 4.0</p><button class="button button-outline" id="about-update">检查新版本</button></dialog>
+  <dialog class="modal-content search-dialog" id="search-dialog"><div class="search-input-wrap"><svg class="icon"><use href="#i-search"/></svg><input id="global-search" placeholder="想找什么工具？" aria-label="搜索工具" autofocus><button class="icon-button" data-close aria-label="关闭搜索"><svg class="icon"><use href="#i-close"/></svg></button></div><button class="search-result" id="search-copy"><svg class="icon"><use href="#i-path"/></svg><span><strong>复制路径</strong><small>文件工具 · 格式设置与快速复制</small></span><kbd>↵</kbd></button><p id="search-empty" class="empty-state" hidden>没有找到相关工具。</p><p class="search-footer">Esc 关闭 <span>Brclio</span></p></dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden><svg class="icon"><use href="#i-check"/></svg><span></span></div>
+</body>
+</html>

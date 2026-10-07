@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Brclio</string>
+    <string name="webview_update">请更新 Android System WebView 后打开 Brclio。</string>
+</resources>

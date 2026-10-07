@@ -1,0 +1,16 @@
+node_modules/
+.signing/
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+release/
+artifacts/
+.DS_Store
+android/.gradle/
+android/local.properties
+android/**/build/
+android/app/src/main/assets/web/
+android/app/src/main/assets/core/
+web/path-engine.js
+*.log

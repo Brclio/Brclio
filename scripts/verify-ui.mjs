@@ -1,0 +1,75 @@
+import { chromium } from '@playwright/test';
+import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
+const url = process.env.BRCLIO_TEST_URL || 'http://127.0.0.1:4173';
+const browser = await chromium.launch({ executablePath: process.env.BRCLIO_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
+const context = await browser.newContext({ viewport: { width: 1440, height: 1060 }, permissions: ['clipboard-read', 'clipboard-write'] });
+const page = await context.newPage();
+const failures = [];
+page.on('pageerror', error => failures.push(error.message));
+page.on('console', message => { if (message.type() === 'error') failures.push(message.text()); });
+const report = [];
+try {
+  await page.goto(url);
+  await page.locator('#platform-label').filter({ hasText: '浏览器预览' }).waitFor();
+  assert.match(await page.locator('#path-preview').innerText(), /^\/Users\/brclio\//);
+  report.push('default absolute path + honest browser environment');
+  await page.locator('#quote-mode').selectOption('double');
+  await page.locator('input[name="separator"][value="forward"]').locator('..').click();
+  await page.locator('#manual-paths').fill('C:\\Projects\\我的项目\\a b.md\nC:\\Projects\\other.txt');
+  assert.equal(await page.locator('#path-preview').innerText(), '"C:/Projects/我的项目/a b.md"\n"C:/Projects/other.txt"');
+  await page.locator('#copy-manual').click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '"C:/Projects/我的项目/a b.md"\n"C:/Projects/other.txt"');
+  report.push('multi-file Windows formatting and actual browser clipboard');
+  await page.locator('input[name="pathMode"][value="relative"]').locator('..').click();
+  assert.equal(await page.locator('#copy-preview').isDisabled(), true);
+  assert.match(await page.locator('#preview-error').innerText(), /基准|参考/);
+  await page.locator('#base-path').fill('C:\\Projects');
+  assert.equal(await page.locator('#path-preview').innerText(), '"我的项目/a b.md"\n"other.txt"');
+  await page.locator('#save-status span').filter({ hasText: '设置已保存' }).waitFor();
+  await page.reload();
+  await page.locator('#base-path').filter({ visible: true }).waitFor();
+  assert.equal(await page.locator('#base-path').inputValue(), 'C:\\Projects');
+  assert.equal(await page.locator('#quote-mode').inputValue(), 'double');
+  report.push('relative validation, base directory, persisted preferences after reload');
+  await page.locator('#reset-settings').click();
+  await page.locator('#quote-mode').selectOption('single');
+  await page.locator('#manual-paths').fill('/Users/brclio/测试目录/');
+  await page.locator('#trailing-slash').check();
+  assert.equal(await page.locator('#path-preview').innerText(), "'/Users/brclio/测试目录/'");
+  report.push('folder suffix preserves metadata and text quotes');
+  await page.locator('#clear-paths').click();
+  await page.locator('#reset-settings').click();
+  await page.locator('#integration-button').click();
+  assert.equal(await page.locator('#help-dialog').isVisible(), true);
+  await page.keyboard.press('Escape');
+  await page.locator('[data-view="tools"]').first().click();
+  await page.locator('#tool-filter').fill('不存在');
+  assert.equal(await page.locator('#no-tools').isVisible(), true);
+  await page.locator('#tool-filter').fill('路径');
+  await page.locator('.tool-card').click();
+  await page.locator('#open-search').click();
+  await page.locator('#global-search').fill('path');
+  await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#view-copy').isVisible(), true);
+  await page.locator('[data-view="settings"]').click();
+  assert.equal(await page.locator('#launch-at-login').isDisabled(), true);
+  await page.locator('[data-view="copy"]').first().click();
+  report.push('tool registry navigation, search, dialog keyboard and capability controls');
+  await mkdir('artifacts', { recursive: true });
+  for (const width of [1440, 900, 390, 320]) {
+    await page.setViewportSize({ width, height: width > 600 ? 1060 : 1000 });
+    const overflow = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
+    assert.ok(overflow.scroll <= overflow.client, `horizontal overflow ${width}: ${JSON.stringify(overflow)}`);
+    await page.screenshot({ path: path.resolve(`artifacts/ui-${width}.png`), fullPage: true });
+    if (width === 390) {
+      await page.locator('#help-button').click();
+      await page.screenshot({ path: path.resolve('artifacts/ui-mobile-guide.png'), fullPage: true });
+      await page.keyboard.press('Escape');
+    }
+  }
+  report.push('1440 / 900 / 390 / 320 layout and screenshots');
+  assert.deepEqual(failures, []);
+  console.log(JSON.stringify({ passed: report, consoleErrors: failures }, null, 2));
+} finally { await context.close(); await browser.close(); }

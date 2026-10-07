@@ -1,0 +1,65 @@
+{
+  "name": "brclio-toolbox",
+  "productName": "Brclio",
+  "version": "0.1.0",
+  "description": "Brclio 跨平台工具箱 · 从复制路径开始",
+  "author": "Brclio",
+  "private": true,
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "sync": "node scripts/sync-web.mjs",
+    "dev": "npm run sync && node scripts/serve.mjs",
+    "start": "npm run sync && electron .",
+    "test": "node --test test/*.test.cjs desktop/*.test.cjs",
+    "test:ui": "npm run sync && node scripts/verify-ui.mjs",
+    "build:mac": "npm run sync && electron-builder --mac --arm64",
+    "build:win": "npm run sync && electron-builder --win --x64",
+    "build:android": "npm run sync && cd android && ./gradlew assembleDebug",
+    "test:hosts": "npm run sync && node scripts/verify-host-contracts.mjs",
+    "test:desktop": "npm run sync && node desktop/smoke.cjs",
+    "test:updates": "npm run sync && node desktop/update-smoke.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "electron": "44.6.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.brclio.toolbox",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "files": [
+      "desktop/**",
+      "core/**",
+      "web/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": null,
+      "artifactName": "Brclio-${version}-mac-${arch}.${ext}",
+      "icon": "resources/icon.icns"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "Brclio-${version}-windows-${arch}.${ext}",
+      "icon": "resources/icon.ico"
+    },
+    "nsis": {
+      "include": "desktop/uninstall.nsh",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
