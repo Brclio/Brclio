@@ -12,7 +12,8 @@ const { promisify } = require('node:util');
 const { _electron: electron } = require('@playwright/test');
 const { createWindowsInstaller } = require('./windows-installer.cjs');
 const { parseRelease, checksumFor, compareVersions } = require('./updater.cjs');
-const { REGISTRY_KEYS, OWNER } = require('./integration.cjs');
+const { createIntegration, REGISTRY_KEYS, OWNER } = require('./integration.cjs');
+const { createSettingsStore } = require('./settings.cjs');
 
 const run = promisify(execFile);
 const root = path.join(__dirname, '..');
@@ -99,14 +100,25 @@ async function main() {
       await page.waitForFunction(() => document.body.dataset.ready === 'true');
       return page;
     }
-    const page = await openClient();
+    await openClient();
     assert.equal(await application.evaluate(({ app }) => app.getVersion()), baselineVersion);
-    await page.evaluate(async () => {
-      const current = await window.brclio.getSettings();
-      await window.brclio.saveSettings({ ...current, quoteMode: 'double', separator: 'forward', trailingSlash: true });
-      const integration = await window.brclio.setIntegration(true);
-      if (!integration.installed) throw new Error('The baseline context menu did not install.');
+    report.baseline ||= { version: baselineVersion, localFixture: true };
+    report.baseline.trustDiagnostics = await application.evaluate(({ app, BrowserWindow }) => {
+      const pathname = process.getBuiltinModule('node:path');
+      const { pathToFileURL } = process.getBuiltinModule('node:url');
+      const window = BrowserWindow.getAllWindows()[0];
+      return { appPath: app.getAppPath(), actualURL: window.webContents.getURL(), frameURL: window.webContents.mainFrame.url,
+        expectedURL: pathToFileURL(pathname.join(app.getAppPath(), 'web', 'index.html')).href };
     });
+    // Seed the legacy installation directly. Its published IPC trust check is
+    // known to fail on this Windows path; do not silently patch the old app.
+    // The new app still has to render and ACK through its real native bridge.
+    const store = createSettingsStore(userData);
+    const current = await store.read();
+    await store.write({ ...current, quoteMode: 'double', separator: 'forward', trailingSlash: true });
+    const baselineIntegration = createIntegration({ launch: { executable, appPath: installDirectory, packaged: true } });
+    assert.equal((await baselineIntegration.set(true)).installed, true, 'The fixture must have actual owned HKCU context menus before upgrading.');
+    report.checks.push('Legacy configuration and real owned menu keys were seeded directly; the released baseline IPC bug was not bypassed in the new client.');
     const settingsBefore = await fs.readFile(path.join(userData, 'settings.json'), 'utf8');
     await fs.writeFile(path.join(userData, 'user-sentinel.txt'), 'preserve user files');
     let menuBefore = await Promise.all(REGISTRY_KEYS.map(async entry => (await run(reg, ['query', entry.key, '/s'])).stdout));

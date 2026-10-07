@@ -52,6 +52,7 @@ async function main() {
   const executable = path.join(applicationPath, 'Contents', 'MacOS', 'Brclio');
   const userData = path.join(temporary, '独立用户资料 space');
   let application;
+  let oldProcess;
   let job;
   let newPid;
   let safeToClean = true;
@@ -69,7 +70,8 @@ async function main() {
     report.package = { path: dmg, size, sha256: expected };
     application = await electron.launch({ executablePath: executable, args: [], cwd: root, timeout: 45000,
       env: { ...process.env, BRCLIO_USER_DATA: userData } });
-    const oldPid = application.process().pid;
+    oldProcess = application.process();
+    const oldPid = oldProcess.pid;
     const page = await application.firstWindow();
     await page.waitForURL('file://**/web/index.html');
     await page.waitForFunction(() => document.body.dataset.initialized === 'true');
@@ -123,7 +125,7 @@ async function main() {
       if (!page.isClosed() && await page.locator('#update-status-title').textContent().catch(() => '') === '这次更新未完成，可以重试。') {
         throw new Error(await page.locator('#update-status-detail').textContent());
       }
-      if (application.process().exitCode !== null) throw new Error('Old fixture exited without preparing an update job.');
+      if (oldProcess.exitCode !== null) throw new Error('Old fixture exited without preparing an update job.');
       return null;
     });
     const configuration = JSON.parse(await fs.readFile(path.join(job, 'configuration.json'), 'utf8'));
@@ -157,7 +159,12 @@ async function main() {
   } finally {
     // The Playwright connection belongs only to the old fixture; replacement
     // deliberately creates a separate GUI process through LaunchServices.
-    if (application && application.process().exitCode === null) await application.close().catch(() => {});
+    if (application && oldProcess?.exitCode === null) await application.close().catch(() => {});
+    if (!job) {
+      const jobsDirectory = path.join(userData, 'updates', 'install-jobs');
+      const entries = await fs.readdir(jobsDirectory).catch(() => []);
+      for (const entry of entries) if (/^mac-[a-f0-9-]{36}$/.test(entry)) job = path.join(jobsDirectory, entry);
+    }
     if (job) {
       const completed = await poll(async () => fs.readFile(path.join(job, 'result.json'), 'utf8').then(JSON.parse, () => null), 180000).catch(() => null);
       safeToClean = Boolean(completed);
@@ -189,7 +196,7 @@ async function main() {
   }
 }
 
-main().catch(error => { report.error = error.stack; console.error(error.stack); process.exitCode = 1; }).finally(async () => {
+main().catch(error => { report.passed = false; report.error = error.stack; console.error(error.stack); process.exitCode = 1; }).finally(async () => {
   await fs.mkdir(path.dirname(reportPath), { recursive: true });
   await fs.writeFile(reportPath, JSON.stringify(report, null, 2));
 });

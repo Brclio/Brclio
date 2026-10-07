@@ -12,6 +12,7 @@ const { getCopyPathsFromURL, getCopyPathsFromURLs } = require('./deep-link.cjs')
 const { createUpdater } = require('./updater.cjs');
 const { createMacInstaller } = require('./mac-installer.cjs');
 const { createWindowsInstaller } = require('./windows-installer.cjs');
+const { isLocalDocument } = require('./trusted-url.cjs');
 
 app.setName('Brclio');
 app.setPath('userData', process.env.BRCLIO_USER_DATA
@@ -110,7 +111,7 @@ function createWindow() {
 }
 
 function trusted(event) {
-  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || event.senderFrame.url.split('#')[0] !== indexURL) {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || !isLocalDocument(event.senderFrame.url, indexPath)) {
     throw new Error('此操作只能由 Brclio 本地窗口发起。');
   }
 }
