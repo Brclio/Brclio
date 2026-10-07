@@ -1,7 +1,7 @@
 {
   "name": "brclio-toolbox",
   "productName": "Brclio",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Brclio 跨平台工具箱 · 从复制路径开始",
   "author": "Brclio",
   "private": true,
@@ -46,7 +46,15 @@
       "identity": "-",
       "artifactName": "Brclio-${version}-mac-${arch}.${ext}",
       "icon": "resources/icon.icns",
-      "hardenedRuntime": false
+      "hardenedRuntime": false,
+      "protocols": [
+        {
+          "name": "Brclio Finder Copy Path",
+          "schemes": [
+            "brclio"
+          ]
+        }
+      ]
     },
     "win": {
       "target": [
@@ -61,6 +69,7 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false
-    }
+    },
+    "afterPack": "scripts/mac-after-pack.cjs"
   }
 }

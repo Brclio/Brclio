@@ -31,7 +31,8 @@ const inputs = {
 };
 const architecture = options.arch === 'x64' ? 'x86_64' : 'arm64';
 const report = { verifiedAt: new Date().toISOString(), version: options.version, architecture: options.arch,
-  requireNotarized: options.requireNotarized, gatekeeperLaunchTested: false, inputs, packages: [], errors: [] };
+  requireNotarized: options.requireNotarized, gatekeeperLaunchTested: false,
+  finderExtensionRegistrationTested: false, finderMenuTested: false, inputs, packages: [], errors: [] };
 
 async function command(executable, args, configuration = {}) {
   try {
@@ -48,6 +49,47 @@ async function required(executable, args, label) {
 }
 function ensure(condition, message) { if (!condition) throw new Error(message); }
 
+async function inspectFinderExtension(app, item) {
+  const extension = path.join(app, 'Contents', 'PlugIns', 'BrclioFinderSync.appex');
+  const result = await required('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(extension, 'Contents', 'Info.plist')], 'Read FinderSync Info.plist');
+  const info = JSON.parse(result.stdout);
+  const details = { bundleId: info.CFBundleIdentifier, version: info.CFBundleShortVersionString,
+    buildVersion: info.CFBundleVersion, extensionPoint: info.NSExtension?.NSExtensionPointIdentifier,
+    principalClass: info.NSExtension?.NSExtensionPrincipalClass };
+  item.finderExtension = details;
+  ensure(details.bundleId === 'com.brclio.toolbox.finder-sync', `Wrong FinderSync bundle ID: ${details.bundleId}`);
+  ensure(details.version === options.version && details.buildVersion === item.buildVersion,
+    `FinderSync version ${details.version} (${details.buildVersion}) differs from containing app ${item.version} (${item.buildVersion}).`);
+  ensure(info.CFBundlePackageType === 'XPC!', `Invalid FinderSync package type: ${info.CFBundlePackageType}`);
+  ensure(info.CFBundleExecutable === 'BrclioFinderSync', `Invalid FinderSync executable: ${info.CFBundleExecutable}`);
+  ensure(details.extensionPoint === 'com.apple.FinderSync', `Wrong FinderSync extension point: ${details.extensionPoint}`);
+  ensure(details.principalClass === 'BrclioFinderSync.FinderSync', `Wrong FinderSync principal class: ${details.principalClass}`);
+  const executable = path.join(extension, 'Contents', 'MacOS', info.CFBundleExecutable);
+  const architectures = (await required('/usr/bin/lipo', ['-archs', executable], 'Read FinderSync architecture')).stdout.trim().split(/\s+/);
+  details.architectures = architectures;
+  ensure(architectures.length === 1 && architectures[0] === architecture, `Wrong FinderSync architecture: ${architectures.join(', ')}`);
+  details.signatureVerification = await command('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=4', extension]);
+  ensure(details.signatureVerification.code === 0, `FinderSync signature verification failed: ${(details.signatureVerification.stderr || details.signatureVerification.stdout).trim()}`);
+  const description = (await required('/usr/bin/codesign', ['-d', '--verbose=4', extension], 'Read FinderSync signature')).stderr;
+  details.signatureDescription = description;
+  ensure(/^Identifier=com\.brclio\.toolbox\.finder-sync$/m.test(description), 'Wrong FinderSync signing identifier.');
+  ensure(!description.includes('Info.plist=not bound') && !description.includes('Sealed Resources=none'), 'FinderSync bundle resources and Info.plist must be sealed.');
+  const parentAdhoc = /^Signature=adhoc$/m.test(item.signatureDescription);
+  const childAdhoc = /^Signature=adhoc$/m.test(description);
+  details.teamIdentifier = /^TeamIdentifier=(.+)$/m.exec(description)?.[1];
+  const parentTeam = /^TeamIdentifier=(.+)$/m.exec(item.signatureDescription)?.[1];
+  ensure(parentAdhoc === childAdhoc && details.teamIdentifier === parentTeam, 'FinderSync and its containing app must use the same signing approach and team.');
+  const entitlements = await required('/usr/bin/codesign', ['-d', '--entitlements', '-', '--xml', extension], 'Read FinderSync sandbox entitlements');
+  const entitlementFile = path.join(temporary, `finder-entitlements-${item.kind}.plist`);
+  await fs.writeFile(entitlementFile, entitlements.stdout);
+  details.entitlements = JSON.parse((await required('/usr/bin/plutil', ['-convert', 'json', '-o', '-', entitlementFile], 'Parse FinderSync sandbox entitlements')).stdout);
+  ensure(details.entitlements['com.apple.security.app-sandbox'] === true, 'FinderSync must retain its own App Sandbox entitlement after parent signing.');
+  ensure(details.entitlements['com.apple.security.files.user-selected.read-only'] === true, 'FinderSync must retain user-selected read-only access.');
+  ensure(details.entitlements['com.apple.security.inherit'] !== true, 'FinderSync must not inherit the non-sandboxed Electron app entitlements.');
+  details.signatureIntegrityPassed = true;
+  console.log(`PASS ${item.kind} FinderSync: ${details.bundleId} ${details.version} ${architecture}; strict signature and independent sandbox valid.`);
+}
+
 async function inspectApp(app, item) {
   const infoResult = await required('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(app, 'Contents', 'Info.plist')], 'Read Info.plist');
   const info = JSON.parse(infoResult.stdout);
@@ -57,6 +99,8 @@ async function inspectApp(app, item) {
   ensure(item.bundleId === 'com.brclio.toolbox', `Wrong bundle ID: ${item.bundleId}`);
   ensure(item.version === options.version, `Wrong app version: ${item.version}, expected ${options.version}`);
   ensure(typeof info.CFBundleExecutable === 'string' && path.basename(info.CFBundleExecutable) === info.CFBundleExecutable, 'Invalid bundle executable.');
+  const schemes = (info.CFBundleURLTypes || []).flatMap(entry => entry.CFBundleURLSchemes || []);
+  ensure(schemes.includes('brclio'), 'The containing app must declare the brclio URL scheme used by FinderSync.');
 
   const executable = path.join(app, 'Contents', 'MacOS', info.CFBundleExecutable);
   const framework = path.join(app, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Electron Framework');
@@ -76,6 +120,7 @@ async function inspectApp(app, item) {
   ensure(item.signatureIdentifier === 'com.brclio.toolbox', `Wrong signing identifier: ${item.signatureIdentifier}`);
   ensure(!description.stderr.includes('Info.plist=not bound') && !description.stderr.includes('Sealed Resources=none'), 'The app has only a linker signature; bundle resources and Info.plist must be sealed.');
   item.signatureIntegrityPassed = true;
+  await inspectFinderExtension(app, item);
 
   const assessment = await command('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', app]);
   item.gatekeeperAssessment = assessment;
@@ -142,4 +187,4 @@ try {
   }
 }
 if (!report.passed) process.exitCode = 1;
-else console.log(`PASS all macOS package integrity checks${options.smoke ? ' and isolated native smoke' : ''}. This does not claim Finder/Gatekeeper launch approval.`);
+else console.log(`PASS all macOS package and FinderSync integrity checks${options.smoke ? ' and isolated native smoke' : ''}. This does not claim Finder menu availability or Gatekeeper launch approval.`);

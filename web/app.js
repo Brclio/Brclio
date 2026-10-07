@@ -122,7 +122,7 @@
     if (available) {
       $('#integration-title').textContent = integration.installed ? '右键菜单已启用，随时复制。' : '让复制路径，出现在右键菜单里';
       $('#integration-description').textContent = integration.description || '在文件或文件夹上右键，按照你的偏好复制路径。';
-      $('#integration-button').innerHTML = (integration.installed ? '停用右键菜单' : integration.stale ? '修复右键菜单' : '启用右键菜单') + '<svg class="icon"><use href="#i-arrow"/></svg>';
+      $('#integration-button').innerHTML = (integration.installed ? '停用右键菜单' : integration.awaitingApproval ? '重新启用 Finder 扩展' : integration.stale ? '修复右键菜单' : '启用右键菜单') + '<svg class="icon"><use href="#i-arrow"/></svg>';
     } else if (platform.platform === 'android') {
       $('#integration-title').textContent = '选中文件，或从文件管理器分享进来';
       $('#integration-description').textContent = '通过“分享 → Brclio”导入路径，长按预览也可以复制。';
@@ -173,8 +173,9 @@
     if (!platform.capabilities?.systemIntegration || !integration.supported) { showDialog('help-dialog'); return; }
     const button = $('#integration-button'); button.disabled = true;
     try {
-      integration = await host.setIntegration(!integration.installed);
-      refreshIntegration(); toast(integration.installed ? '右键入口已安装，请在 Finder 或资源管理器中查看。' : '已停用右键菜单');
+      const enabling = !integration.installed;
+      integration = await host.setIntegration(enabling);
+      refreshIntegration(); toast(!enabling ? '已停用右键菜单' : integration.installed ? '右键入口已启用，请在 Finder 或资源管理器中查看。' : 'Finder 扩展已登记，请在系统设置的 Finder 扩展中允许 Brclio。');
     } catch (error) { toast(error.message, true); }
     finally { button.disabled = false; }
   });

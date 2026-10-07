@@ -1,6 +1,6 @@
 # 发布 Brclio
 
-仓库为 [Brclio/Brclio](https://github.com/Brclio/Brclio)。`main` 推送与面向 `main` 的 PR 会执行 Node 22 单元测试、真实 Chromium 界面/剪贴板测试、原生桥接契约测试，以及 Android 单元测试和 lint。浏览器测试使用 Playwright 安装的 Chromium，不依赖开发机上的 Chrome 路径。
+仓库为 [Brclio/Brclio](https://github.com/Brclio/Brclio)。`main` 推送与面向 `main` 的 PR 会执行 Node 22 单元测试、真实 Chromium 界面/剪贴板测试、原生桥接契约测试、Android 单元测试和 lint，以及两种 Mac 架构的 FinderSync 编译与沙盒签名检查。浏览器测试使用 Playwright 安装的 Chromium，不依赖开发机上的 Chrome 路径。
 
 ## 版本与签名
 
@@ -18,6 +18,8 @@
 同一 Android 应用后续更新必须继续使用同一把签名 key；妥善离线备份 keystore 和密码。流水线缺少任何签名 Secret 会失败，绝不发布 unsigned 或 debug APK。签名文件只写入临时目录，并在作业结束时删除。
 
 macOS 默认采用完整的 ad-hoc 签名，以验证应用及嵌套组件的完整性；该模式关闭 hardened runtime，尚未使用 Developer ID 和 Apple notarization。浏览器下载后的首次启动仍可能需要在系统设置的“隐私与安全性”中允许打开。Windows 安装包尚未使用 Authenticode 签名。SHA-256 清单用于检查下载是否完整，代码签名完整性、运行能力和 Gatekeeper 信任分别验收。
+
+FinderSync 扩展位于 `Brclio.app/Contents/PlugIns/BrclioFinderSync.appex`。顶层 `afterPack` hook 调用唯一的 Swift 编译脚本，先以独立的 App Sandbox 权限签名扩展，再由 electron-builder 封装并签名容器。electron-builder 26 默认跳过 `Contents/PlugIns` 的自动重签；因此扩展必须提前拥有完整的 bundle 签名，不能依赖 Swift linker 签名或 Electron 的继承权限。当前 hook 仅支持容器与扩展均为 ad-hoc 的模式，未来切换 Developer ID 时必须同时升级两者的签名流程。
 
 ### 未来启用 Developer ID 与公证所需材料
 
@@ -44,7 +46,7 @@ macOS 默认采用完整的 ad-hoc 签名，以验证应用及嵌套组件的完
 
 版本不一致、已有标签指向其他提交、测试失败、任一平台构建失败或缺少签名材料时，发布都会停止。首次手动发布可在所有包完成后由 GitHub 创建版本标签；标签发布使用已存在的标签。
 
-发布流程先执行所需检查，再分别构建 Windows x64、macOS Apple silicon、macOS Intel 和 Android。Mac 构建完成后，`scripts/verify-mac-package.mjs` 对构建目录、最终 ZIP 解压件和 DMG 内的 `.app` 执行严格代码签名、bundle ID、版本与架构检查，并启动 ZIP 中的真实客户端验证桥接和复制路径。任一校验失败均阻止安装包上传和发布；JSON 报告保存为 `mac-package-verification-arm64` 或 `mac-package-verification-x64` artifact。
+发布流程先执行所需检查，再分别构建 Windows x64、macOS Apple silicon、macOS Intel 和 Android。Mac 构建完成后，`scripts/verify-mac-package.mjs` 对构建目录、最终 ZIP 解压件和 DMG 内的 `.app` 执行严格代码签名、bundle ID、版本与架构检查，并启动 ZIP 中的真实客户端验证桥接和复制路径。每份包的 FinderSync 扩展也必须通过 ID、版本、入口、架构、严格签名及独立沙盒权限检查，确认容器签名未覆盖扩展权限。任一校验失败均阻止安装包上传和发布；JSON 报告保存为 `mac-package-verification-arm64` 或 `mac-package-verification-x64` artifact。
 
 ad-hoc 模式会记录 Gatekeeper 评估结果，完整性及启动检查通过后仍会明确标注未经 Apple 公证。
 
@@ -60,7 +62,7 @@ ad-hoc 模式会记录 Gatekeeper 评估结果，完整性及启动检查通过�
 - `Brclio-0.1.0-android.apk`：正式签名 APK。
 - `SHA256SUMS.txt`：以上六个包的 SHA-256。
 
-macOS 明确使用 `macos-15`（arm64）和 `macos-15-intel`（x64）原生构建，避免 `macos-latest` 迁移造成架构变化。Android 使用 JDK 17、SDK 35 和 Build Tools 35.0.0；两个工作流均通过 `android-actions/setup-android@v3` 显式安装 SDK 并设置工具路径，固定使用兼容 JDK 17 的 Command-line Tools 16.0（12266719），不依赖 runner 的预装 `sdkmanager`。
+macOS 明确使用 `macos-15`（arm64）和 `macos-15-intel`（x64）原生构建，避免 `macos-latest` 迁移造成架构变化。FinderSync 编译需要完整 Xcode 的 macOS SDK、Swift compiler 和 FinderSync framework；两个 Mac 工作流都会先检查所选 Xcode 工具链。Android 使用 JDK 17、SDK 35 和 Build Tools 35.0.0；两个工作流均通过 `android-actions/setup-android@v3` 显式安装 SDK 并设置工具路径，固定使用兼容 JDK 17 的 Command-line Tools 16.0（12266719），不依赖 runner 的预装 `sdkmanager`。
 
 在只存放本次六个安装包的目录中，可手动生成或校验清单：
 
@@ -75,6 +77,8 @@ node scripts/checksums.mjs release-files --version 0.1.0 --verify
 
 检查 [Releases](https://github.com/Brclio/Brclio/releases/latest) 中七个文件均可下载，版本与提交正确，并以清单校验实际下载。然后分别验证 Windows 安装/右键菜单、两种 Mac 架构的安装/Finder 快速操作，以及 Android 安装/分享/文件夹选择。Mac 还需通过浏览器下载最终包再执行首次打开测试，以覆盖下载隔离标记与 Gatekeeper。CI 中隔离目录启动确认了签名完整性与客户端运行，发布后仍需记录每种设备的安装和首次打开结果。
 
+Finder 第一层菜单需另行在实际 Finder 中验收：先允许打开容器应用，再由用户启用 FinderSync 扩展，选择文件、文件夹和多个项目检查菜单与实际剪贴板内容，并验证设置变化及关闭扩展后的行为。Apple 允许开发测试采用 ad-hoc 签名，但沙盒、扩展注册和 Finder 加载是不同的检查。流水线不会注册或启用系统扩展，报告中的 `finderExtensionRegistrationTested` 和 `finderMenuTested` 因此为 `false`；编译、验签和 Electron smoke 成功不证明 Finder 菜单已可用。
+
 软件更新功能依赖公开 Release 的固定资产名称和 `SHA256SUMS.txt`。不要在已发布版本中替换同名安装包；保持 Android 签名连续，并通过新的稳定版本发布更新。
 
-参考：[electron-builder 26 macOS 签名](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/)、[electron-builder 26 公证环境变量](https://www.electron.build/v26/docs/mac/#notarize)、[Apple 代码签名与 Gatekeeper 检查](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html)、[GitHub runner 架构与标签](https://github.com/actions/runner-images/blob/main/README.md)、[Android SDK setup v3](https://github.com/android-actions/setup-android/tree/v3)、[Actions artifact 合并下载](https://github.com/actions/upload-artifact/blob/main/docs/MIGRATION.md)、[GitHub CLI release create](https://cli.github.com/manual/gh_release_create)、[Playwright CI](https://playwright.dev/docs/ci-intro)。
+参考：[Apple FinderSync](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/Finder.html)、[Apple 扩展签名、启用与分发](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/ExtensionCreation.html)、[electron-builder 26 macOS 签名](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/)、[electron-builder 26 公证环境变量](https://www.electron.build/v26/docs/mac/#notarize)、[Apple 代码签名与 Gatekeeper 检查](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html)、[GitHub runner 架构与标签](https://github.com/actions/runner-images/blob/main/README.md)、[Android SDK setup v3](https://github.com/android-actions/setup-android/tree/v3)、[Actions artifact 合并下载](https://github.com/actions/upload-artifact/blob/main/docs/MIGRATION.md)、[GitHub CLI release create](https://cli.github.com/manual/gh_release_create)、[Playwright CI](https://playwright.dev/docs/ci-intro)。

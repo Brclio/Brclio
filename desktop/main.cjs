@@ -8,6 +8,7 @@ const { formatPaths, normalizeSettings } = require('../core/path-engine.cjs');
 const { createSettingsStore } = require('./settings.cjs');
 const { createIntegration } = require('./integration.cjs');
 const { getCopyPaths } = require('./arguments.cjs');
+const { getCopyPathsFromURL, getCopyPathsFromURLs } = require('./deep-link.cjs');
 const { createUpdater } = require('./updater.cjs');
 
 app.setName('Brclio');
@@ -18,12 +19,13 @@ if (process.platform === 'win32') app.setAppUserModelId('com.brclio.toolbox');
 
 let initialPaths;
 let startupError;
-try { initialPaths = getCopyPaths(process.argv); } catch (error) { startupError = error; }
+try { initialPaths = getCopyPaths(process.argv) || (process.platform === 'darwin' ? getCopyPathsFromURLs(process.argv) : null); } catch (error) { startupError = error; }
 const gotLock = app.requestSingleInstanceLock({ copyPaths: initialPaths });
 let mainWindow;
 let pendingPaths = [];
 let copyQueue = Promise.resolve();
 let idleExit;
+const pendingOpenURLs = [];
 const indexPath = path.join(__dirname, '..', 'web', 'index.html');
 const indexURL = pathToFileURL(indexPath).href;
 const settings = createSettingsStore(app.getPath('userData'));
@@ -160,6 +162,21 @@ function copyFromMenu(paths) {
 if (!gotLock) {
   app.quit();
 } else {
+  app.on('open-url', (event, value) => {
+    event.preventDefault();
+    try {
+      const paths = getCopyPathsFromURL(value);
+      if (!paths) return;
+      if (!app.isReady()) pendingOpenURLs.push(paths);
+      else {
+        if (!mainWindow && process.platform === 'darwin') app.dock?.hide();
+        copyFromMenu(paths);
+      }
+    } catch (error) {
+      if (!app.isReady()) startupError = error;
+      else { createWindow(); dialog.showErrorBox('无法复制路径', error.message); }
+    }
+  });
   app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => {
     const selected = additionalData?.copyPaths;
     if (Array.isArray(selected) && selected.length && selected.every(item => typeof item === 'string' && !item.includes('\0'))) {
@@ -176,9 +193,10 @@ if (!gotLock) {
     if (startupError) {
       createWindow();
       dialog.showErrorBox('无法复制路径', startupError.message);
-    } else if (initialPaths) {
+    } else if (initialPaths || pendingOpenURLs.length) {
       if (process.platform === 'darwin') app.dock?.hide();
-      copyFromMenu(initialPaths);
+      if (initialPaths) copyFromMenu(initialPaths);
+      for (const paths of pendingOpenURLs.splice(0)) copyFromMenu(paths);
     } else createWindow();
   }).catch(error => { console.error(error); app.quit(); });
   app.on('activate', () => createWindow());

@@ -83,3 +83,34 @@ jobs:
       - name: Test and lint
         working-directory: android
         run: bash gradlew --no-daemon testDebugUnitTest lintDebug
+
+  mac-extension:
+    name: FinderSync compile and sandbox signature (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check the full Xcode toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-path
+          xcrun swiftc --version
+      - name: Verify Finder selections and URL payloads in native Swift
+        run: node native/macos/test.mjs
+      - name: Compile and strictly verify the native extension
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          BUILD_VERSION="$(node -p 'require("./package.json").version')"
+          node scripts/build-mac-finder-extension.mjs --arch "$BUILD_ARCH" --version "$BUILD_VERSION" --output "$RUNNER_TEMP/BrclioFinderSync.appex"

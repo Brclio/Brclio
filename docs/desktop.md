@@ -11,7 +11,7 @@ npm run build:mac
 npm run build:win
 ```
 
-系统右键集成默认关闭。在软件内手动启用后，再从 Finder 或资源管理器调用。先将安装版放在固定位置，例如 macOS 的 `/Applications`；移动软件后重新启用集成可更新启动位置。开发模式也可测试集成，但其入口依赖本机 Electron 和当前源码目录，不适合分发。
+系统右键集成默认关闭。在软件的“复制路径”页面点击“启用右键菜单”后，再从 Finder 或资源管理器调用。先将安装版放在固定位置，例如 macOS 的 `/Applications`；移动软件后重新启用集成可更新启动位置。macOS 菜单需要完整安装版内的 Finder Sync 扩展，`npm start` 开发预览不会安装 Finder 菜单。Windows 开发模式也可测试集成，但其入口依赖本机 Electron 和当前源码目录，不适合分发。
 
 ## Windows
 
@@ -29,21 +29,27 @@ npm run build:win
 
 ## macOS
 
-在当前用户的 `~/Library/Services/Brclio Copy Path.workflow` 安装 Automator 快速操作。选中文件或文件夹后，从右键菜单的“快速操作”或“服务”选择“复制路径 · Brclio”。此方式使用 Finder 选中项，不在 Finder 空白处提供菜单。
+从 v0.1.2 起，macOS 使用安装版内的 `Brclio.app/Contents/PlugIns/BrclioFinderSync.appex`。启用后，在 Finder **第一层右键菜单**选择“复制路径 · Brclio”。选中文件、文件夹或多个项目时复制选中路径；在文件夹空白处调用时复制当前文件夹路径。
 
-工作流使用系统“运行 Shell 脚本”动作并选择“作为参数”传入输入；固定程序位置使用 POSIX 引号处理，选中路径通过 `"$@"` 原样传递，文件名中的空格、中文、引号、`&`、`$()` 不作为脚本执行。工作流通过公开 AppKit `NSUpdateDynamicServices()` 刷新服务列表，不要求控制 Finder 的自动化权限。
+先将 Brclio 放入 `/Applications` 并打开，再在“复制路径”页面点击“启用右键菜单”。首次打开的 Gatekeeper 允许与 Finder 扩展批准是两个独立步骤：如果菜单仍未显示，请在系统设置中搜索“扩展”，允许 Brclio 的 Finder 扩展，再返回软件重新启用。不同 macOS 版本的分类可能为“Finder”或“文件提供程序”，通常位于“通用 → 登录项与扩展”。软件显示已登记或已启用，只表示注册与启用状态，仍需在实际 Finder 中检查菜单并试复制。
 
-菜单未显示时，请在系统设置中搜索“服务”或“Finder 扩展”，检查该快速操作是否启用；macOS 版本不同，相关开关的位置可能不同。安装状态表示工作流文件与当前软件位置一致，系统设置可能仍单独禁用此服务。停用集成会删除这个带 Brclio 标记的工作流。macOS 拖走 `.app` 不会触发卸载钩子，删除软件前可先在设置中停用集成；也可手动移除上述单个工作流。
+扩展通过公开 `NSWorkspace` API 向所在容器应用发送定向 URL 事件，携带选中的绝对路径；主应用沿用已保存的格式设置并写入剪贴板。容器位置从扩展所在的应用包确定，不依赖默认 URL handler，也不通过 shell 执行文件名。扩展具有独立 App Sandbox 权限，不申请控制 Finder 的自动化权限。
+
+旧版安装的服务位于 `~/Library/Services/Brclio Copy Path.workflow`。新菜单启用成功或停用集成时，会自动移除其中带 `Contents/brclio-owner.json` 且 `owner` 为 `com.brclio.toolbox` 的旧工作流，避免残留重复入口。未标记或属于其它应用的同名工作流、其它 Services 均保留。停用新的集成会禁用 Finder 扩展。macOS 拖走 `.app` 不会触发卸载钩子，删除软件前可先停用右键菜单。
+
+Finder Sync 提供的是受监控目录中的菜单扩展，不能保证所有 Finder 位置都显示。部分特殊 Applications 视图、虚拟目录或云盘视图可能受系统限制；多个扩展覆盖同一目录也可能冲突。普通实体目录、Desktop 和外置卷需要分别验证，根目录覆盖登记不代表所有位置均可用。[Apple DTS 对覆盖范围的说明](https://developer.apple.com/forums/thread/766680)
 
 ## 软件关闭时也可使用
 
-系统入口调用：
+Windows 右键入口和桌面命令行复制使用：
 
 ```sh
 "/path/to/Brclio" --copy-path -- "/absolute/path/to/item"
 ```
 
-软件会读取已保存设置、判断文件夹类型、生成路径文本并写入系统剪贴板。成功后不打开窗口；已有软件进程时，使用 `requestSingleInstanceLock` 的 `additionalData` 传递原始路径数组，由主进程完成复制。这样避开 Electron 第二实例 `argv` 的重排及额外 Chromium 参数。格式化失败时保留剪贴板内容，打开工具箱说明原因，用户可调整相对路径基准目录后重试。
+macOS Finder 扩展通过定向 URL 事件调用同一复制流程。主进程在应用启动早期接收 `open-url`，启动未完成时先排队处理，因此应用关闭和已运行两种状态均可使用。
+
+软件会读取已保存设置、判断文件夹类型、生成路径文本并写入系统剪贴板。成功后不打开工具窗口；命令行启动遇到已有软件进程时，使用 `requestSingleInstanceLock` 的 `additionalData` 传递原始路径数组，由主进程完成复制。这样避开 Electron 第二实例 `argv` 的重排及额外 Chromium 参数。格式化失败时保留剪贴板内容，打开工具箱说明原因，用户可调整相对路径基准目录后重试。
 
 “带引号”是路径文本的包裹规则，不代表可以把任何带引号路径直接当作终端命令执行。
 
@@ -68,13 +74,14 @@ macOS 安装按钮打开校验通过的 DMG，由用户将 Brclio 拖入 Applica
 ```sh
 node --test desktop/*.test.cjs
 node desktop/smoke.cjs
+node native/macos/test.mjs  # macOS：Finder 扩展的独立原生测试
 ```
 
-单元测试覆盖命令行参数与特殊文件名、设置持久化与并发写入、损坏配置保留、Windows 当前用户注册表安装/移除/碰撞/失败回滚，以及 macOS 临时 Services 目录的安装/移除/位置变化。在 macOS 上还实际运行临时 Automator 工作流，验证中文及特殊文件名作为单个参数传递。更新测试使用模拟的正式 Release 和安装包，覆盖下载完整性、文件篡改、失败清理、重试和地址校验。
+单元测试检查命令行参数与特殊文件名、设置持久化与并发写入、损坏配置保留、Windows 当前用户注册表安装/移除/碰撞/失败回滚。macOS 集成测试使用隔离目录和替身命令检查 Finder 扩展注册、启用状态与旧 Services 的归属清理；原生测试检查菜单选择和路径 URL 编解码。这些测试不会启用本机 Finder 扩展。更新测试使用模拟的正式 Release 和安装包，检查下载完整性、文件篡改、失败清理、重试和地址校验。
 
-原生 smoke 测试在临时用户数据目录启动真实 Electron，检查本地桥、设置持久化、剪贴板、文件及文件夹元数据、第二实例和软件关闭时的命令行复制。测试结束会恢复原剪贴板的所有可读取格式。测试不向当前用户的真实 Finder 服务目录或注册表安装入口。
+原生 smoke 测试在临时用户数据目录启动真实 Electron，检查本地桥、设置持久化、剪贴板、文件及文件夹元数据、第二实例和软件关闭时的复制调用。测试结束会恢复原剪贴板的所有可读取格式。测试不向当前用户注册、启用 Finder 扩展或安装注册表入口。
 
-Electron 端到端测试可设置 `BRCLIO_USER_DATA` 为临时绝对目录来隔离偏好设置和单实例锁。安装包构建成功不代表目标系统验收成功；还需在对应 Windows/macOS 环境检查菜单可见性、软件关闭/运行两种状态的剪贴板结果、重启后的设置和卸载清理。
+Electron 端到端测试可设置 `BRCLIO_USER_DATA` 为临时绝对目录来隔离偏好设置和单实例锁。安装包构建、签名检查和扩展注册成功不代表目标系统验收成功；还需在对应 Windows/macOS 环境检查菜单可见性、软件关闭/运行两种状态的剪贴板结果、重启后的设置和卸载清理。macOS 应实际右键文件、文件夹、多选和空白处，确认第一层菜单及格式设置生效，并验证停用后入口消失。
 
 ## 官方实现依据
 
@@ -85,6 +92,7 @@ Electron 端到端测试可设置 `BRCLIO_USER_DATA` 为临时绝对目录来隔
 - [Microsoft 扩展快捷菜单](https://learn.microsoft.com/en-us/windows/win32/shell/context)：静态 verb、命令和路径引号。
 - [Microsoft 创建快捷菜单处理程序](https://learn.microsoft.com/en-us/windows/win32/shell/context-menu-handlers)：当前用户 `HKCU\Software\Classes` 注册。
 - [Microsoft Windows 11 应用体验规范](https://github.com/MicrosoftDocs/windows-dev-docs/blob/docs/hub/apps/get-started/best-practices.md)：经典菜单通过“显示更多选项”访问。
-- [Apple 创建 Automator 工作流](https://support.apple.com/guide/automator/create-workflows-aut7cac58839/mac)：快速操作用于 Finder、服务及快速操作菜单。
-- [Apple 使用脚本动作](https://support.apple.com/guide/automator/use-scripts-aut4bb6b2b4f/mac)：系统“运行 Shell 脚本”动作。
-- [Apple NSUpdateDynamicServices](https://developer.apple.com/documentation/appkit/nsupdatedynamicservices())：刷新动态服务。
+- [Apple Finder Sync 扩展](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/Finder.html)：受监控目录中的 Finder 菜单和选中项。
+- [Apple 扩展的签名、启用和分发](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/ExtensionCreation.html)：容器与扩展的签名方式及用户批准。
+- [Apple NSWorkspace 定向打开 URL](https://developer.apple.com/documentation/appkit/nsworkspace/open(_:withApplicationAt:configuration:completionHandler:))：向指定容器应用传递复制路径事件。
+- [Apple 沙盒调用者的命令行参数限制](https://developer.apple.com/documentation/appkit/nsworkspace/openconfiguration/arguments)：Finder 扩展不依赖会被忽略的 `arguments`。

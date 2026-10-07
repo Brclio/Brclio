@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+    <key>CFBundleDisplayName</key><string>Brclio 复制路径</string>
+    <key>CFBundleExecutable</key><string>BrclioFinderSync</string>
+    <key>CFBundleIdentifier</key><string>com.brclio.toolbox.finder-sync</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>BrclioFinderSync</string>
+    <key>CFBundlePackageType</key><string>XPC!</string>
+    <key>CFBundleShortVersionString</key><string>__VERSION__</string>
+    <key>CFBundleVersion</key><string>__VERSION__</string>
+    <key>LSMinimumSystemVersion</key><string>12.0</string>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionAttributes</key><dict/>
+        <key>NSExtensionPointIdentifier</key><string>com.apple.FinderSync</string>
+        <key>NSExtensionPrincipalClass</key><string>BrclioFinderSync.FinderSync</string>
+    </dict>
+</dict>
+</plist>

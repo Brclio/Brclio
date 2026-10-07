@@ -19,13 +19,17 @@ async function main() {
     const page = await application.firstWindow();
     await page.waitForURL('file://**/web/index.html');
     await page.waitForFunction(() => document.body.dataset.ready === 'true');
+    const currentVersion = await application.evaluate(({ app }) => app.getVersion());
+    const versionParts = /^(\d+)\.(\d+)\.(\d+)$/.exec(currentVersion);
+    assert.ok(versionParts, `Expected a stable version for update smoke; received ${currentVersion}`);
+    const updateVersion = `${versionParts[1]}.${versionParts[2]}.${Number(versionParts[3]) + 1}`;
     const fixtureText = 'fixture data '.repeat(90000);
     await application.evaluate(({ net, shell }, fixture) => {
       const payload = new TextEncoder().encode(fixture.text);
       const hash = fixture.hash;
-      const assetName = `Brclio-0.1.1-mac-${fixture.architecture}.dmg`;
-      const prefix = 'https://github.com/Brclio/Brclio/releases/download/v0.1.1/';
-      const release = { tag_name: 'v0.1.1', draft: false, prerelease: false, body: '原生 UI 更新验证。', assets: [
+      const assetName = `Brclio-${fixture.version}-mac-${fixture.architecture}.dmg`;
+      const prefix = `https://github.com/Brclio/Brclio/releases/download/v${fixture.version}/`;
+      const release = { tag_name: `v${fixture.version}`, draft: false, prerelease: false, body: '原生 UI 更新验证。', assets: [
         { name: assetName, size: payload.length, browser_download_url: prefix + assetName, digest: `sha256:${hash}` },
         { name: 'SHA256SUMS.txt', size: 100, browser_download_url: prefix + 'SHA256SUMS.txt' },
       ] };
@@ -44,10 +48,10 @@ async function main() {
         return new Response(stream);
       };
       shell.openPath = async filename => { globalThis.__updateSmoke.opened.push(filename); return ''; };
-    }, { text: fixtureText, hash: crypto.createHash('sha256').update(fixtureText).digest('hex'), architecture: process.arch });
+    }, { text: fixtureText, hash: crypto.createHash('sha256').update(fixtureText).digest('hex'), architecture: process.arch, version: updateVersion });
     await page.click('[data-view="settings"]');
     await page.click('#check-update');
-    await expect(page.locator('#update-status-title')).toHaveText('v0.1.1 已经准备好。');
+    await expect(page.locator('#update-status-title')).toHaveText(`v${updateVersion} 已经准备好。`);
     assert.equal(await application.evaluate(() => globalThis.__updateSmoke.calls.length), 1);
     await page.click('#download-update');
     await expect(page.locator('#update-progress')).toBeVisible();

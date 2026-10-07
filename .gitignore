@@ -14,3 +14,4 @@ android/app/src/main/assets/web/
 android/app/src/main/assets/core/
 web/path-engine.js
 *.log
+native/macos/build/

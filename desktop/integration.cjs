@@ -6,6 +6,7 @@ const os = require('node:os');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { launchCommand } = require('./arguments.cjs');
+const { createFinderExtension } = require('./finder-extension.cjs');
 
 const OWNER = 'com.brclio.toolbox';
 const MENU_LABEL = '复制路径 · Brclio';
@@ -82,6 +83,7 @@ function createIntegration(options) {
   const markerPath = path.join(workflowPath, 'Contents', 'brclio-owner.json');
   const entries = windowsEntries(launch);
   let pending = Promise.resolve();
+  const finder = platform === 'darwin' ? createFinderExtension({ launch, run }) : null;
 
   async function query(key, name) {
     try {
@@ -112,20 +114,7 @@ function createIntegration(options) {
     }
     if (platform === 'darwin') {
       const marker = await readMarker();
-      const owned = marker?.owner === OWNER;
-      const expected = macWorkflow(launch);
-      let content = '';
-      let info = '';
-      if (owned) {
-        try {
-          content = await fs.readFile(path.join(workflowPath, 'Contents', 'document.wflow'), 'utf8');
-          info = await fs.readFile(path.join(workflowPath, 'Contents', 'Info.plist'), 'utf8');
-        }
-        catch (error) { if (error.code !== 'ENOENT') throw error; }
-      }
-      const installed = owned && content === expected.document && info === expected.info;
-      return { installed, supported: true, stale: owned && !installed, menuLabel: MENU_LABEL, location: workflowPath,
-        description: installed ? '在 Finder 选中文件或文件夹，右键 → 快速操作或服务 → 复制路径 · Brclio。菜单未出现时，检查系统设置中的服务开关。' : '启用后会添加 Finder 快速操作，可在选中文件或文件夹后使用。' };
+      return { ...await finder.status(), legacyServiceInstalled: marker?.owner === OWNER };
     }
     return { installed: false, supported: false, description: '此平台暂无系统右键集成，可在软件中选择路径并复制。' };
   }
@@ -180,7 +169,7 @@ function createIntegration(options) {
     return status();
   }
 
-  async function setMac(enabled) {
+  async function setMacService(enabled) {
     const marker = await readMarker();
     const exists = await fs.lstat(workflowPath).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
     if (exists && marker?.owner !== OWNER) throw new Error('发现不属于 Brclio 的同名快速操作，已保留原文件。');
@@ -207,6 +196,16 @@ function createIntegration(options) {
       throw error;
     } finally { await fs.rm(staging, { recursive: true, force: true }); }
     await updateMacServices();
+    return status();
+  }
+
+  async function setMac(enabled) {
+    const result = await finder.set(enabled);
+    // Only remove our marked legacy workflow after enabling the direct menu,
+    // or when the user disables integration. Other Services are preserved.
+    if (!enabled || result.installed) {
+      if ((await readMarker())?.owner === OWNER) await setMacService(false);
+    }
     return status();
   }
 
