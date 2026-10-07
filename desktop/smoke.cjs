@@ -32,7 +32,9 @@ async function main() {
   try {
     observer = await electron.launch({ args: [driver], cwd: root, timeout: 45000 });
     await observer.evaluate(async ({ clipboard, ClipboardItem }) => {
-      const items = await clipboard.read();
+      // Electron can represent an empty system clipboard with an item that has
+      // zero MIME types; ClipboardItem cannot be constructed from that item.
+      const items = (await clipboard.read()).filter(item => item.types.length > 0);
       globalThis.__brclioClipboardBackup = await Promise.all(items.map(async item => {
         const payloads = {};
         for (const type of item.types) {
