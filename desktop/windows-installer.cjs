@@ -6,6 +6,21 @@ const crypto = require('node:crypto');
 const { createReadStream } = require('node:fs');
 const { spawn } = require('node:child_process');
 
+// PowerShell 5.1 silently exits before -File under libuv's DETACHED_PROCESS.
+// A normal hidden launcher can run PowerShell, then create the real helper via
+// .NET. Grandchildren are outside libuv's kill-on-parent-exit job, so the helper
+// survives Brclio quitting without depending on a console window.
+const LAUNCHER = String.raw`param([Parameter(Mandatory=$true)][string]$Configuration)
+$ErrorActionPreference = 'Stop'
+$start = New-Object Diagnostics.ProcessStartInfo
+$start.FileName = Join-Path $PSHOME 'powershell.exe'
+$helper = Join-Path ([IO.Path]::GetDirectoryName($Configuration)) 'install.ps1'
+$start.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $helper + '" -Configuration "' + $Configuration + '"'
+$start.UseShellExecute = $false
+$start.CreateNoWindow = $true
+[Diagnostics.Process]::Start($start) | Out-Null
+`;
+
 // Values travel through a JSON file, never through generated PowerShell source
 // or a command shell. The helper lives outside the directory NSIS replaces.
 const HELPER = String.raw`param([Parameter(Mandatory=$true)][string]$Configuration)
@@ -320,12 +335,14 @@ function createWindowsInstaller(options) {
       const working = path.join(jobsDirectory, crypto.randomUUID());
       await fs.mkdir(working, { mode: 0o700 });
       const helperPath = path.join(working, 'install.ps1');
+      const launcherPath = path.join(working, 'launch.ps1');
       const helperLogPath = path.join(working, 'helper-output.log');
       const configurationPath = path.join(working, 'configuration.json');
       const readyPath = path.join(working, 'ready.json');
       const token = crypto.randomBytes(32).toString('hex');
       activeJob = { directory: working, token };
       await fs.writeFile(helperPath, '\uFEFF' + HELPER, { mode: 0o600 });
+      await fs.writeFile(launcherPath, '\uFEFF' + LAUNCHER, { mode: 0o600 });
       await fs.writeFile(configurationPath, JSON.stringify({ ...verified, expected: verified.expected.toLowerCase(), executable: options.executable,
         installDirectory, parentPid, resultPath, readyPath, token, ackPath: path.join(working, 'launch-ack.json'),
         commitPath: path.join(working, 'commit.json'),
@@ -339,10 +356,10 @@ function createWindowsInstaller(options) {
         // pipes so startup failures remain inspectable after either app exits.
         const helperLog = await fs.open(helperLogPath, 'a', 0o600);
         try {
-          child = execute(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helperPath, '-Configuration', configurationPath],
-            { detached: true, windowsHide: true, stdio: ['ignore', helperLog.fd, helperLog.fd] });
+          child = execute(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', launcherPath, '-Configuration', configurationPath],
+            { windowsHide: true, stdio: ['ignore', helperLog.fd, helperLog.fd] });
           child.once('error', error => { failure = error; });
-          child.once('exit', code => { failure ||= new Error(`更新助手已退出（${code}），未开始覆盖安装。`); });
+          child.once('exit', code => { if (code !== 0) failure ||= new Error(`更新助手启动器已退出（${code}），未开始覆盖安装。`); });
         } finally { await helperLog.close(); }
         const deadline = Date.now() + (options.readyTimeout || 120000);
         while (Date.now() < deadline) {
@@ -362,6 +379,13 @@ function createWindowsInstaller(options) {
       } catch (error) {
         child?.kill();
         // Preserve any exported menu backups and diagnostic result for recovery.
+        // An exit can arrive while a preceding ready-file read still returns
+        // ENOENT. Prefer the durable preparation error written before exit.
+        const receipt = await fs.readFile(path.join(working, 'result.json'), 'utf8').then(JSON.parse).catch(() => null);
+        if (receipt?.status === 'error' && typeof receipt.error === 'string') {
+          error = new Error(receipt.error, { cause: error });
+          error.helperResult = receipt;
+        }
         error.jobDirectory = working;
         error.helperOutput = (await fs.readFile(helperLogPath, 'utf8').catch(() => '')).slice(-16 * 1024);
         throw error;
@@ -374,4 +398,4 @@ function createWindowsInstaller(options) {
   return { start, acknowledgeLaunch, readResult, cancelPending, resultPath };
 }
 
-module.exports = { createWindowsInstaller, HELPER };
+module.exports = { createWindowsInstaller, HELPER, LAUNCHER };

@@ -9,7 +9,7 @@ const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { createWindowsInstaller, HELPER } = require('./windows-installer.cjs');
+const { createWindowsInstaller, HELPER, LAUNCHER } = require('./windows-installer.cjs');
 const { QUERY_SCRIPT } = require('./windows-registry.cjs');
 
 async function fixture(t, { readyError, spawnError, readyTimeout } = {}) {
@@ -68,12 +68,12 @@ test('Windows installer handoff waits for helper readiness, guards concurrent re
   assert.match(cfg.token, /^[a-f0-9]{64}$/);
   assert.deepEqual(JSON.parse(await fs.readFile(cfg.commitPath, 'utf8')), { token: cfg.token });
   assert.equal(child().unreferenced, true);
-  assert.equal(calls[0].options.detached, true);
+  assert.equal(calls[0].options.detached, undefined);
   assert.equal(calls[0].options.stdio[0], 'ignore');
   assert.equal(typeof calls[0].options.stdio[1], 'number');
   assert.equal(calls[0].options.stdio[1], calls[0].options.stdio[2]);
   assert.equal(calls[0].options.shell, undefined);
-  assert.deepEqual(calls[0].args.slice(0, 7), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(path.dirname(cfg.readyPath), 'install.ps1')]);
+  assert.deepEqual(calls[0].args.slice(0, 7), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(path.dirname(cfg.readyPath), 'launch.ps1')]);
   assert.equal((await fs.readFile(calls[0].args[6], 'utf8')).charCodeAt(0), 0xfeff, 'Windows PowerShell 5.1 receives a UTF-8 BOM');
 });
 
@@ -130,6 +130,14 @@ test('Windows helper startup errors and preparation failures keep the parent run
   assert.equal(timedOut.child().killed, true);
 });
 
+test('A real helper spawn failure is caught before asynchronous log-handle cleanup', async t => {
+  const { verified, userData, executable } = await fixture(t);
+  const installer = createWindowsInstaller({ platform: 'win32', verified, userData, executable,
+    systemRoot: `C:\\Brclio-missing-${crypto.randomUUID()}`, readyTimeout: 2000 });
+  await assert.rejects(installer.start(verified), error => error.code === 'ENOENT' &&
+    typeof error.jobDirectory === 'string' && typeof error.helperOutput === 'string');
+});
+
 test('Windows result API distinguishes authenticated completion from failure and consumes only on request', async t => {
   const { installer } = await fixture(t);
   await fs.mkdir(path.dirname(installer.resultPath), { recursive: true });
@@ -169,12 +177,31 @@ test('Windows PowerShell parser accepts the complete helper without executing in
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-powershell-parse-'));
   t.after(() => fs.rm(temporary, { recursive: true, force: true }));
   const helper = path.join(temporary, 'helper.ps1');
+  const launcher = path.join(temporary, 'launcher.ps1');
   const registry = path.join(temporary, 'registry.ps1');
   const parser = path.join(temporary, 'parse.ps1');
   await fs.writeFile(helper, '\uFEFF' + HELPER);
+  await fs.writeFile(launcher, '\uFEFF' + LAUNCHER);
   await fs.writeFile(registry, '\uFEFF' + QUERY_SCRIPT);
   await fs.writeFile(parser, 'param([string]$Source)\n$tokens=$null; $errors=$null\n[System.Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors) | Out-Null\nif ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }\n');
   const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-File', parser, helper], { timeout: 30000 });
+  await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-File', parser, launcher], { timeout: 30000 });
   await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-File', parser, registry], { timeout: 30000 });
+});
+
+test('The real hidden PowerShell helper survives its Node parent exiting', { skip: process.platform !== 'win32' }, async t => {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "Brclio launcher 中文 & user's "));
+  t.after(() => fs.rm(temporary, { recursive: true, force: true }));
+  const launcher = path.join(temporary, 'launch.ps1');
+  const marker = path.join(temporary, 'survived.txt');
+  const parent = path.join(temporary, 'parent.cjs');
+  await fs.writeFile(launcher, '\uFEFF' + LAUNCHER);
+  await fs.writeFile(path.join(temporary, 'install.ps1'), '\uFEFF' + 'param([string]$Configuration)\nStart-Sleep -Milliseconds 1000\n[IO.File]::WriteAllText($Configuration, "survived")\n');
+  await fs.writeFile(parent, 'const {spawn}=require("node:child_process"); const [ps,launcher,marker]=process.argv.slice(2); const child=spawn(ps,["-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",launcher,"-Configuration",marker],{windowsHide:true,stdio:"ignore"}); child.once("error",()=>process.exit(1)); child.once("exit",code=>process.exit(code));\n');
+  const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  await promisify(execFile)(process.execPath, [parent, powershell, launcher, marker], { timeout: 15000 });
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline && !await fs.readFile(marker, 'utf8').catch(() => '')) await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(await fs.readFile(marker, 'utf8'), 'survived');
 });

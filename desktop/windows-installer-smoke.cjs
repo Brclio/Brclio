@@ -124,13 +124,14 @@ async function main() {
     report.checks.push('Legacy configuration and real owned menu keys were seeded directly; the released baseline IPC bug was not bypassed in the new client.');
     const settingsBefore = await fs.readFile(path.join(userData, 'settings.json'), 'utf8');
     await fs.writeFile(path.join(userData, 'user-sentinel.txt'), 'preserve user files');
-    let menuBefore = await Promise.all(REGISTRY_KEYS.map(async entry => (await run(reg, ['query', entry.key, '/s'])).stdout));
+    let menuBefore = await readWindowsEntries(run, powershell);
     async function assertPreserved() {
       assert.equal(await fs.readFile(path.join(userData, 'settings.json'), 'utf8'), settingsBefore);
       assert.equal(await fs.readFile(path.join(userData, 'user-sentinel.txt'), 'utf8'), 'preserve user files');
-      assert.deepEqual(await Promise.all(REGISTRY_KEYS.map(async entry => (await run(reg, ['query', entry.key, '/s'])).stdout)), menuBefore);
+      const menus = await readWindowsEntries(run, powershell);
+      assert.deepEqual(menus, menuBefore, 'Exact Unicode menu values must survive the installer and uninstaller.');
       assert.match((await run(reg, ['query', sentinel])).stdout, /unowned sentinel/);
-      for (const entry of REGISTRY_KEYS) assert.match((await run(reg, ['query', entry.key, '/v', 'BrclioOwner'])).stdout, new RegExp(OWNER.replaceAll('.', '\\.')));
+      for (const entry of menus) assert.equal(entry.owner, OWNER);
     }
 
     async function updateWith(installerFile, requestedVersion) {
@@ -145,7 +146,7 @@ async function main() {
         handoff = await helper.start({ filename, version: requestedVersion, expected: hash(bytes), size: bytes.length });
       } catch (error) {
         activeJobDirectory = error.jobDirectory;
-        report.helperStartup = { error: error.message, output: error.helperOutput };
+        report.helperStartup = { error: error.message, result: error.helperResult, output: error.helperOutput };
         throw error;
       }
       const newJob = handoff.jobDirectory;
@@ -210,7 +211,7 @@ async function main() {
     const quotedPage = await openClient();
     assert.equal(await application.evaluate(({ app }) => app.getVersion()), targetVersion);
     await quotedPage.evaluate(() => window.brclio.setIntegration(true));
-    menuBefore = await Promise.all(REGISTRY_KEYS.map(async entry => (await run(reg, ['query', entry.key, '/s'])).stdout));
+    menuBefore = await readWindowsEntries(run, powershell);
     const reinstall = await updateWith(targetInstaller, targetVersion);
     assert.equal(reinstall.status, 'installed', JSON.stringify(reinstall));
     assert.equal(reinstall.launchAcknowledged, true);
