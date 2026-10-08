@@ -73,6 +73,7 @@ test('Windows installer handoff waits for helper readiness, guards concurrent re
   assert.equal(typeof calls[0].options.stdio[1], 'number');
   assert.equal(calls[0].options.stdio[1], calls[0].options.stdio[2]);
   assert.equal(calls[0].options.shell, undefined);
+  assert.equal(Object.keys(calls[0].options.env).some(name => name.toLowerCase() === 'psmodulepath'), false);
   assert.deepEqual(calls[0].args.slice(0, 7), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(path.dirname(cfg.readyPath), 'launch.ps1')]);
   assert.equal((await fs.readFile(calls[0].args[6], 'utf8')).charCodeAt(0), 0xfeff, 'Windows PowerShell 5.1 receives a UTF-8 BOM');
 });

@@ -50,8 +50,15 @@ function Write-Report([string]$destination, [hashtable]$report) {
 }
 
 function Assert-Installer {
-  $file = Get-Item -LiteralPath $cfg.filename
-  if ($file.Length -ne $cfg.size -or (Get-FileHash -LiteralPath $cfg.filename -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cfg.expected) {
+  # Use .NET directly: a PowerShell 7 parent can pass a PSModulePath that does
+  # not expose Windows PowerShell 5.1's Get-FileHash module to this process.
+  $stream = [IO.File]::OpenRead($cfg.filename)
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    $length = $stream.Length
+    $actual = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+  } finally { $sha256.Dispose(); $stream.Dispose() }
+  if ($length -ne $cfg.size -or $actual -ne $cfg.expected) {
     throw '安装包已变更，已停止安装。请重新下载。'
   }
 }
@@ -354,10 +361,13 @@ function createWindowsInstaller(options) {
         const powershell = path.win32.join(options.systemRoot || process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
         // The helper survives this process. Give it file handles rather than
         // pipes so startup failures remain inspectable after either app exits.
+        // Windows PowerShell reconstructs its own module paths rather than
+        // inheriting a possibly incompatible PowerShell 7 module search path.
+        const helperEnvironment = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== 'psmodulepath'));
         const helperLog = await fs.open(helperLogPath, 'a', 0o600);
         try {
           child = execute(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', launcherPath, '-Configuration', configurationPath],
-            { windowsHide: true, stdio: ['ignore', helperLog.fd, helperLog.fd] });
+            { windowsHide: true, env: helperEnvironment, stdio: ['ignore', helperLog.fd, helperLog.fd] });
           child.once('error', error => { failure = error; });
           child.once('exit', code => { if (code !== 0) failure ||= new Error(`更新助手启动器已退出（${code}），未开始覆盖安装。`); });
         } finally { await helperLog.close(); }
