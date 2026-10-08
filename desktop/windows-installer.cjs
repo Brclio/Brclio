@@ -241,11 +241,18 @@ try {
     try { Restore-Installation } catch { $message += ' ' + $_.Exception.Message; $rollbackSucceeded = $false }
     try { Restore-Menus } catch { $message += ' ' + $_.Exception.Message; $rollbackSucceeded = $false }
   }
-  Write-Report $cfg.resultPath @{ status = 'error'; error = $message; phase = $phase; rollbackSucceeded = $rollbackSucceeded; installerStillRunning = $installerRunning }
-  if (-not (Test-Path -LiteralPath $cfg.readyPath)) { Write-Report $cfg.readyPath @{ status = 'error'; error = $message } }
+  $errorReport = @{ status = 'error'; error = $message; phase = $phase; rollbackSucceeded = $rollbackSucceeded; installerStillRunning = $installerRunning }
   if ($parentExited -and -not $installerRunning -and $rollbackSucceeded -and (Test-Path -LiteralPath $cfg.executable -PathType Leaf)) {
-    try { Start-Process -FilePath $cfg.executable -ArgumentList @('--brclio-update-failed') | Out-Null } catch { }
+    try {
+      $restoredProcess = Start-Process -FilePath $cfg.executable -ArgumentList @('--brclio-update-failed') -PassThru
+      $errorReport.rollbackLaunchedPid = $restoredProcess.Id
+      $errorReport.rollbackLaunchedExecutable = $cfg.executable
+    } catch { $errorReport.rollbackLaunchError = $_.Exception.Message }
   }
+  # Publish the final receipt after the restart attempt. Consumers can then
+  # safely act on completion without racing a later recovery launch.
+  Write-Report $cfg.resultPath $errorReport
+  if (-not (Test-Path -LiteralPath $cfg.readyPath)) { Write-Report $cfg.readyPath @{ status = 'error'; error = $message } }
   if ($cfg.showErrors -and $parentExited) {
     try {
       Add-Type -AssemblyName System.Windows.Forms

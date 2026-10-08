@@ -192,6 +192,8 @@ async function main() {
     assert.equal(failure.status, 'error', JSON.stringify(failure));
     assert.equal(failure.phase, 'verifying-install');
     assert.equal(failure.rollbackSucceeded, true);
+    assert.ok(Number.isSafeInteger(failure.rollbackLaunchedPid) && failure.rollbackLaunchedPid > 0, 'Rollback must reopen the restored client before publishing completion.');
+    assert.equal(failure.rollbackLaunchedExecutable.toLowerCase(), executable.toLowerCase());
     report.rollback = failure;
     await assertPreserved();
     await run(powershell, ['-NoProfile', '-NonInteractive', '-File', stop, executable]);
