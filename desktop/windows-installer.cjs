@@ -68,10 +68,10 @@ function Invoke-Native([string]$program, [string[]]$arguments) {
   # turns redirected stderr into ErrorRecords, so inspect the native exit code
   # without treating that success message as a terminating PowerShell error.
   $ErrorActionPreference = 'Continue'
-  $LASTEXITCODE = $null
+  $global:LASTEXITCODE = $null
   & $program @arguments 2>&1 | Out-Null
-  if ($null -eq $LASTEXITCODE) { throw ('无法启动更新所需的系统命令：' + [IO.Path]::GetFileName($program)) }
-  return $LASTEXITCODE
+  if ($null -eq $global:LASTEXITCODE) { throw ('无法启动更新所需的系统命令：' + [IO.Path]::GetFileName($program)) }
+  return $global:LASTEXITCODE
 }
 
 function Save-Menus {

@@ -206,3 +206,16 @@ test('The real hidden PowerShell helper survives its Node parent exiting', { ski
   while (Date.now() < deadline && !await fs.readFile(marker, 'utf8').catch(() => '')) await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(await fs.readFile(marker, 'utf8'), 'survived');
 });
+
+test('Real Windows native command checks accept success stderr and preserve failure exit codes', { skip: process.platform !== 'win32' }, async t => {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-native-exit-codes-'));
+  t.after(() => fs.rm(temporary, { recursive: true, force: true }));
+  const filename = path.join(temporary, 'verify.ps1');
+  const implementation = HELPER.slice(HELPER.indexOf('function Invoke-Native'), HELPER.indexOf('function Save-Menus'));
+  await fs.writeFile(filename, '\uFEFF' + `param([string]$Command)\n$ErrorActionPreference = 'Stop'\n${implementation}\n` +
+    "$success = Invoke-Native $Command @('/d', '/c', 'echo native successful 1>&2 & exit /b 0')\nif ($success -ne 0) { throw 'Native success stderr was incorrectly rejected.' }\n" +
+    "$failure = Invoke-Native $Command @('/d', '/c', 'echo native failed 1>&2 & exit /b 7')\nif ($failure -ne 7) { throw 'Native failure exit code was lost.' }\n" +
+    "$caught = $false\ntry { Invoke-Native ($Command + '.missing') @() | Out-Null } catch { $caught = $true }\nif (-not $caught) { throw 'A missing native executable was incorrectly accepted.' }\nif ($ErrorActionPreference -ne 'Stop') { throw 'Native call changed the outer error policy.' }\n");
+  const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-File', filename, path.join(process.env.SystemRoot, 'System32', 'cmd.exe')], { timeout: 15000 });
+});
