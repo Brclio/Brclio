@@ -63,6 +63,17 @@ function Assert-Installer {
   }
 }
 
+function Invoke-Native([string]$program, [string[]]$arguments) {
+  # reg.exe can print even its success message to stderr. PowerShell 5.1
+  # turns redirected stderr into ErrorRecords, so inspect the native exit code
+  # without treating that success message as a terminating PowerShell error.
+  $ErrorActionPreference = 'Continue'
+  $LASTEXITCODE = $null
+  & $program @arguments 2>&1 | Out-Null
+  if ($null -eq $LASTEXITCODE) { throw ('无法启动更新所需的系统命令：' + [IO.Path]::GetFileName($program)) }
+  return $LASTEXITCODE
+}
+
 function Save-Menus {
   $relativeKeys = @('Software\Classes\*\shell\Brclio.CopyPath', 'Software\Classes\Directory\shell\Brclio.CopyPath', 'Software\Classes\Directory\Background\shell\Brclio.CopyPath')
   $reg = Join-Path $env:SystemRoot 'System32\reg.exe'
@@ -72,8 +83,7 @@ function Save-Menus {
     try { $owner = $key.GetValue('BrclioOwner') } finally { $key.Dispose() }
     if ($owner -ne 'com.brclio.toolbox') { continue }
     $backup = Join-Path $work ('menu-' + $script:backups.Count + '.reg')
-    & $reg export ('HKCU\' + $relative) $backup /y 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw '无法备份 Brclio 右键菜单，尚未开始安装。' }
+    if ((Invoke-Native $reg @('export', ('HKCU\' + $relative), $backup, '/y')) -ne 0) { throw '无法备份 Brclio 右键菜单，尚未开始安装。' }
     $script:backups += @{ relative = $relative; file = $backup }
   }
 }
@@ -87,8 +97,7 @@ function Restore-Menus {
       # Never overwrite a key that another application created meanwhile.
       if ($owner -ne 'com.brclio.toolbox') { continue }
     }
-    & $reg import $backup.file 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw '安装已结束，但无法恢复 Brclio 右键菜单。请重新启用右键菜单。' }
+    if ((Invoke-Native $reg @('import', $backup.file)) -ne 0) { throw '安装已结束，但无法恢复 Brclio 右键菜单。请重新启用右键菜单。' }
   }
 }
 
@@ -115,8 +124,7 @@ function Save-Installation {
       if ($null -eq $exists) { continue }
       $exists.Dispose()
       $backup = Join-Path $work ('registration-' + $script:registrationBackups.Count + '.reg')
-      & $reg export ($hive + '\' + $entry) $backup /y 2>&1 | Out-Null
-      if ($LASTEXITCODE -ne 0) { throw '无法备份安装记录，尚未开始覆盖安装。' }
+      if ((Invoke-Native $reg @('export', ($hive + '\' + $entry), $backup, '/y')) -ne 0) { throw '无法备份安装记录，尚未开始覆盖安装。' }
       $script:registrationBackups += $backup
     }
   }
@@ -124,8 +132,7 @@ function Save-Installation {
   $probe = Join-Path $cfg.installDirectory ('.brclio-write-' + $cfg.token)
   try { [IO.File]::WriteAllText($probe, '') } finally { Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }
   $robocopy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
-  & $robocopy $cfg.installDirectory $cfg.backupDirectory /E /COPY:DAT /DCOPY:DAT /R:1 /W:1 /XJ /NFL /NDL /NJH /NJS /NP 2>&1 | Out-Null
-  if ($LASTEXITCODE -ge 8) { throw '无法备份当前客户端，尚未开始覆盖安装。请检查可用磁盘空间。' }
+  if ((Invoke-Native $robocopy @($cfg.installDirectory, $cfg.backupDirectory, '/E', '/COPY:DAT', '/DCOPY:DAT', '/R:1', '/W:1', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS', '/NP')) -ge 8) { throw '无法备份当前客户端，尚未开始覆盖安装。请检查可用磁盘空间。' }
   $script:backupReady = $true
 }
 
@@ -133,16 +140,14 @@ function Restore-Installation {
   if (-not $script:backupReady -or -not $script:installerStarted) { return }
   if ($null -ne $script:newProcess -and -not $script:newProcess.HasExited) {
     $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
-    & $taskkill /PID $script:newProcess.Id /T /F 2>&1 | Out-Null
+    Invoke-Native $taskkill @('/PID', $script:newProcess.Id, '/T', '/F') | Out-Null
     $script:newProcess.WaitForExit(10000) | Out-Null
   }
   $robocopy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
-  & $robocopy $cfg.backupDirectory $cfg.installDirectory /MIR /COPY:DAT /DCOPY:DAT /R:1 /W:1 /XJ /NFL /NDL /NJH /NJS /NP 2>&1 | Out-Null
-  if ($LASTEXITCODE -ge 8) { throw '无法完整恢复旧版文件。备份仍保留，请关闭 Brclio 后重新安装。' }
+  if ((Invoke-Native $robocopy @($cfg.backupDirectory, $cfg.installDirectory, '/MIR', '/COPY:DAT', '/DCOPY:DAT', '/R:1', '/W:1', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS', '/NP')) -ge 8) { throw '无法完整恢复旧版文件。备份仍保留，请关闭 Brclio 后重新安装。' }
   $reg = Join-Path $env:SystemRoot 'System32\reg.exe'
   foreach ($backup in $script:registrationBackups) {
-    & $reg import $backup 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw '旧版文件已恢复，但安装记录恢复失败。请使用安装程序修复。' }
+    if ((Invoke-Native $reg @('import', $backup)) -ne 0) { throw '旧版文件已恢复，但安装记录恢复失败。请使用安装程序修复。' }
   }
 }
 
