@@ -191,7 +191,8 @@ try {
   if (-not $acknowledged) { throw '新版客户端未确认启动成功，正在恢复旧版。' }
   $launchConfirmed = $true
   $phase = 'complete'
-  $report = @{ status = 'installed'; installerExitCode = $exitCode; launchAcknowledged = $true }
+  $report = @{ status = 'installed'; installerExitCode = $exitCode; launchAcknowledged = $true;
+    launchedPid = $ack.pid; launchedVersion = $ack.version; launchedExecutable = $running.Path }
   try {
     Remove-Item -LiteralPath $cfg.backupDirectory -Recurse -Force
     foreach ($backup in $backups) { Remove-Item -LiteralPath $backup.file -Force }
@@ -201,6 +202,8 @@ try {
   Write-Report $cfg.resultPath $report
 } catch {
   $message = $_.Exception.Message
+  [Console]::Error.WriteLine($_.ToString())
+  [Console]::Error.WriteLine($_.ScriptStackTrace)
   if ($launchConfirmed) {
     # A reporting or cleanup failure must never roll back an acknowledged app.
     try { Write-Report $cfg.resultPath @{ status = 'installed'; launchAcknowledged = $true; warning = $message } } catch { }
@@ -317,6 +320,7 @@ function createWindowsInstaller(options) {
       const working = path.join(jobsDirectory, crypto.randomUUID());
       await fs.mkdir(working, { mode: 0o700 });
       const helperPath = path.join(working, 'install.ps1');
+      const helperLogPath = path.join(working, 'helper-output.log');
       const configurationPath = path.join(working, 'configuration.json');
       const readyPath = path.join(working, 'ready.json');
       const token = crypto.randomBytes(32).toString('hex');
@@ -328,13 +332,18 @@ function createWindowsInstaller(options) {
         backupDirectory: path.join(working, 'previous-app'), showErrors: options.showErrors !== false }), { mode: 0o600 });
       await fs.rm(resultPath, { force: true });
       let child;
+      let failure;
       try {
         const powershell = path.win32.join(options.systemRoot || process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-        child = execute(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helperPath, '-Configuration', configurationPath],
-          { detached: true, windowsHide: true, stdio: 'ignore' });
-        let failure;
-        child.once('error', error => { failure = error; });
-        child.once('exit', code => { failure ||= new Error(`更新助手已退出（${code}），未开始覆盖安装。`); });
+        // The helper survives this process. Give it file handles rather than
+        // pipes so startup failures remain inspectable after either app exits.
+        const helperLog = await fs.open(helperLogPath, 'a', 0o600);
+        try {
+          child = execute(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helperPath, '-Configuration', configurationPath],
+            { detached: true, windowsHide: true, stdio: ['ignore', helperLog.fd, helperLog.fd] });
+          child.once('error', error => { failure = error; });
+          child.once('exit', code => { failure ||= new Error(`更新助手已退出（${code}），未开始覆盖安装。`); });
+        } finally { await helperLog.close(); }
         const deadline = Date.now() + (options.readyTimeout || 120000);
         while (Date.now() < deadline) {
           const ready = await fs.readFile(readyPath, 'utf8').then(text => JSON.parse(text), error => { if (error.code === 'ENOENT') return null; throw error; });
@@ -353,6 +362,8 @@ function createWindowsInstaller(options) {
       } catch (error) {
         child?.kill();
         // Preserve any exported menu backups and diagnostic result for recovery.
+        error.jobDirectory = working;
+        error.helperOutput = (await fs.readFile(helperLogPath, 'utf8').catch(() => '')).slice(-16 * 1024);
         throw error;
       }
     })();

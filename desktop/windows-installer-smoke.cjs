@@ -140,7 +140,14 @@ async function main() {
       const filename = path.join(downloadDirectory, `Brclio-${requestedVersion}-windows-x64.exe`);
       await fs.writeFile(filename, bytes);
       helper = createWindowsInstaller({ executable, userData, parentPid: application.process().pid, showErrors: false });
-      const handoff = await helper.start({ filename, version: requestedVersion, expected: hash(bytes), size: bytes.length });
+      let handoff;
+      try {
+        handoff = await helper.start({ filename, version: requestedVersion, expected: hash(bytes), size: bytes.length });
+      } catch (error) {
+        activeJobDirectory = error.jobDirectory;
+        report.helperStartup = { error: error.message, output: error.helperOutput };
+        throw error;
+      }
       const newJob = handoff.jobDirectory;
       activeJobDirectory = newJob;
       await application.close(); application = null;
@@ -148,6 +155,15 @@ async function main() {
         const durable = await fs.readFile(path.join(newJob, 'result.json'), 'utf8').then(JSON.parse, () => null);
         return durable || await helper.readResult();
       }, 240000);
+      if (result.status === 'installed') {
+        assert.equal(result.launchedVersion, requestedVersion);
+        assert.equal(path.win32.resolve(result.launchedExecutable).toLowerCase(), path.win32.resolve(executable).toLowerCase());
+        assert.ok(Number.isSafeInteger(result.launchedPid) && result.launchedPid > 0);
+        const ack = JSON.parse(await fs.readFile(path.join(newJob, 'launch-ack.json'), 'utf8'));
+        assert.equal(ack.pid, result.launchedPid);
+        assert.equal(ack.version, result.launchedVersion);
+        assert.equal(ack.executable.toLowerCase(), result.launchedExecutable.toLowerCase());
+      }
       return result;
     }
 
@@ -212,6 +228,12 @@ async function main() {
     let safeToClean = true;
     if (activeJobDirectory) {
       const finalResult = await poll(async () => fs.readFile(path.join(activeJobDirectory, 'result.json'), 'utf8').then(JSON.parse, () => null), 120000).catch(() => null);
+      report.helperDiagnostics ||= [];
+      report.helperDiagnostics.push({
+        result: finalResult,
+        ready: await fs.readFile(path.join(activeJobDirectory, 'ready.json'), 'utf8').then(JSON.parse, () => null),
+        output: (await fs.readFile(path.join(activeJobDirectory, 'helper-output.log'), 'utf8').catch(() => '')).slice(-16 * 1024),
+      });
       safeToClean = Boolean(finalResult && !finalResult.installerStillRunning);
       if (!safeToClean) report.cleanupWarning = 'Installer completion was not confirmed; the isolated runner fixture was retained to avoid concurrent uninstall.';
     }

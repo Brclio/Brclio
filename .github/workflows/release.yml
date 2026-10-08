@@ -120,6 +120,28 @@ jobs:
           path: artifacts/mac-package-${{ matrix.arch }}.json
           if-no-files-found: ignore
           retention-days: 14
+      - name: Build a private older-version macOS update fixture
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac --dir --"$BUILD_ARCH" --publish never --config.extraMetadata.version=0.1.2 --config.directories.output=artifacts/update-old --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false --config.forceCodeSigning=true
+      - name: Verify real macOS replacement and automatic launch
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+        run: node desktop/mac-installer-smoke.cjs --version "$RELEASE_VERSION" --report "artifacts/mac-update-$RELEASE_ARCH.json"
+      - name: Save macOS native update verification report
+        if: always() && matrix.platform == 'mac'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-update-verification-${{ matrix.arch }}
+          path: artifacts/mac-update-${{ matrix.arch }}.json
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.platform }}-${{ matrix.arch }}
