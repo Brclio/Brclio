@@ -6,7 +6,7 @@
 
 ![Brclio 界面预览](docs/screenshots/desktop-preview.png)
 
-## 主要功能（v0.1.2）
+## 主要功能（v0.1.5）
 
 - Windows 资源管理器右键菜单：文件、文件夹及文件夹空白处；Windows 11 在“显示更多选项”中使用。
 - macOS Finder 第一层右键菜单“复制路径 · Brclio”：支持文件、文件夹、多选及文件夹空白处；软件关闭时也可调用。
@@ -95,5 +95,7 @@ scripts/    资源同步、验证、校验清单
 ## 设计与署名
 
 界面从 [Brclio Design System](https://github.com/Brclio/brclio-design-system) 的 App 模板改造，使用暖色背景、品牌蓝 / 黄 / 红、衬线标题和紧凑的工具布局。设计素材及对应衍生设计遵循 **CC BY-NC-SA 4.0**。
+
+软件图标统一采用品牌素材库中的 Brclio 组织标志，覆盖 macOS、Windows、Android 和共享界面。来源、校验摘要与重新生成方法见 [图标说明](resources/README.md)。
 
 © 2026 Brclio · 黄家宝。写代码，教编程，做产品。

@@ -4,6 +4,8 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { extractFile } from '@electron/asar';
 
 const execute = promisify(execFile);
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -98,6 +100,19 @@ async function inspectApp(app, item) {
   item.buildVersion = info.CFBundleVersion;
   ensure(item.bundleId === 'com.brclio.toolbox', `Wrong bundle ID: ${item.bundleId}`);
   ensure(item.version === options.version, `Wrong app version: ${item.version}, expected ${options.version}`);
+  const iconName = info.CFBundleIconFile;
+  ensure(typeof iconName === 'string' && path.basename(iconName) === iconName, 'Invalid or missing app icon filename.');
+  const iconPath = path.join(app, 'Contents', 'Resources', iconName.endsWith('.icns') ? iconName : `${iconName}.icns`);
+  const packagedIcon = await fs.readFile(iconPath);
+  const expectedIcon = await fs.readFile(path.join(project, 'resources', 'icon.icns'));
+  ensure(packagedIcon.equals(expectedIcon), 'Packaged macOS icon differs from resources/icon.icns.');
+  const webIcon = extractFile(path.join(app, 'Contents', 'Resources', 'app.asar'), 'web/assets/icon.png');
+  ensure(webIcon.equals(await fs.readFile(path.join(project, 'web', 'assets', 'icon.png'))), 'Packaged web icon differs from web/assets/icon.png.');
+  item.icons = {
+    bundleIconSha256: createHash('sha256').update(packagedIcon).digest('hex'),
+    webIconSha256: createHash('sha256').update(webIcon).digest('hex'),
+    matchedSource: true,
+  };
   ensure(typeof info.CFBundleExecutable === 'string' && path.basename(info.CFBundleExecutable) === info.CFBundleExecutable, 'Invalid bundle executable.');
   const schemes = (info.CFBundleURLTypes || []).flatMap(entry => entry.CFBundleURLSchemes || []);
   ensure(schemes.includes('brclio'), 'The containing app must declare the brclio URL scheme used by FinderSync.');

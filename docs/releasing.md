@@ -50,6 +50,8 @@ FinderSync 扩展位于 `Brclio.app/Contents/PlugIns/BrclioFinderSync.appex`。�
 
 ad-hoc 模式会记录 Gatekeeper 评估结果，完整性及启动检查通过后仍会明确标注未经 Apple 公证。
 
+Mac 验包同时核对构建目录、ZIP 和 DMG 中的应用 ICNS 与共享界面 PNG，要求与本次源码资源字节一致，并在报告中记录 SHA-256，避免图标更新漏入最终包。
+
 构建作业只上传 Actions artifacts；最后一个作业收集完整包，生成清单，创建 draft release，上传并重新下载校验，全部通过后才公开并设为 Latest。因此更新检查不会提前读到缺包的新版本。已公开版本的资产不能由流水线覆盖，应增加版本号再次发布。
 
 ## Release 文件

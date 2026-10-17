@@ -95,6 +95,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1220, height: 850, minWidth: 780, minHeight: 620,
     title: 'Brclio', backgroundColor: '#f7f4ee', show: false,
+    icon: path.join(__dirname, '../web/assets/icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
   });
@@ -223,6 +224,9 @@ if (!gotLock) {
     } else createWindow();
   });
   app.whenReady().then(async () => {
+    if (process.platform === 'darwin' && !app.isPackaged) {
+      app.dock?.setIcon(path.join(__dirname, '../resources/icon.png'));
+    }
     registerIPC();
     if (installer && !pendingUpdateLaunchArgs.length) updater.restoreResult(await installer.readResult({ consume: true }).catch(() => null));
     Menu.setApplicationMenu(Menu.buildFromTemplate([
