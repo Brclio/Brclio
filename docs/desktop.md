@@ -11,21 +11,31 @@ npm run build:mac
 npm run build:win
 ```
 
-系统右键集成默认关闭。在软件的“复制路径”页面点击“启用右键菜单”后，再从 Finder 或资源管理器调用。先将安装版放在固定位置，例如 macOS 的 `/Applications`；移动软件后重新启用集成可更新启动位置。macOS 菜单需要完整安装版内的 Finder Sync 扩展，`npm start` 开发预览不会安装 Finder 菜单。Windows 开发模式也可测试集成，但其入口依赖本机 Electron 和当前源码目录，不适合分发。
+系统右键集成默认关闭。在软件的“复制路径”页面点击“启用右键菜单”后，再从 Finder 或资源管理器调用。先将安装版放在固定位置，例如 macOS 的 `/Applications`；移动软件后重新启用集成可更新启动位置。macOS 和 Windows 11 的菜单需要完整安装版内的原生扩展，`npm start` 开发预览不会安装这两个系统的菜单。
 
 ## Windows
 
-在当前用户的 `HKCU\Software\Classes` 下写入三个专用静态菜单项：
+Windows 11（build 22000 及以上）使用原生 `IExplorerCommand` COM 扩展和 sparse identity package，菜单“复制路径 · Brclio”注册在第一层。包名固定为 `Brclio.Toolbox.Shell`，COM 类固定为 `{CFD1E4D4-3973-45D3-8542-45A77E6C58C9}`，身份包、公钥证书和 manifest 位于安装目录的 `resources/windows-shell/`，DLL 另放在其中的包版本子目录，避免升级时覆盖被 COM 宿主占用的旧文件。支持文件、文件夹、多选及文件夹空白处；多选只启动一次 Brclio，将整个选区交给现有复制流程，保留已保存的格式设置。
+
+构建 Windows 安装包需要 Visual Studio C++ x64 工具链和 Windows SDK；`electron-builder` 的 afterPack 钩子自动编译静态 CRT 的 DLL、生成 MSIX 并签名。默认生成专用自签名代码签名证书；私钥及临时 PFX 构建后删除，只将公钥 `BrclioShell.cer`、已签名 MSIX 和限定操作的证书助手放入安装包。启用时验证签名公钥、证书用途、文件哈希和 Windows 原生签名校验结果，再通过标准 UAC 管理员授权将这个专用叶证书加入机器 `TrustedPeople`，满足 Windows 部署服务的签名信任要求；当前用户的包注册仍由原用户完成。助手内编译固定的公钥指纹，只能添加该公钥或清理具有 Brclio 归属记录、且没有用户仍在使用的专用证书。不会导入 Root 或更改开发者模式。已有的信任项保持原样，升级保留注册和信任。
+
+已有 CA 签名证书也可通过 `BRCLIO_WINDOWS_SHELL_CERTIFICATE_FILE`、`BRCLIO_WINDOWS_SHELL_CERTIFICATE_PASSWORD`、`BRCLIO_WINDOWS_SHELL_PUBLISHER` 和可选 `BRCLIO_WINDOWS_SHELL_TIMESTAMP_URL` 提供给构建。Publisher 必须与证书 Subject 一致。不需要把私钥放进仓库。默认构建的私钥每次生成，因此更换安装包证书后需要再次授权；不具备管理员权限或企业策略禁止证书信任、AppX 注册时，会显示注册错误。
+
+首次安装保持关闭。已启用旧版菜单的用户打开新版时会自动迁移；新版注册确认后才移除带 Brclio 归属标记的旧入口。注册失败时保留旧入口，不把它算作第一层菜单已启用。菜单可能需要重新打开资源管理器窗口，或注销后登录才能刷新，程序不会主动结束 Explorer。
+
+Windows 10 继续在当前用户的 `HKCU\Software\Classes` 下写入三个专用静态菜单项：
 
 - `*\shell\Brclio.CopyPath`：文件。
 - `Directory\shell\Brclio.CopyPath`：文件夹。
 - `Directory\Background\shell\Brclio.CopyPath`：当前文件夹的空白处。
 
-显示名称为“复制路径 · Brclio”。Windows 11 使用经典菜单中的“显示更多选项”。首版资源管理器入口按单个文件或文件夹工作，批量复制可在软件内多选或拖入。将 `MultiSelectModel` 设为 `Single`，避免资源管理器多次独立启动后互相覆盖剪贴板。
+显示名称为“复制路径 · Brclio”。Windows 10 的经典入口按单个文件或文件夹工作，批量复制可在软件内多选或拖入。将 `MultiSelectModel` 设为 `Single`，避免资源管理器多次独立启动后互相覆盖剪贴板。
 
 命令直接启动软件可执行文件，以独立参数传入路径，不经过 `cmd.exe`、PowerShell 或路径拼接执行。文件夹参数附加 `\.`，防止磁盘根目录结尾的反斜杠影响 Windows 命令行引号解析；主进程解析成正常绝对路径后格式化。
 
 菜单用 `BrclioOwner=com.brclio.toolbox` 标记。启用前检查同名项归属，写入失败恢复此前配置；停用及 NSIS 卸载只清理带该归属标记的菜单项，不修改全局菜单样式，也不重启资源管理器。重新安装后若设置了开机启动，请在新安装位置检查开机启动设置。
+
+选择为所有用户安装时，Windows 11 卸载按账户核对包身份、COM 路径及实际外部目录，仅移除指向本次安装的现代包注册；无法确认归属或清理失败时，停止卸载以保留文件。更新会保留其他账户仍在使用的旧版扩展 DLL。Windows 10 经典注册表项及当前用户的证书存储仍只处理卸载账户，不加载其他账户的离线配置文件；其他账户的经典入口可能需要该账户自行停用。跨账户交互和 Windows 11 菜单实际可见性仍需桌面验收。
 
 ## macOS
 
@@ -83,6 +93,7 @@ v0.1.2 及更早版本没有上述覆盖安装模块，需退出旧版后手动�
 node --test desktop/*.test.cjs
 node desktop/smoke.cjs
 node native/macos/test.mjs  # macOS：Finder 扩展的独立原生测试
+node native/windows/test.cjs  # Windows：编译 DLL、身份包与 COM 调用测试；macOS/Linux 只测试命令行编码
 ```
 
 单元测试检查命令行参数与特殊文件名、设置持久化与并发写入、损坏配置保留、Windows 当前用户注册表安装/移除/碰撞/失败回滚。macOS 集成测试使用隔离目录和替身命令检查 Finder 扩展注册、启用状态与旧 Services 的归属清理；原生测试检查菜单选择和路径 URL 编解码。这些测试不会启用本机 Finder 扩展。更新测试使用模拟的正式 Release 和安装包，检查下载完整性、文件篡改、失败清理、重试和地址校验。
@@ -100,6 +111,8 @@ Electron 端到端测试可设置 `BRCLIO_USER_DATA` 为临时绝对目录来隔
 - [Microsoft 扩展快捷菜单](https://learn.microsoft.com/en-us/windows/win32/shell/context)：静态 verb、命令和路径引号。
 - [Microsoft 创建快捷菜单处理程序](https://learn.microsoft.com/en-us/windows/win32/shell/context-menu-handlers)：当前用户 `HKCU\Software\Classes` 注册。
 - [Microsoft Windows 11 应用体验规范](https://github.com/MicrosoftDocs/windows-dev-docs/blob/docs/hub/apps/get-started/best-practices.md)：经典菜单通过“显示更多选项”访问。
+- [Microsoft Windows 11 原生菜单扩展](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/integrate-packaged-app-with-file-explorer)：`IExplorerCommand`、COM surrogate 和三种文件管理器上下文。
+- [Microsoft 外部位置身份包](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps)：sparse package 签名与 ExternalLocation 注册。
 - [Apple Finder Sync 扩展](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/Finder.html)：受监控目录中的 Finder 菜单和选中项。
 - [Apple 扩展的签名、启用和分发](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/ExtensionCreation.html)：容器与扩展的签名方式及用户批准。
 - [Apple NSWorkspace 定向打开 URL](https://developer.apple.com/documentation/appkit/nsworkspace/open(_:withApplicationAt:configuration:completionHandler:))：向指定容器应用传递复制路径事件。

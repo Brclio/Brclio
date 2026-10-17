@@ -33,17 +33,37 @@ async function poll(callback, timeout = 180000) {
   throw new Error('Timed out waiting for the real Windows update flow.');
 }
 
-async function downloadBaseline(version, directory) {
+async function downloadBaseline(version, directory, { fetch: fetchURL = fetch, wait: pause = wait,
+  readToken = process.env.BRCLIO_WINDOWS_BASELINE_READ_TOKEN } = {}) {
   const tag = `v${version}`;
-  const release = await fetch(`https://api.github.com/repos/Brclio/Brclio/releases/tags/${tag}`, { headers: { 'User-Agent': 'Brclio-Windows-update-CI' } });
-  assert.equal(release.ok, true, `Official baseline release ${tag} is required.`);
+  const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'Brclio-Windows-update-CI' };
+  if (readToken) headers.Authorization = `Bearer ${readToken}`;
+  let release;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      // The optional Actions read token goes only to this fixed API endpoint.
+      // Do not follow an API redirect or attach it to release asset requests.
+      release = await fetchURL(`https://api.github.com/repos/Brclio/Brclio/releases/tags/${tag}`,
+        { headers, redirect: 'manual', signal: AbortSignal.timeout(30000) });
+    } catch {
+      if (attempt < 3) { await pause(attempt * 1000); continue; }
+      throw new Error(`Official baseline release ${tag} is required; GitHub API transport failed after ${attempt} attempts.`);
+    }
+    if (release.ok) break;
+    const requestId = release.headers.get('x-github-request-id') || 'unavailable';
+    const remaining = release.headers.get('x-ratelimit-remaining') || 'unavailable';
+    const message = `Official baseline release ${tag} is required; GitHub API HTTP ${release.status}, request ID ${requestId}, rate limit remaining ${remaining}.`;
+    await release.body?.cancel().catch(() => {});
+    if (attempt === 3 || ![403, 408, 429, 500, 502, 503, 504].includes(release.status)) throw new Error(message);
+    await pause(attempt * 1000);
+  }
   const parsed = parseRelease(await release.json(), 'win32', 'x64');
   assert.equal(parsed.version, version);
-  const checksum = await fetch(parsed.checksumURL);
+  const checksum = await fetchURL(parsed.checksumURL);
   assert.equal(checksum.ok, true);
   const expected = checksumFor(await checksum.text(), parsed.assetName);
   if (parsed.digest) assert.equal(parsed.digest, expected);
-  const response = await fetch(parsed.downloadURL);
+  const response = await fetchURL(parsed.downloadURL);
   assert.equal(response.ok, true);
   assert.ok(['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'].includes(new URL(response.url).hostname));
   const bytes = Buffer.from(await response.arrayBuffer());
@@ -67,6 +87,9 @@ async function main() {
   assert.equal(process.platform, 'win32', 'This smoke requires Windows.');
   assert.equal(process.env.BRCLIO_ALLOW_INSTALL_SMOKE, '1', 'An explicit disposable-runner opt-in is required.');
   assert.ok(process.env.CI, 'Never install this smoke fixture on a normal user computer.');
+  const baselineReadToken = process.env.BRCLIO_WINDOWS_BASELINE_READ_TOKEN;
+  // Keep the ephemeral API credential out of installers and Electron children.
+  delete process.env.BRCLIO_WINDOWS_BASELINE_READ_TOKEN;
   const targetVersion = require('../package.json').version;
   const baselineVersion = process.env.BRCLIO_WINDOWS_BASELINE_VERSION || '0.1.2';
   assert.ok(compareVersions(targetVersion, baselineVersion) > 0, 'The target must be newer than the released baseline.');
@@ -85,7 +108,7 @@ async function main() {
   try {
     process.env.BRCLIO_USER_DATA = userData;
     const baselineInstaller = process.env.BRCLIO_WINDOWS_BASELINE_INSTALLER
-      ? path.resolve(process.env.BRCLIO_WINDOWS_BASELINE_INSTALLER) : await downloadBaseline(baselineVersion, temporary);
+      ? path.resolve(process.env.BRCLIO_WINDOWS_BASELINE_INSTALLER) : await downloadBaseline(baselineVersion, temporary, { readToken: baselineReadToken });
     for (const entry of REGISTRY_KEYS) {
       let exists = false;
       try { await run(reg, ['query', entry.key]); exists = true; } catch (error) { assert.equal(error.code, 1); }
@@ -253,7 +276,11 @@ async function main() {
   }
 }
 
-main().catch(error => { report.error = error.stack; console.error(error.stack); process.exitCode = 1; }).finally(async () => {
-  await fs.mkdir(path.dirname(reportPath), { recursive: true });
-  await fs.writeFile(reportPath, JSON.stringify(report, null, 2));
-});
+if (require.main === module) {
+  main().catch(error => { report.error = error.stack; console.error(error.stack); process.exitCode = 1; }).finally(async () => {
+    await fs.mkdir(path.dirname(reportPath), { recursive: true });
+    await fs.writeFile(reportPath, JSON.stringify(report, null, 2));
+  });
+}
+
+module.exports = { downloadBaseline };

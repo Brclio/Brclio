@@ -8,6 +8,7 @@ const { promisify } = require('node:util');
 const { launchCommand } = require('./arguments.cjs');
 const { createFinderExtension } = require('./finder-extension.cjs');
 const { readWindowsEntries } = require('./windows-registry.cjs');
+const { createWindowsShell } = require('./windows-shell.cjs');
 
 const OWNER = 'com.brclio.toolbox';
 const MENU_LABEL = '复制路径 · Brclio';
@@ -87,6 +88,9 @@ function createIntegration(options) {
   const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   let pending = Promise.resolve();
   const finder = platform === 'darwin' ? createFinderExtension({ launch, run }) : null;
+  const windowsBuild = options.windowsBuild ?? Number(os.release().split('.')[2] || 0);
+  const modernWindows = platform === 'win32' && windowsBuild >= 22000;
+  const windowsShell = modernWindows ? (options.windowsShell || createWindowsShell({ launch, ...(options.run ? { run: options.run } : {}) })) : null;
 
   async function query(key, name) {
     if (nativeRegistry) {
@@ -121,9 +125,15 @@ function createIntegration(options) {
     if (platform === 'win32') {
       const found = await windowsSnapshot();
       const owned = found.every(item => item.owner === OWNER);
+      if (windowsShell) {
+        const modern = await windowsShell.status();
+        const legacyInstalled = found.some(item => item.owner === OWNER);
+        return { ...modern, legacyInstalled, stale: modern.stale || (!modern.installed && legacyInstalled),
+          menuLabel: MENU_LABEL };
+      }
       const installed = owned && found.every((item, index) => item.command === entries[index].command);
       return { installed, supported: true, stale: owned && !installed, menuLabel: MENU_LABEL,
-        description: installed ? '已添加文件、文件夹和文件夹空白处菜单。Windows 11 请在“显示更多选项”中使用。' : '启用后可在资源管理器右键复制路径；Windows 11 位于“显示更多选项”。' };
+        description: installed ? '已添加文件、文件夹和文件夹空白处的“复制路径 · Brclio”菜单。' : '启用后可在资源管理器中右键复制文件或文件夹路径。' };
     }
     if (platform === 'darwin') {
       const marker = await readMarker();
@@ -140,6 +150,16 @@ function createIntegration(options) {
   }
 
   async function setWindows(enabled) {
+    if (windowsShell) {
+      // Keep the previous entry usable until modern registration is confirmed.
+      // A foreign legacy key does not prevent installing our separate package.
+      const result = await windowsShell.set(enabled);
+      if (enabled && !result.installed) throw new Error(result.description || 'Windows 第一层右键菜单尚未完成注册。');
+      for (const entry of entries) {
+        if (await query(entry.key, 'BrclioOwner') === OWNER) await run(registry, ['delete', entry.key, '/f']);
+      }
+      return status();
+    }
     // Refuse to replace or remove a key that belongs to another application.
     const snapshots = await windowsSnapshot();
     for (const { exists, owner } of snapshots) {
@@ -224,7 +244,15 @@ function createIntegration(options) {
     pending = operation.catch(() => {});
     return operation;
   }
-  return { status, set };
+  async function repairWindows() {
+    if (!windowsShell) return status();
+    const current = await status();
+    // Registration and legacy ownership are the opt-in record. Merely opening
+    // a fresh installation must never install a shell extension.
+    if (current.available && (current.legacyInstalled || (current.registered && !current.installed))) return set(true);
+    return current;
+  }
+  return { status, set, repairWindows };
 }
 
 module.exports = { createIntegration, macWorkflow, windowsEntries, OWNER, WORKFLOW_NAME, REGISTRY_KEYS };

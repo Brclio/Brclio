@@ -8,6 +8,21 @@ permissions:
   contents: read
 
 jobs:
+  modern-shell:
+    name: Modern Windows shell registration and certificate cleanup
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Compile, sign, register, and remove the actual sparse shell package
+        env:
+          BRCLIO_ALLOW_SHELL_TRUST_SMOKE: '1'
+          BRCLIO_ALLOW_SHELL_REGISTRATION_SMOKE: '1'
+        run: npm run test:windows-shell
+
   nsis-update:
     name: Real old-install to new-install update and rollback
     runs-on: windows-2022
@@ -19,6 +34,10 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Compile the Explorer command and verify dedicated certificate trust
+        env:
+          BRCLIO_ALLOW_SHELL_TRUST_SMOKE: '1'
+        run: npm run test:windows-shell
       - name: Verify contracts and parse the real PowerShell helper
         run: npm test
       - run: npm run sync
@@ -26,16 +45,35 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --win --x64 --publish never
+      - name: Verify the actual packaged native files and absence of private keys
+        run: |
+          $version = node -p 'require("./package.json").version'
+          node scripts/windows-verify-package.cjs --dir release/win-unpacked --version $version --report artifacts/windows-package.json
+      - name: Verify the packaged Windows client and real clipboard
+        run: |
+          $env:BRCLIO_SMOKE_EXECUTABLE = (Resolve-Path 'release/win-unpacked/Brclio.exe').Path
+          $env:BRCLIO_SMOKE_VERSION = node -p 'require("./package.json").version'
+          node desktop/smoke.cjs
       - name: Verify real silent replacement, launch ACK, preservation, and rollback
         env:
           BRCLIO_ALLOW_INSTALL_SMOKE: '1'
           BRCLIO_WINDOWS_BASELINE_VERSION: '0.1.2'
+          BRCLIO_WINDOWS_BASELINE_READ_TOKEN: ${{ github.token }}
         run: node desktop/windows-installer-smoke.cjs
+      - name: Save the tested Windows installer for manual menu verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-context-menu-test-installer
+          path: release/Brclio-*-windows-x64.exe
+          if-no-files-found: error
+          retention-days: 14
       - name: Preserve the native Windows verification report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-nsis-update-verification
-          path: artifacts/windows-update-smoke.json
+          path: |
+            artifacts/windows-update-smoke.json
+            artifacts/windows-package.json
           if-no-files-found: ignore
           retention-days: 14

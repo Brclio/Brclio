@@ -62,7 +62,7 @@ test('Windows commands quote executable and do not use a command shell', () => {
 test('Windows integration is per-user, status verifies commands, removal preserves other keys', async () => {
   const registry = registryMock();
   registry.values.set('HKCU\\Software\\Classes\\*\\shell\\OtherTool', new Map([['', 'Other Tool']]));
-  const integration = createIntegration({ platform: 'win32', launch, run: registry.run });
+  const integration = createIntegration({ platform: 'win32', windowsBuild: 19045, launch, run: registry.run });
   assert.equal((await integration.status()).installed, false);
   assert.equal((await integration.set(true)).installed, true);
   for (const entry of REGISTRY_KEYS) assert.equal(registry.values.get(entry.key).get('BrclioOwner'), OWNER);
@@ -76,7 +76,7 @@ test('Windows integration is per-user, status verifies commands, removal preserv
 test('Windows integration preserves an unowned same-name registry key even without a default value', async () => {
   const registry = registryMock();
   registry.values.set(REGISTRY_KEYS[1].key, new Map([['Icon', 'other.exe']]));
-  const integration = createIntegration({ platform: 'win32', launch, run: registry.run });
+  const integration = createIntegration({ platform: 'win32', windowsBuild: 19045, launch, run: registry.run });
   await assert.rejects(integration.set(true), /不属于 Brclio/);
   await assert.rejects(integration.set(false), /不属于 Brclio/);
   assert.equal(registry.values.size, 1);
@@ -86,19 +86,86 @@ test('Windows integration preserves an unowned same-name registry key even witho
 test('Windows failed installation rolls back newly created menu keys', async () => {
   const registry = registryMock();
   registry.failOnce(args => args[0] === 'add' && args[1] === `${REGISTRY_KEYS[1].key}\\command`);
-  const integration = createIntegration({ platform: 'win32', launch, run: registry.run });
+  const integration = createIntegration({ platform: 'win32', windowsBuild: 19045, launch, run: registry.run });
   await assert.rejects(integration.set(true), /Registry write failed/);
   assert.equal(registry.values.size, 0);
 });
 
 test('Windows failed relocation restores prior owned menu values', async () => {
   const registry = registryMock();
-  const original = createIntegration({ platform: 'win32', launch, run: registry.run });
+  const original = createIntegration({ platform: 'win32', windowsBuild: 19045, launch, run: registry.run });
   await original.set(true);
-  const moved = createIntegration({ platform: 'win32', launch: { ...launch, executable: 'C:\\Moved.exe' }, run: registry.run });
+  const moved = createIntegration({ platform: 'win32', windowsBuild: 19045, launch: { ...launch, executable: 'C:\\Moved.exe' }, run: registry.run });
   registry.failOnce(args => args[0] === 'add' && args[1] === `${REGISTRY_KEYS[1].key}\\command`);
   await assert.rejects(moved.set(true));
   assert.equal((await original.status()).installed, true);
+});
+
+function modernFixture(registry, initial = {}) {
+  let current = { kind: 'windows-shell-extension', supported: true, available: true, installed: false, registered: false, stale: false, ...initial };
+  const calls = [];
+  const windowsShell = {
+    status: async () => ({ ...current }),
+    set: async enabled => {
+      calls.push(enabled);
+      if (current.error) throw new Error(current.error);
+      current = { ...current, installed: enabled, registered: enabled, stale: false };
+      return { ...current };
+    },
+  };
+  const integration = createIntegration({ platform: 'win32', windowsBuild: 22631, launch, run: registry.run, windowsShell });
+  return { integration, calls };
+}
+
+test('Windows 11 installs the modern command and removes only owned classic entries after confirmation', async () => {
+  const registry = registryMock();
+  await createIntegration({ platform: 'win32', windowsBuild: 19045, launch, run: registry.run }).set(true);
+  registry.values.set(REGISTRY_KEYS[1].key, new Map([['BrclioOwner', 'other.app'], ['Icon', 'other.exe']]));
+  const { integration, calls } = modernFixture(registry);
+  assert.equal((await integration.status()).legacyInstalled, true);
+  const installed = await integration.set(true);
+  assert.equal(installed.kind, 'windows-shell-extension');
+  assert.equal(installed.installed, true);
+  assert.equal(installed.legacyInstalled, false);
+  assert.deepEqual(calls, [true]);
+  assert.equal(registry.values.has(REGISTRY_KEYS[0].key), false);
+  assert.equal(registry.values.get(REGISTRY_KEYS[1].key).get('Icon'), 'other.exe');
+  assert.equal((await integration.set(false)).installed, false);
+  assert.deepEqual(calls, [true, false]);
+});
+
+test('Windows 11 preserves the usable legacy menu when modern registration fails', async () => {
+  const registry = registryMock();
+  const old = createIntegration({ platform: 'win32', windowsBuild: 19045, launch, run: registry.run });
+  await old.set(true);
+  const { integration } = modernFixture(registry, { error: 'Package registration failed' });
+  await assert.rejects(integration.set(true), /Package registration failed/);
+  assert.equal((await old.status()).installed, true);
+});
+
+test('Windows 11 startup migrates opted-in classic menus and repairs a stale identity', async () => {
+  const registry = registryMock();
+  const fresh = modernFixture(registry);
+  await fresh.integration.repairWindows();
+  assert.deepEqual(fresh.calls, []);
+  await createIntegration({ platform: 'win32', windowsBuild: 19045, launch, run: registry.run }).set(true);
+  const old = modernFixture(registry);
+  assert.equal((await old.integration.repairWindows()).installed, true);
+  assert.deepEqual(old.calls, [true]);
+  const stale = modernFixture(registry, { registered: true, stale: true });
+  assert.equal((await stale.integration.repairWindows()).installed, true);
+  assert.deepEqual(stale.calls, [true]);
+});
+
+test('Windows 11 does not migrate without a signed extension or advertise the classic menu as first-level', async () => {
+  const registry = registryMock();
+  await createIntegration({ platform: 'win32', windowsBuild: 19045, launch, run: registry.run }).set(true);
+  const { integration, calls } = modernFixture(registry, { available: false, requiresInstall: true, description: '请安装包含已签名扩展的版本。' });
+  const status = await integration.repairWindows();
+  assert.equal(status.installed, false);
+  assert.equal(status.legacyInstalled, true);
+  assert.equal(status.stale, true);
+  assert.deepEqual(calls, []);
 });
 
 function finderMock({ approve = true, ignoreErrorCode } = {}) {

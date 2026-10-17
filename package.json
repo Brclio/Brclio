@@ -1,7 +1,7 @@
 {
   "name": "brclio-toolbox",
   "productName": "Brclio",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Brclio 跨平台工具箱 · 从复制路径开始",
   "author": "Brclio",
   "private": true,
@@ -10,7 +10,8 @@
     "sync": "node scripts/sync-web.mjs",
     "dev": "npm run sync && node scripts/serve.mjs",
     "start": "npm run sync && electron .",
-    "test": "node --test test/*.test.cjs desktop/*.test.cjs",
+    "test": "node --test test/*.test.cjs desktop/*.test.cjs native/windows/*.test.cjs",
+    "test:windows-shell": "node native/windows/test.cjs",
     "test:ui": "npm run sync && node scripts/verify-ui.mjs",
     "build:mac": "npm run sync && electron-builder --mac --arm64",
     "build:win": "npm run sync && electron-builder --win --x64",
@@ -70,6 +71,6 @@
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false
     },
-    "afterPack": "scripts/mac-after-pack.cjs"
+    "afterPack": "scripts/desktop-after-pack.cjs"
   }
 }

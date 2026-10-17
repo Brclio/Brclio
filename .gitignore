@@ -15,3 +15,5 @@ android/app/src/main/assets/core/
 web/path-engine.js
 *.log
 native/macos/build/
+native/windows/build/
+*.pfx
