@@ -28,12 +28,20 @@ try {
       const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
       console.log(execute(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', path.join(__dirname, 'TrustSmoke.ps1'), '-Directory', shellDirectory], { env }));
-      console.log(execute(process.execPath, [path.resolve(__dirname, '../../desktop/windows-shell-smoke.cjs'), install]));
+      console.log(execute(process.execPath, [path.resolve(__dirname, '../../desktop/windows-shell-smoke.cjs'), install],
+        { env: { ...process.env, BRCLIO_WINDOWS_SHELL_COM_HARNESS: harness } }));
     }
   } else {
     execute(process.env.CXX || 'c++', ['-std=c++17', '-Wall', '-Wextra', '-Werror', source, '-o', binary]);
     console.log(execute(binary, []));
   }
 } finally {
-  fs.rmSync(temporary, { recursive: true, force: true });
+  try {
+    fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch (error) {
+    if (process.platform === 'win32' && process.env.BRCLIO_ALLOW_SHELL_REGISTRATION_SMOKE === '1' &&
+        ['EBUSY', 'EPERM', 'EACCES'].includes(error.code)) {
+      console.warn(`The packaged COM surrogate still holds a disposable fixture; retained for runner cleanup: ${temporary}`);
+    } else throw error;
+  }
 }

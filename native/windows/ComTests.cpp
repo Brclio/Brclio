@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstring>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -24,7 +25,13 @@ constexpr CLSID CommandClass = {0xcfd1e4d4, 0x3973, 0x45d3,
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
-void success(HRESULT result, const char* message) { require(SUCCEEDED(result), message); }
+void success(HRESULT result, const char* message) {
+    if (FAILED(result)) {
+        std::ostringstream diagnostic;
+        diagnostic << message << ": 0x" << std::hex << static_cast<ULONG>(result);
+        throw std::runtime_error(diagnostic.str());
+    }
+}
 
 std::wstring LongPath(const std::wstring& value) {
     const DWORD size = GetLongPathNameW(value.c_str(), nullptr, 0);
@@ -217,10 +224,50 @@ template<typename Function> Function Export(HMODULE module, const char* name) {
     memcpy(&result, &address, sizeof(result));
     return result;
 }
+
+void RegisteredActivation(const std::wstring& install) {
+    success(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED), "Registered COM initialization failed");
+    struct Uninitialize { ~Uninitialize() { CoUninitialize(); } } apartment;
+    ComPtr<IExplorerCommand> command;
+    // This must go through the actual packaged COM catalog and dllhost
+    // surrogate. Loading the extension DLL directly would bypass that mapping.
+    success(CoCreateInstance(CommandClass, nullptr, CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&command)),
+            "Registered packaged COM surrogate activation failed");
+    GUID canonical{};
+    success(command->GetCanonicalName(&canonical), "Registered command canonical name failed");
+    require(canonical == CommandClass, "Registered command canonical name differs");
+    PWSTR title = nullptr;
+    success(command->GetTitle(nullptr, &title), "Registered command title failed");
+    const bool correctTitle = title && std::wstring(title) == L"复制路径 · Brclio";
+    CoTaskMemFree(title);
+    require(correctTitle, "Registered command title differs");
+    PWSTR icon = nullptr;
+    success(command->GetIcon(nullptr, &icon), "Registered command icon failed");
+    const std::wstring actualIcon = icon ? icon : L"";
+    CoTaskMemFree(icon);
+    const std::wstring expectedIcon = install + L"\\Brclio.exe,0";
+    if (_wcsicmp(actualIcon.c_str(), expectedIcon.c_str()) != 0) {
+        throw std::runtime_error("Registered command executable root differs\nExpected: " + Utf8(expectedIcon) +
+                                 "\nActual: " + Utf8(actualIcon));
+    }
+    EXPCMDFLAGS flags = ECF_DEFAULT;
+    success(command->GetFlags(&flags), "Registered command flags failed");
+    require(flags == ECF_DEFAULT, "Registered command flags differ");
+    EXPCMDSTATE state = ECS_ENABLED;
+    success(command->GetState(nullptr, FALSE, &state), "Registered empty context state failed");
+    require(state == ECS_HIDDEN, "Registered command without selection or site must be hidden");
+    // No Invoke call: this mode never launches Brclio or changes a clipboard.
+    command.Reset();
+    std::cout << "Registered packaged COM surrogate activation and IExplorerCommand calls passed\n";
+}
 } // namespace
 
 int wmain(int count, wchar_t** arguments) {
     try {
+        if (count == 4 && std::wstring(arguments[1]) == L"--registered") {
+            RegisteredActivation(LongPath(arguments[2]));
+            return 0;
+        }
         const std::wstring record = Environment(L"BRCLIO_SHELL_TEST_OUTPUT");
         require(!record.empty(), "Child record environment is missing");
         if (count >= 2 && std::wstring(arguments[1]) == L"--copy-path") {

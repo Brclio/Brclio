@@ -62,12 +62,15 @@ async function readTrust(thumbprint) {
   return result;
 }
 
-async function registrationSmoke(shell, metadata, expectedLocation, before) {
+async function registrationSmoke(shell, metadata, expectedLocation, before, root) {
   const build = Number(os.release().split('.')[2]);
   assert.ok(Number.isInteger(build) && build >= 22000, 'Registration smoke requires Windows build 22000 or newer.');
   assert.equal(before.registered, false, 'Registration smoke must preserve a previously registered Brclio package.');
   assert.notEqual(before.conflict, true, 'Registration smoke must preserve a conflicting same-name package.');
   assert.match(metadata.certificateThumbprint, /^[a-fA-F0-9]{40}$/, 'Signed fixture must identify its public leaf.');
+  const harness = process.env.BRCLIO_WINDOWS_SHELL_COM_HARNESS;
+  assert.ok(typeof harness === 'string' && path.isAbsolute(harness), 'Registration smoke requires the compiled native COM activation harness.');
+  assert.equal((await fs.stat(harness)).isFile(), true);
   const initialTrust = await readTrust(metadata.certificateThumbprint);
   assert.deepEqual(initialTrust.ownedMarkers, [], 'Registration smoke requires a disposable user without existing Brclio trust ownership.');
   assert.deepEqual(initialTrust.machineOwnedMarkers, [], 'Registration smoke requires a disposable machine without existing Brclio trust ownership.');
@@ -101,6 +104,10 @@ async function registrationSmoke(shell, metadata, expectedLocation, before) {
     assert.equal(enabled.installed, true, enabled.description);
     assert.equal(enabled.registered, true, enabled.description);
     assert.equal(sameLocation(enabled.location, expectedLocation), true, 'The registered extension must resolve to the fixture install root and version.');
+    const activation = await promisify(execFile)(harness, ['--registered', root, metadata.packageVersion],
+      { windowsHide: true, timeout: 60000, maxBuffer: 64 * 1024 });
+    assert.match(activation.stdout, /Registered packaged COM surrogate activation and IExplorerCommand calls passed/);
+    console.log(activation.stdout.trim());
     if (metadata.selfSigned) {
       const trust = await readTrust(metadata.certificateThumbprint);
       assert.equal(trust.trustedLeaf, true, 'Enabling must trust only the fixture public leaf.');
@@ -122,7 +129,7 @@ async function registrationSmoke(shell, metadata, expectedLocation, before) {
     }
   }
   if (failure) throw failure;
-  console.log('Windows shell registration smoke passed (real Add-AppxPackage, external root/version readback, Remove-AppxPackage and owned leaf cleanup; Explorer appearance requires desktop verification).');
+  console.log('Windows shell registration smoke passed (real Add-AppxPackage, packaged COM surrogate activation, external root/version readback, Remove-AppxPackage and owned leaf cleanup; Explorer appearance requires desktop verification).');
 }
 
 async function main() {
@@ -152,7 +159,7 @@ async function main() {
   }
   console.log('Windows shell query smoke passed (real PowerShell 5.1, signed versioned assets, Appx/WinRT query; no registration or trust changes).');
   if (process.env.BRCLIO_ALLOW_SHELL_REGISTRATION_SMOKE === '1') {
-    await registrationSmoke(shell, metadata, path.join(directory, metadata.dll), state);
+    await registrationSmoke(shell, metadata, path.join(directory, metadata.dll), state, root);
   }
 }
 
