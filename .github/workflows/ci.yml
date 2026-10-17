@@ -37,6 +37,30 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  windows11-selection:
+    name: Windows 11 active Explorer tab selection
+    runs-on: windows-11-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify Windows selection parsing and compile its native interop
+        run: node --test desktop/windows-selection.test.cjs
+      - name: Verify real files, folders, multiple selections and active Explorer tabs
+        env:
+          BRCLIO_ALLOW_SELECTION_SMOKE: '1'
+        run: node desktop/windows-selection-smoke.cjs
+      - name: Save Windows 11 selection verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows11-selection-verification
+          path: artifacts/windows-selection-smoke.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   windows-update:
     name: Windows native automatic update
     uses: ./.github/workflows/windows-update.yml
