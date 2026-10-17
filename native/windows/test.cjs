@@ -28,6 +28,7 @@ try {
       const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
       console.log(execute(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', path.join(__dirname, 'TrustSmoke.ps1'), '-Directory', shellDirectory]));
+      console.log(execute(process.execPath, [path.resolve(__dirname, '../../desktop/windows-shell-smoke.cjs'), install]));
     }
   } else {
     execute(process.env.CXX || 'c++', ['-std=c++17', '-Wall', '-Wextra', '-Werror', source, '-o', binary]);

@@ -276,9 +276,15 @@ function parseResult(stdout) {
 }
 
 function createWindowsShell({ launch, run = defaultRun, powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') }) {
-  const root = launch?.packaged && path.win32.isAbsolute(launch.executable) ? path.win32.dirname(launch.executable) : null;
-  const location = root ? path.win32.join(root, 'resources', 'windows-shell') : null;
+  let root = launch?.packaged && path.win32.isAbsolute(launch.executable) ? path.win32.dirname(launch.executable) : null;
+  const shellLocation = () => root ? path.win32.join(root, 'resources', 'windows-shell') : null;
   async function invoke(action, arguments_ = {}) {
+    // WinRT returns canonical long paths. Windows can launch from an 8.3 alias
+    // (including RUNNER~1 in TEMP); compare and register that same real root.
+    if (process.platform === 'win32') {
+      try { root = await fs.realpath(root); }
+      catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error; }
+    }
     const request = { action, root, executableName: path.win32.basename(launch.executable), ...arguments_ };
     const env = { ...process.env, [REQUEST_ENV]: JSON.stringify(request) };
     for (const key of Object.keys(env)) if (key.toLowerCase() === 'psmodulepath') delete env[key];
@@ -296,6 +302,7 @@ function createWindowsShell({ launch, run = defaultRun, powershell = path.win32.
     const owned = result.packages.filter(item => item.owned && item.name === PACKAGE_NAME && item.publisher === result.assets.publisher);
     const installed = result.assets.available && !result.assets.needsTrust && owned.some(item => item.usable && item.healthy && item.version === result.assets.version && sameLocation(item.externalLocation, root));
     const conflict = result.packages.some(item => !item.owned);
+    const location = shellLocation();
     const dllLocation = result.assets.version ? path.win32.join(location, result.assets.version, DLL_NAME) : location;
     return { installed, supported: true, available: result.assets.available, requiresInstall: !result.assets.available, kind: 'windows-shell-extension', location: dllLocation,
       registered: owned.length > 0, stale: owned.length > 0 && !installed, menuLabel: MENU_LABEL, ...(result.assets.error ? { error: result.assets.error } : {}),
@@ -305,7 +312,7 @@ function createWindowsShell({ launch, run = defaultRun, powershell = path.win32.
         : result.assets.error || (conflict ? '发现不属于 Brclio 的同名扩展，已保留原有设置。' : '启用后，“复制路径 · Brclio”会直接显示在 Windows 11 外层右键菜单。') };
   }
   function unavailable() {
-    return { installed: false, supported: true, available: false, requiresInstall: true, registered: false, stale: false, kind: 'windows-shell-extension', location, menuLabel: MENU_LABEL,
+    return { installed: false, supported: true, available: false, requiresInstall: true, registered: false, stale: false, kind: 'windows-shell-extension', location: shellLocation(), menuLabel: MENU_LABEL,
       description: '请先安装包含已签名 Windows 右键扩展的 Brclio 正式安装包，开发预览无法添加外层菜单。' };
   }
   async function status() {

@@ -26,6 +26,27 @@ void require(bool condition, const char* message) {
 }
 void success(HRESULT result, const char* message) { require(SUCCEEDED(result), message); }
 
+std::wstring LongPath(const std::wstring& value) {
+    const DWORD size = GetLongPathNameW(value.c_str(), nullptr, 0);
+    require(size > 0, "Cannot resolve the existing fixture's long path");
+    std::wstring result(size, L'\0');
+    const DWORD length = GetLongPathNameW(value.c_str(), result.data(), size);
+    require(length > 0 && length < size, "Cannot read the existing fixture's long path");
+    result.resize(length);
+    return result;
+}
+
+std::string Utf8(const std::wstring& value) {
+    const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    require(length > 0, "Cannot encode fixture path diagnostics");
+    std::string result(static_cast<size_t>(length), '\0');
+    require(WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), result.data(), length, nullptr, nullptr) == length,
+        "Cannot write fixture path diagnostics");
+    return result;
+}
+
 std::wstring Environment(const wchar_t* key) {
     const DWORD size = GetEnvironmentVariableW(key, nullptr, 0);
     if (!size) return {};
@@ -182,7 +203,10 @@ void ExpectArguments(IExplorerCommand* command, IShellItemArray* selection,
     const auto actual = ReadArguments(record, expected.size() + 2);
     require(actual[0] == L"--copy-path" && actual[1] == L"--", "Child launch prefix differs");
     for (size_t index = 0; index < expected.size(); ++index) {
-        require(actual[index + 2] == expected[index], "Child path argv differs");
+        if (actual[index + 2] != expected[index]) {
+            throw std::runtime_error("Child path argv differs at index " + std::to_string(index) +
+                "\nExpected: " + Utf8(expected[index]) + "\nActual: " + Utf8(actual[index + 2]));
+        }
     }
 }
 
@@ -204,7 +228,9 @@ int wmain(int count, wchar_t** arguments) {
             return 0;
         }
         require(count == 3, "Usage: ComTests.exe INSTALL_ROOT PACKAGE_VERSION");
-        const std::wstring install = arguments[1];
+        // Node's TEMP can contain an 8.3 username; Shell filesystem names use
+        // the existing directory's long form. Compare against that same path.
+        const std::wstring install = LongPath(arguments[1]);
         const std::wstring packageVersion = arguments[2];
         std::vector<wchar_t> ownPath(32768);
         const DWORD length = GetModuleFileNameW(nullptr, ownPath.data(), static_cast<DWORD>(ownPath.size()));
