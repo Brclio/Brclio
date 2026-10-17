@@ -20,8 +20,13 @@ test('defaults are absolute native paths without wrappers, and stay immutable', 
 test('settings accept only known values and true booleans', () => {
   assert.deepEqual(normalizeSettings({ pathMode: 'bad', quoteMode: 'shell', separator: 'auto', joinWith: ';', trailingSlash: 'true', launchAtLogin: 1, basePath: null, unused: true }), DEFAULT_SETTINGS);
   assert.deepEqual(normalizeSettings({ pathMode: 'relative', basePath: '/a', quoteMode: 'single', separator: 'forward', trailingSlash: true, joinWith: 'space', launchAtLogin: true }), {
-    pathMode: 'relative', basePath: '/a', quoteMode: 'single', separator: 'forward', trailingSlash: true, joinWith: 'space', launchAtLogin: true
+    pathMode: 'relative', basePath: '/a', quoteMode: 'single', separator: 'forward', trailingSlash: true, joinWith: 'space', launchAtLogin: true, copyShortcut: 'Alt+P'
   });
+});
+
+test('legacy settings gain the default shortcut and custom shortcuts survive normalization', () => {
+  assert.equal(normalizeSettings({ quoteMode: 'double' }).copyShortcut, 'Alt+P');
+  assert.equal(normalizeSettings({ copyShortcut: 'Ctrl+Alt+P' }).copyShortcut, 'Ctrl+Alt+P');
 });
 
 test('absolute normalization removes dot segments and clamps traversal at the root', () => {

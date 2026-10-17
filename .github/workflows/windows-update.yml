@@ -50,6 +50,8 @@ jobs:
           $version = node -p 'require("./package.json").version'
           node scripts/windows-verify-package.cjs --dir release/win-unpacked --version $version --report artifacts/windows-package.json
       - name: Verify the packaged Windows client and real clipboard
+        env:
+          BRCLIO_ALLOW_SELECTION_SMOKE: '1'
         run: |
           $env:BRCLIO_SMOKE_EXECUTABLE = (Resolve-Path 'release/win-unpacked/Brclio.exe').Path
           $env:BRCLIO_SMOKE_VERSION = node -p 'require("./package.json").version'

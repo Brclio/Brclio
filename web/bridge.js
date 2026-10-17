@@ -23,7 +23,7 @@
     });
   }
   const browser = {
-    getPlatform: async () => ({ platform: 'browser', version: '0.1.7', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false } }),
+    getPlatform: async () => ({ platform: 'browser', version: '0.1.8', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
     getSettings: async () => { const saved = localStorage.getItem(STORE); return saved ? JSON.parse(saved) : {}; },
     saveSettings: async settings => { localStorage.setItem(STORE, JSON.stringify(settings)); return settings; },
     copyText: async text => {
@@ -37,8 +37,11 @@
     pickPaths: async () => { throw new Error('浏览器无法读取完整本地路径。请粘贴绝对路径，或使用客户端选择文件。'); },
     getIntegrationStatus: async () => ({ installed: false, supported: false }),
     setIntegration: async () => { throw new Error('请在桌面客户端启用系统右键菜单。'); },
+    getShortcutStatus: async () => ({ supported: false, accelerator: 'Alt+P', registered: false, error: null }),
+    suspendShortcut: async () => {},
+    resumeShortcut: async () => ({ supported: false, accelerator: 'Alt+P', registered: false, error: null }),
     onPaths: () => () => {},
-    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.1.7' }),
+    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.1.8' }),
     downloadUpdate: async () => { throw new Error('请在客户端中下载安装包。'); },
     installUpdate: async () => { throw new Error('请在客户端中安装更新。'); },
     onUpdateState: () => () => {},
@@ -55,6 +58,9 @@
     pickPaths: options => native('pickPaths', options),
     getIntegrationStatus: () => native('getIntegrationStatus'),
     setIntegration: enabled => native('setIntegration', { enabled }),
+    getShortcutStatus: async () => ({ supported: false, accelerator: 'Alt+P', registered: false, error: null }),
+    suspendShortcut: async () => {},
+    resumeShortcut: async () => ({ supported: false, accelerator: 'Alt+P', registered: false, error: null }),
     onPaths: callback => { const listener = event => callback(event.detail); window.addEventListener('brclio:paths', listener); return () => window.removeEventListener('brclio:paths', listener); },
   };
   window.BrclioHost = window.brclio || (isAndroid ? android : browser);

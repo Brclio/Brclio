@@ -100,6 +100,122 @@ try {
   report.push('native settings saves stay serialized and resetting copy preferences preserves login startup');
   await page.close();
 
+  const shortcuts = await browser.newPage({ viewport: { width: 1100, height: 1000 } });
+  observe(shortcuts);
+  await shortcuts.addInitScript(() => {
+    window.__shortcutSettings = { copyShortcut: 'Alt+P', quoteMode: 'none' };
+    window.__shortcutCalls = [];
+    window.__shortcutSuspended = false;
+    window.__shortcutResumeCalls = 0;
+    window.__shortcutAvailable = false;
+    const status = () => ({ supported: true, accelerator: window.__shortcutSettings.copyShortcut, registered: window.__shortcutAvailable && !window.__shortcutSuspended, error: window.__shortcutAvailable ? null : '默认快捷键暂时被其他应用占用。' });
+    window.brclio = {
+      getPlatform: async () => ({ platform: 'darwin', capabilities: { globalShortcut: true } }),
+      getSettings: async () => window.__shortcutSettings,
+      getIntegrationStatus: async () => ({ supported: false }),
+      getShortcutStatus: async () => status(),
+      suspendShortcut: async () => { await new Promise(resolve => setTimeout(resolve, 20)); window.__shortcutSuspended = true; return status(); },
+      resumeShortcut: async () => { window.__shortcutResumeCalls++; window.__shortcutSuspended = false; window.__shortcutAvailable = true; return status(); },
+      saveSettings: async settings => {
+        window.__shortcutCalls.push(settings);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (settings.copyShortcut === 'Ctrl+K') throw new Error('此快捷键已被其他应用占用，请换一个组合键。');
+        window.__shortcutSettings = { ...settings };
+        return { ...settings };
+      },
+      onPaths: () => () => {},
+    };
+  });
+  await shortcuts.goto(url);
+  await shortcuts.waitForFunction(() => document.body.dataset.initialized === 'true');
+  await shortcuts.locator('[data-view="settings"]').click();
+  assert.equal(await shortcuts.locator('label[for="launch-shortcut"]').innerText(), '复制所选路径');
+  assert.match(await shortcuts.locator('#shortcut-hint').innerText(), /Finder.*选中.*路径格式/);
+  assert.match(await shortcuts.locator('#shortcut-hint').innerText(), /允许 Brclio 控制 Finder/);
+  assert.equal(await shortcuts.locator('#launch-shortcut').inputValue(), 'Option + P');
+  assert.match(await shortcuts.locator('#shortcut-status').innerText(), /占用/);
+  await shortcuts.locator('#retry-shortcut').click();
+  await shortcuts.waitForFunction(() => document.querySelector('#retry-shortcut').hidden);
+  assert.equal(await shortcuts.locator('#shortcut-status').isVisible(), false);
+  report.push('macOS default shows Option+P and startup registration failures offer a working retry');
+
+  await shortcuts.locator('#record-shortcut').click();
+  await shortcuts.waitForFunction(() => window.__shortcutSuspended);
+  await shortcuts.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', shiftKey: true, bubbles: true, cancelable: true })));
+  assert.equal(await shortcuts.locator('#cancel-shortcut').isVisible(), true);
+  assert.match(await shortcuts.locator('#shortcut-status').innerText(), /Ctrl/);
+  await shortcuts.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: '∆', code: 'KeyJ', ctrlKey: true, altKey: true, bubbles: true, cancelable: true })));
+  await shortcuts.locator('[data-view="copy"]').first().click();
+  await shortcuts.locator('#quote-mode').selectOption('single');
+  await shortcuts.waitForFunction(() => window.__shortcutSettings.copyShortcut === 'Ctrl+Alt+J' && window.__shortcutSettings.quoteMode === 'single' && !window.__shortcutSuspended);
+  assert.equal(await shortcuts.evaluate(() => window.__shortcutCalls.at(-1).copyShortcut), 'Ctrl+Alt+J');
+  await shortcuts.locator('[data-view="settings"]').click();
+  assert.equal(await shortcuts.locator('#launch-shortcut').inputValue(), 'Ctrl + Option + J');
+  assert.match(await shortcuts.locator('#shortcut-status').innerText(), /已保存/);
+  report.push('recording uses physical key codes under macOS Option and rejects Shift-only combinations');
+
+  await shortcuts.locator('#record-shortcut').click();
+  await shortcuts.waitForFunction(() => window.__shortcutSuspended);
+  await shortcuts.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true, cancelable: true })));
+  await shortcuts.locator('[data-view="copy"]').first().click();
+  await shortcuts.locator('#quote-mode').selectOption('double');
+  await shortcuts.waitForFunction(() => window.__shortcutCalls.length === 4 && window.__shortcutSettings.quoteMode === 'double');
+  assert.equal(await shortcuts.locator('#search-dialog').isVisible(), false);
+  assert.equal(await shortcuts.evaluate(() => window.__shortcutSettings.copyShortcut), 'Ctrl+Alt+J');
+  assert.equal(await shortcuts.evaluate(() => window.__shortcutCalls.at(-1).copyShortcut), 'Ctrl+Alt+J');
+  await shortcuts.locator('[data-view="settings"]').click();
+  assert.equal(await shortcuts.locator('#launch-shortcut').inputValue(), 'Ctrl + Option + J');
+  assert.match(await shortcuts.locator('#shortcut-status').innerText(), /未修改.*占用/);
+  report.push('conflicting shortcuts restore the old value, suppress search and preserve queued format saves');
+
+  const savesBeforeCancel = await shortcuts.evaluate(() => window.__shortcutCalls.length);
+  for (const cancel of ['escape', 'button', 'navigation', 'outside', 'blur', 'pagehide']) {
+    await shortcuts.locator('#record-shortcut').click();
+    await shortcuts.waitForFunction(() => window.__shortcutSuspended);
+    if (cancel === 'escape') await shortcuts.keyboard.press('Escape');
+    else if (cancel === 'button') await shortcuts.locator('#cancel-shortcut').click();
+    else if (cancel === 'navigation') await shortcuts.locator('[data-view="copy"]').first().click();
+    else if (cancel === 'outside') await shortcuts.locator('#settings-title').click();
+    else await shortcuts.evaluate(type => window.dispatchEvent(new Event(type)), cancel);
+    await shortcuts.waitForFunction(() => !window.__shortcutSuspended && document.querySelector('#cancel-shortcut').hidden && !document.querySelector('#record-shortcut').disabled);
+    if (cancel === 'navigation') await shortcuts.locator('[data-view="settings"]').click();
+  }
+  assert.equal(await shortcuts.evaluate(() => window.__shortcutCalls.length), savesBeforeCancel);
+  // Cancelling while native suspension is still pending must resume afterwards.
+  await shortcuts.locator('#record-shortcut').click();
+  await shortcuts.keyboard.press('Escape');
+  await shortcuts.waitForFunction(() => !window.__shortcutSuspended && !document.querySelector('#record-shortcut').disabled);
+  await shortcuts.locator('[data-view="copy"]').first().click();
+  await shortcuts.locator('#reset-settings').click();
+  await shortcuts.waitForFunction(() => window.__shortcutSettings.quoteMode === 'none');
+  assert.equal(await shortcuts.evaluate(() => window.__shortcutSettings.copyShortcut), 'Ctrl+Alt+J');
+  await shortcuts.locator('[data-view="settings"]').click();
+  await shortcuts.locator('#reset-shortcut').click();
+  await shortcuts.waitForFunction(() => window.__shortcutSettings.copyShortcut === 'Alt+P' && !document.querySelector('#record-shortcut').disabled);
+  assert.equal(await shortcuts.locator('#launch-shortcut').inputValue(), 'Option + P');
+  report.push('cancel, blur, navigation and disposal resume the binding; copy reset preserves it and shortcut reset restores Alt+P');
+  await shortcuts.close();
+
+  const windowsShortcut = await browser.newPage();
+  observe(windowsShortcut);
+  await windowsShortcut.addInitScript(() => {
+    window.brclio = {
+      getPlatform: async () => ({ platform: 'win32', capabilities: { globalShortcut: true } }),
+      getSettings: async () => ({ copyShortcut: 'Super+P' }),
+      getIntegrationStatus: async () => ({ supported: false }),
+      getShortcutStatus: async () => ({ supported: true, accelerator: 'Super+P', registered: true, error: null }),
+      suspendShortcut: async () => {}, resumeShortcut: async () => {}, onPaths: () => () => {},
+    };
+  });
+  await windowsShortcut.goto(url);
+  await windowsShortcut.waitForFunction(() => document.body.dataset.initialized === 'true');
+  await windowsShortcut.locator('[data-view="settings"]').click();
+  assert.match(await windowsShortcut.locator('#shortcut-hint').innerText(), /资源管理器.*选中.*路径格式/);
+  assert.equal(await windowsShortcut.locator('#launch-shortcut').inputValue(), 'Win + P');
+  assert.equal(await windowsShortcut.locator('#record-shortcut').isEnabled(), true);
+  report.push('Windows custom shortcuts display Super as Win');
+  await windowsShortcut.close();
+
   const failed = await browser.newPage();
   observe(failed);
   await failed.addInitScript(() => {
@@ -367,6 +483,11 @@ try {
     catch (error) { return error.message; }
   });
   assert.match(rejected, /Android 不支持/);
+  await android.locator('[data-view="settings"]').click();
+  assert.equal(await android.locator('#launch-shortcut').isDisabled(), true);
+  assert.equal(await android.locator('#record-shortcut').isDisabled(), true);
+  assert.match(await android.locator('#shortcut-hint').innerText(), /安卓端不支持全局快捷键/);
+  assert.equal(await android.evaluate(() => window.__nativeRequests.some(request => /Shortcut/.test(request.method))), false);
   report.push('Android base picker contract, URI preservation, relative refusal, and native errors reach the real UI');
   await android.close();
   assert.deepEqual(errors, []);

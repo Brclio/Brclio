@@ -57,6 +57,15 @@ try {
   assert.equal(await page.locator('#view-copy').isVisible(), true);
   await page.locator('[data-view="settings"]').click();
   assert.equal(await page.locator('#launch-at-login').isDisabled(), true);
+  assert.equal(await page.locator('#launch-shortcut').isDisabled(), true);
+  assert.equal(await page.locator('#record-shortcut').isDisabled(), true);
+  assert.equal(await page.locator('#reset-shortcut').isDisabled(), true);
+  assert.match(await page.locator('#shortcut-hint').innerText(), /仅支持 macOS 和 Windows 客户端/);
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({ width, height: 1000 });
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+    assert.equal(overflow, false, `settings horizontal overflow at ${width}`);
+  }
   await page.locator('[data-view="copy"]').first().click();
   report.push('tool registry navigation, search, dialog keyboard and capability controls');
   await mkdir('artifacts', { recursive: true });

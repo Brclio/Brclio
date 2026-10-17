@@ -1,11 +1,13 @@
 'use strict';
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, net, shell } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { formatPaths, normalizeSettings } = require('../core/path-engine.cjs');
 const { createSettingsStore } = require('./settings.cjs');
+const { createShortcutManager, normalizeShortcut } = require('./shortcuts.cjs');
+const { createSelectionCopier } = require('./selected-paths.cjs');
 const { createIntegration } = require('./integration.cjs');
 const { getCopyPaths } = require('./arguments.cjs');
 const { getCopyPathsFromURL, getCopyPathsFromURLs } = require('./deep-link.cjs');
@@ -32,10 +34,35 @@ let pendingUpdateLaunchArgs = updateLaunchArgs;
 let pendingPaths = [];
 let copyQueue = Promise.resolve();
 let idleExit;
+let keepRunning = false;
 const pendingOpenURLs = [];
 const indexPath = path.join(__dirname, '..', 'web', 'index.html');
 const indexURL = pathToFileURL(indexPath).href;
 const settings = createSettingsStore(app.getPath('userData'));
+const copySelection = createSelectionCopier({
+  copyPaths: paths => copyFromMenu(paths, { exitWhenIdle: false }),
+  onError: async error => {
+    createWindow();
+    await dialog.showMessageBox(mainWindow, { type: 'warning', title: '无法复制所选路径',
+      message: error.message, detail: '原剪贴板内容已保留。选中文件或文件夹后，请返回 Finder 或资源管理器再按快捷键。' });
+  },
+});
+const shortcuts = createShortcutManager({ globalShortcut, onActivate: () => {
+  keepRunning = true;
+  clearTimeout(idleExit);
+  void copySelection().catch(error => console.error('Shortcut copy failed:', error.message));
+} });
+let preferencesQueue = Promise.resolve();
+function withPreferences(operation) {
+  const result = preferencesQueue.then(operation);
+  preferencesQueue = result.catch(() => {});
+  return result;
+}
+function resumeRecordingShortcut() {
+  // Check inside the queue: a pending suspend may belong to a renderer that
+  // has already reloaded or exited by the time its IPC operation runs.
+  void withPreferences(() => { if (shortcuts.isSuspended()) shortcuts.resume(); });
+}
 const integration = createIntegration({ launch: {
   executable: process.execPath, appPath: app.getAppPath(), packaged: app.isPackaged,
 } });
@@ -93,6 +120,7 @@ async function deliverPaths(paths) {
 }
 
 function createWindow() {
+  keepRunning = true;
   clearTimeout(idleExit);
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
@@ -115,7 +143,10 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     if (pendingPaths.length) { mainWindow.webContents.send('brclio:paths', pendingPaths); pendingPaths = []; }
   });
-  mainWindow.on('closed', () => { mainWindow = null; rendererReady = false; });
+  mainWindow.on('blur', resumeRecordingShortcut);
+  mainWindow.webContents.on('did-start-loading', resumeRecordingShortcut);
+  mainWindow.webContents.on('render-process-gone', resumeRecordingShortcut);
+  mainWindow.on('closed', () => { mainWindow = null; rendererReady = false; resumeRecordingShortcut(); });
   mainWindow.loadFile(indexPath);
   return mainWindow;
 }
@@ -133,23 +164,32 @@ function handle(channel, callback) {
 function registerIPC() {
   handle('brclio:ready', () => { rendererReady = true; void acknowledgeUpdate(); return { ready: true }; });
   handle('brclio:platform', () => ({ platform: process.platform, version: app.getVersion(),
-    capabilities: { filePicker: true, folderPicker: true, systemIntegration: ['darwin', 'win32'].includes(process.platform) },
+    capabilities: { filePicker: true, folderPicker: true, systemIntegration: ['darwin', 'win32'].includes(process.platform), globalShortcut: shortcuts.status().supported },
     homePath: app.getPath('home'), packaged: app.isPackaged,
   }));
   handle('brclio:settings:get', () => settings.read());
-  handle('brclio:settings:save', async input => {
+  handle('brclio:shortcut:status', () => withPreferences(() => shortcuts.status()));
+  handle('brclio:shortcut:suspend', () => withPreferences(() => {
+    if (!mainWindow?.isFocused()) throw new Error('请先返回 Brclio 窗口再录入快捷键。');
+    return shortcuts.suspend();
+  }));
+  handle('brclio:shortcut:resume', () => withPreferences(() => shortcuts.resume()));
+  handle('brclio:settings:save', input => withPreferences(async () => {
     const next = normalizeSettings(input);
+    next.copyShortcut = normalizeShortcut(next.copyShortcut);
     const previous = await settings.read();
-    if (next.launchAtLogin !== previous.launchAtLogin) {
-      if (!app.isPackaged) throw new Error('请在安装版中设置开机启动。');
-      app.setLoginItemSettings({ openAtLogin: next.launchAtLogin });
-    }
-    try { return await settings.write(next); }
-    catch (error) {
-      if (next.launchAtLogin !== previous.launchAtLogin) app.setLoginItemSettings({ openAtLogin: previous.launchAtLogin });
-      throw error;
-    }
-  });
+    return shortcuts.save(next.copyShortcut, async () => {
+      if (next.launchAtLogin !== previous.launchAtLogin) {
+        if (!app.isPackaged) throw new Error('请在安装版中设置开机启动。');
+        app.setLoginItemSettings({ openAtLogin: next.launchAtLogin });
+      }
+      try { return await settings.write(next); }
+      catch (error) {
+        if (next.launchAtLogin !== previous.launchAtLogin) app.setLoginItemSettings({ openAtLogin: previous.launchAtLogin });
+        throw error;
+      }
+    });
+  }));
   handle('brclio:paths:pick', async options => {
     const kind = options?.kind;
     if (!['file', 'directory', 'base'].includes(kind)) throw new Error('请选择文件或文件夹。');
@@ -178,7 +218,7 @@ function registerIPC() {
   handle('brclio:update:install', () => updater.install());
 }
 
-function copyFromMenu(paths) {
+function copyFromMenu(paths, { exitWhenIdle = true } = {}) {
   clearTimeout(idleExit);
   copyQueue = copyQueue.then(async () => {
     try {
@@ -196,7 +236,9 @@ function copyFromMenu(paths) {
   }).catch(error => console.error('Context-menu copy failed:', error.message));
   const operation = copyQueue;
   operation.then(() => {
-    if (copyQueue === operation && !mainWindow) idleExit = setTimeout(() => { if (!mainWindow && copyQueue === operation) app.quit(); }, 250);
+    if (exitWhenIdle && !keepRunning && copyQueue === operation && !mainWindow) {
+      idleExit = setTimeout(() => { if (!keepRunning && !mainWindow && copyQueue === operation) app.quit(); }, 250);
+    }
   });
   return copyQueue;
 }
@@ -233,6 +275,7 @@ if (!gotLock) {
     } else createWindow();
   });
   app.whenReady().then(async () => {
+    shortcuts.initialize((await settings.read()).copyShortcut);
     if (process.platform === 'darwin' && !app.isPackaged) {
       app.dock?.setIcon(path.join(__dirname, '../resources/icon.png'));
     }
@@ -259,5 +302,6 @@ if (!gotLock) {
     } else createWindow();
   }).catch(error => { console.error(error); app.quit(); });
   app.on('activate', () => createWindow());
+  app.on('will-quit', () => shortcuts.dispose());
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

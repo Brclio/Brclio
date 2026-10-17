@@ -51,6 +51,18 @@ Finder 顶部工具栏也提供复制图标：点击后选择“复制路径 · 
 
 Finder Sync 提供的是受监控目录中的菜单扩展，不能保证所有 Finder 位置都显示。部分特殊 Applications 视图、虚拟目录或云盘视图可能受系统限制；多个扩展覆盖同一目录也可能冲突。普通实体目录、Desktop 和外置卷需要分别验证，根目录覆盖登记不代表所有位置均可用。[Apple DTS 对覆盖范围的说明](https://developer.apple.com/forums/thread/766680)
 
+## 复制所选路径的快捷键
+
+macOS 默认使用 `Option+P`，Windows 默认使用 `Alt+P`。在前台 Finder／资源管理器中选中文件或文件夹，按快捷键直接复制所有选中项的路径，沿用保存的引号、分隔符、相对路径等格式，不需要打开工具窗口。无选中项、虚拟项目或窗口已切换时，保留原剪贴板并提示原因。
+
+打开“通用设置 → 复制所选路径”，点击“修改快捷键”后按下新的组合键，即时保存并生效；按 Esc 或点击取消保留原组合。“恢复默认”只重置复制快捷键，“复制路径”页面的恢复默认只重置路径格式。
+
+快捷键在软件运行时生效，窗口最小化也可使用。macOS 关闭窗口后，只要未退出软件，仍可按快捷键复制；Windows 关闭最后一个窗口会退出软件，需要再次启动后才能使用快捷键。macOS 首次使用会请求允许 Brclio 控制 Finder，以读取当前选中项；若拒绝，可在“系统设置 → 隐私与安全性 → 自动化”中允许后重试。右键菜单与 Finder 工具栏的扩展无需此自动化授权。
+
+支持 Control、Option / Alt、Command / Win 配合字母、数字、功能键等组合。修改时检查系统占用，无法注册时保留原设置并提示更换；启动时遇到占用也会在设置页显示，可点击重试或修改。录入时暂时释放当前组合，取消、离开窗口或重载后自动恢复。设置保存在本机，重启后沿用；退出时释放系统绑定。浏览器预览与 Android 不支持桌面全局快捷键。快捷键读取选中项使用固定的本地脚本和 JSON 数据，不把文件名拼入命令，不读取文件内容。
+
+Windows 使用前台窗口中的可见活动视图读取选中项，不直接采用后台标签页缓存。无法确定活动视图或操作期间发生切换时会提示重试；Windows 11 客户端标签页切换需另行实机验收。桌面图标选区不属于资源管理器窗口入口。
+
 ## 软件关闭时也可使用
 
 Windows 右键入口和桌面命令行复制使用：
@@ -67,7 +79,7 @@ macOS Finder 扩展通过定向 URL 事件调用同一复制流程。主进程�
 
 ## 原生桥与安全边界
 
-`desktop/preload.cjs` 只公开 `window.brclio` 的固定方法：平台信息、设置、路径选择、复制文本、集成开关、软件更新及状态事件。文件拖放通过 Electron `webUtils.getPathForFile` 获得真实磁盘路径，并由主进程读取文件夹类型，不猜测浏览器虚拟文件名。渲染窗口启用上下文隔离、沙箱并关闭 Node 集成；IPC 仅接受本地首页的主 frame，拒绝外部导航、新窗口及 webview。
+`desktop/preload.cjs` 只公开 `window.brclio` 的固定方法：平台信息、设置、路径选择、复制文本、集成开关、快捷键录入与状态、软件更新及状态事件。文件拖放通过 Electron `webUtils.getPathForFile` 获得真实磁盘路径，并由主进程读取文件夹类型，不猜测浏览器虚拟文件名。渲染窗口启用上下文隔离、沙箱并关闭 Node 集成；IPC 仅接受本地首页的主 frame，拒绝外部导航、新窗口及 webview。
 
 ## 在线检查与下载安装
 
@@ -106,6 +118,7 @@ Electron 端到端测试可设置 `BRCLIO_USER_DATA` 为临时绝对目录来隔
 
 - [Electron 单实例锁与第二实例参数](https://www.electronjs.org/docs/latest/api/app#apprequestsingleinstancelockadditionaldata)：精确参数应使用 `additionalData`。
 - [Electron webUtils](https://www.electronjs.org/docs/latest/api/web-utils)：通过 preload 获得磁盘文件真实路径。
+- [Electron globalShortcut](https://www.electronjs.org/docs/latest/api/global-shortcut)：应用就绪后注册系统快捷键，检查占用并在退出时释放。
 - [Electron clipboard](https://www.electronjs.org/docs/latest/api/clipboard)：Electron 44 的异步剪贴板 API；复制成功在写入完成后返回。
 - [GitHub 获取最新 Release](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)：正式版本、资产与下载地址。
 - [Microsoft 扩展快捷菜单](https://learn.microsoft.com/en-us/windows/win32/shell/context)：静态 verb、命令和路径引号。

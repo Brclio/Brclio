@@ -22,6 +22,12 @@
   let toastTimer;
   let saveQueue = Promise.resolve();
   let changes = 0;
+  let shortcutStatus = { supported: false, accelerator: 'Alt+P', registered: false, error: null };
+  let shortcutCapture = null;
+  let shortcutBusy = false;
+  let shortcutPendingValue = '';
+  let shortcutMessage = '';
+  let shortcutFailed = false;
 
   function toast(message, error = false) {
     clearTimeout(toastTimer);
@@ -34,13 +40,22 @@
     $('#save-status span').textContent = message;
     $('#save-status').classList.toggle('error', failed);
   }
-  function savePreferences() {
+  function savePreferences(shortcutCandidate) {
     const snapshot = { ...settings };
     const revision = ++changes;
     setSaveStatus('正在保存…');
-    saveQueue = saveQueue.catch(() => {}).then(() => host.saveSettings(snapshot)).then(() => {
+    saveQueue = saveQueue.catch(() => {}).then(() => {
+      // A queued format edit must use the latest successfully saved shortcut.
+      return host.saveSettings({ ...snapshot, copyShortcut: shortcutCandidate ?? settings.copyShortcut });
+    }).then(saved => {
+      if (shortcutCandidate !== undefined) settings.copyShortcut = saved?.copyShortcut || shortcutCandidate;
       if (revision === changes) setSaveStatus('设置已保存');
-    }).catch(error => { if (revision === changes) { setSaveStatus('保存失败', true); toast(error.message, true); } });
+      return { saved };
+    }).catch(error => {
+      if (revision === changes) { setSaveStatus('保存失败', true); if (shortcutCandidate === undefined) toast(error.message, true); }
+      return { error };
+    });
+    return saveQueue;
   }
   function applyControls() {
     $$('input[name="pathMode"]').forEach(input => { input.checked = input.value === settings.pathMode; });
@@ -50,8 +65,132 @@
     $('#join-with').value = settings.joinWith;
     $('#trailing-slash').checked = settings.trailingSlash;
     $('#launch-at-login').checked = settings.launchAtLogin;
+    renderShortcut();
     updatePreview();
   }
+  function shortcutSupported() {
+    return Boolean(platform.capabilities?.globalShortcut && shortcutStatus.supported && host.suspendShortcut && host.resumeShortcut);
+  }
+  function displayShortcut(accelerator) {
+    const names = platform.platform === 'darwin' ? { Alt: 'Option', Super: 'Command' } : { Super: 'Win' };
+    return (accelerator || 'Alt+P').split('+').map(key => names[key] || key).join(' + ');
+  }
+  function renderShortcut() {
+    const supported = shortcutSupported();
+    const recording = Boolean(shortcutCapture);
+    $('#launch-shortcut').value = recording ? shortcutCapture.ready ? '请按下快捷键…' : '正在准备录制…' : displayShortcut(shortcutPendingValue || settings.copyShortcut);
+    $('#launch-shortcut').disabled = !supported;
+    $('#launch-shortcut').classList.toggle('recording', recording);
+    $('#record-shortcut').disabled = !supported || shortcutBusy || recording;
+    $('#record-shortcut').textContent = shortcutBusy ? '请稍候…' : '修改快捷键';
+    $('#reset-shortcut').disabled = !supported || shortcutBusy || recording;
+    $('#cancel-shortcut').hidden = !recording;
+    $('#shortcut-hint').textContent = !supported
+      ? platform.platform === 'android' ? '安卓端不支持全局快捷键，可选择文件或从文件管理器分享后复制。' : '全局快捷键仅支持 macOS 和 Windows 客户端。'
+      : recording ? platform.platform === 'darwin' ? '按下包含 Control、Option 或 Command 的组合键，Esc 取消。' : '按下包含 Ctrl、Alt 或 Win 的组合键，Esc 取消。'
+        : platform.platform === 'darwin' ? '在 Finder 中选中文件或文件夹后按下，沿用路径格式。默认：Option+P（Windows Alt+P）。首次使用可能需允许 Brclio 控制 Finder。'
+          : '在资源管理器中选中文件或文件夹后按下，沿用路径格式。默认：Windows Alt+P · Mac Option+P。';
+    const status = $('#shortcut-status');
+    status.textContent = shortcutMessage || (supported && !recording && !shortcutBusy && !shortcutStatus.registered ? shortcutStatus.error || '快捷键尚未生效，请重试或设置其他组合键。' : '');
+    status.hidden = !status.textContent;
+    status.classList.toggle('error', shortcutFailed || Boolean(!shortcutMessage && shortcutStatus.error));
+    $('#retry-shortcut').hidden = !supported || recording || shortcutBusy || shortcutStatus.registered;
+  }
+  async function resumeShortcut() {
+    try {
+      const status = await host.resumeShortcut();
+      shortcutStatus = status || await host.getShortcutStatus();
+    } catch (error) { shortcutStatus = { ...shortcutStatus, registered: false, error: error.message }; }
+  }
+  async function cancelShortcutRecording() {
+    const capture = shortcutCapture;
+    if (!capture) return;
+    shortcutCapture = null;
+    shortcutBusy = true;
+    shortcutMessage = '';
+    shortcutFailed = false;
+    renderShortcut();
+    await capture.suspension.catch(() => {});
+    await resumeShortcut();
+    shortcutBusy = false;
+    renderShortcut();
+  }
+  async function recordShortcut() {
+    if (!shortcutSupported() || shortcutBusy || shortcutCapture) return;
+    shortcutMessage = '';
+    shortcutFailed = false;
+    const capture = { ready: false, suspension: saveQueue.then(() => host.suspendShortcut()) };
+    shortcutCapture = capture;
+    renderShortcut();
+    $('#cancel-shortcut').focus();
+    try {
+      await capture.suspension;
+      if (shortcutCapture === capture) { capture.ready = true; renderShortcut(); }
+    } catch (error) {
+      if (shortcutCapture !== capture) return;
+      await cancelShortcutRecording();
+      shortcutMessage = `无法开始录制：${error.message}`;
+      shortcutFailed = true;
+      renderShortcut();
+    }
+  }
+  async function saveShortcut(candidate) {
+    const capture = shortcutCapture;
+    shortcutCapture = null;
+    shortcutBusy = true;
+    shortcutPendingValue = candidate;
+    shortcutMessage = '正在保存快捷键…';
+    shortcutFailed = false;
+    renderShortcut();
+    try {
+      if (capture) await capture.suspension;
+      const result = await savePreferences(candidate);
+      if (result.error) throw result.error;
+      shortcutMessage = `已保存 ${displayShortcut(settings.copyShortcut)}`;
+    } catch (error) { shortcutMessage = `未修改快捷键：${error.message}`; shortcutFailed = true; }
+    finally {
+      await resumeShortcut();
+      shortcutBusy = false;
+      shortcutPendingValue = '';
+      if (!shortcutFailed && !shortcutStatus.registered) { shortcutMessage = shortcutStatus.error || '快捷键已保存，但尚未生效，请重试。'; shortcutFailed = true; }
+      renderShortcut();
+    }
+  }
+  function shortcutFromEvent(event) {
+    let key;
+    if (/^Key[A-Z]$/.test(event.code)) key = event.code.slice(3);
+    else if (/^Digit[0-9]$/.test(event.code)) key = event.code.slice(5);
+    else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(event.code)) key = event.code;
+    else key = { Space: 'Space', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Insert: 'Insert', Delete: 'Delete', Backspace: 'Backspace', Tab: 'Tab' }[event.code];
+    if (!key || !(event.ctrlKey || event.altKey || event.metaKey)) return null;
+    return [event.ctrlKey && 'Ctrl', event.altKey && 'Alt', event.shiftKey && 'Shift', event.metaKey && 'Super', key].filter(Boolean).join('+');
+  }
+  document.addEventListener('keydown', event => {
+    if (!shortcutCapture) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.code === 'Escape' || event.key === 'Escape') { void cancelShortcutRecording(); return; }
+    if (!shortcutCapture.ready || event.repeat) return;
+    const candidate = shortcutFromEvent(event);
+    if (candidate) void saveShortcut(candidate);
+    else if (!['ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'ShiftLeft', 'ShiftRight', 'MetaLeft', 'MetaRight'].includes(event.code)) {
+      shortcutMessage = '请使用 Ctrl、Option / Alt 或 Command / Win，加上字母、数字或功能键。';
+      shortcutFailed = true;
+      renderShortcut();
+    }
+  }, true);
+  $('#record-shortcut').addEventListener('click', recordShortcut);
+  $('#cancel-shortcut').addEventListener('click', cancelShortcutRecording);
+  $('#reset-shortcut').addEventListener('click', () => { if (shortcutSupported() && !shortcutBusy && !shortcutCapture) void saveShortcut('Alt+P'); });
+  $('#retry-shortcut').addEventListener('click', async () => {
+    shortcutBusy = true; shortcutMessage = ''; shortcutFailed = false; renderShortcut();
+    await resumeShortcut();
+    shortcutBusy = false; renderShortcut();
+  });
+  window.addEventListener('blur', () => { void cancelShortcutRecording(); });
+  window.addEventListener('pagehide', () => { void cancelShortcutRecording(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) void cancelShortcutRecording(); });
+  document.addEventListener('pointerdown', event => { if (shortcutCapture && !event.target.closest('.shortcut-controls')) void cancelShortcutRecording(); }, true);
   function pathsForPreview() { return selectedPaths.length ? selectedPaths : [samples[samplePlatform]]; }
   function updatePreview() {
     $('#base-path-field').hidden = settings.pathMode !== 'relative';
@@ -111,12 +250,13 @@
   }
   function setView(name) {
     if (!viewNames[name]) name = 'copy';
+    if (name !== 'settings') void cancelShortcutRecording();
     $$('.view').forEach(view => { const active = view.id === 'view-' + name; view.hidden = !active; view.classList.toggle('active', active); });
     $$('.nav-item[data-view]').forEach(item => { item.classList.toggle('active', item.dataset.view === name); if (item.dataset.view === name) item.setAttribute('aria-current', 'page'); else item.removeAttribute('aria-current'); });
     $('#breadcrumb-current').textContent = viewNames[name];
     document.title = `Brclio · ${viewNames[name]}`;
   }
-  function showDialog(id) { const dialog = $('#' + id); if (!dialog.open) dialog.showModal(); }
+  function showDialog(id) { void cancelShortcutRecording(); const dialog = $('#' + id); if (!dialog.open) dialog.showModal(); }
   function refreshIntegration() {
     const available = integration.supported && platform.capabilities?.systemIntegration;
     if (available) {
@@ -148,7 +288,7 @@
   $('#base-path').addEventListener('input', event => { settings.basePath = event.target.value; updatePreview(); savePreferences(); });
   [['quote-mode', 'quoteMode'], ['join-with', 'joinWith']].forEach(([id, key]) => $('#' + id).addEventListener('change', event => { settings[key] = event.target.value; updatePreview(); savePreferences(); }));
   [['trailing-slash', 'trailingSlash'], ['launch-at-login', 'launchAtLogin']].forEach(([id, key]) => $('#' + id).addEventListener('change', event => { settings[key] = event.target.checked; updatePreview(); savePreferences(); }));
-  $('#reset-settings').addEventListener('click', () => { settings = { ...engine.DEFAULT_SETTINGS, launchAtLogin: settings.launchAtLogin }; applyControls(); savePreferences(); toast('已恢复默认复制偏好'); });
+  $('#reset-settings').addEventListener('click', () => { settings = { ...engine.DEFAULT_SETTINGS, launchAtLogin: settings.launchAtLogin, copyShortcut: settings.copyShortcut }; applyControls(); savePreferences(); toast('已恢复默认复制偏好'); });
   $$('[data-sample]').forEach(button => button.addEventListener('click', () => { samplePlatform = button.dataset.sample; $$('[data-sample]').forEach(item => item.classList.toggle('active', item === button)); updatePreview(); }));
   $('#copy-preview').addEventListener('click', copyOutput);
   $('#path-preview').addEventListener('contextmenu', event => { event.preventDefault(); clearTimeout(longPress); copyOutput(); });
@@ -224,7 +364,7 @@
     const percent = Math.max(0, Math.min(100, Number(updateState.progress) || 0));
     const version = updateState.version ? `v${updateState.version}` : '新版本';
     const titles = { idle: '保持顺手，也保持最新。', checking: '正在检查 GitHub 最新版本…', 'up-to-date': '已经是最新版本。', available: `${version} 已经准备好。`, downloading: `正在下载 ${version}…`, downloaded: '安装包已下载，校验通过。', preparing: '正在准备覆盖安装…', restarting: '正在更新，Brclio 即将重新打开…', installed: '更新完成，欢迎回来。', error: '这次更新未完成，可以重试。', unsupported: '请在客户端中检查和安装更新。', installing: '请在系统安装界面中继续。' };
-    const details = { idle: '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.7'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
+    const details = { idle: '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.8'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
     const detail = updateState.requiresPermission ? '请在系统设置中允许 Brclio 安装应用，然后返回并再次点击安装。' : status === 'error' ? updateState.error || '网络连接失败，请检查网络后重试。' : updateState.message || details[status] || details.idle;
     // Both entry points reflect the same native update without changing views.
     ['update', 'about-update'].forEach(prefix => {
@@ -283,13 +423,17 @@
     try {
       const [info, saved, status, update] = await Promise.all([host.getPlatform(), host.getSettings(), host.getIntegrationStatus(), host.getUpdateState?.()]);
       platform = info; integration = status; settings = engine.normalizeSettings(saved);
+      if (platform.capabilities?.globalShortcut && host.getShortcutStatus) {
+        try { shortcutStatus = await host.getShortcutStatus(); }
+        catch (error) { shortcutStatus = { supported: true, accelerator: settings.copyShortcut, registered: false, error: error.message }; }
+      }
       if (samples[platform.platform]) { samplePlatform = platform.platform; $$('[data-sample]').forEach(button => button.classList.toggle('active', button.dataset.sample === samplePlatform)); }
-      $$('.version').forEach(item => { item.textContent = `v${platform.version || '0.1.7'}`; });
-      $('#current-version').textContent = `v${platform.version || '0.1.7'}`;
-      $('#about-dialog .subtle-tag').textContent = `VERSION ${platform.version || '0.1.7'}`;
+      $$('.version').forEach(item => { item.textContent = `v${platform.version || '0.1.8'}`; });
+      $('#current-version').textContent = `v${platform.version || '0.1.8'}`;
+      $('#about-dialog .subtle-tag').textContent = `VERSION ${platform.version || '0.1.8'}`;
       $('#update-platform-hint').textContent = platform.platform === 'darwin' ? '下载校验后自动覆盖当前安装并重新打开。尚未公证，首次运行可能需要在系统设置中允许打开。' : platform.platform === 'android' ? '需确认系统安装；系统限制自动打开时，请点击安装器的“打开”。' : platform.platform === 'browser' ? '浏览器仅提供界面预览；在线更新在 Windows、macOS 和安卓客户端中使用。' : '下载校验后覆盖当前安装并自动打开，保留设置和右键菜单。';
       $('#platform-label').textContent = platformNames[platform.platform] || platform.platform;
-      $('#environment-detail').textContent = `${platformNames[platform.platform] || platform.platform} · v${platform.version || '0.1.7'}`;
+      $('#environment-detail').textContent = `${platformNames[platform.platform] || platform.platform} · v${platform.version || '0.1.8'}`;
       if (platform.platform === 'browser' || platform.platform === 'android' || platform.packaged === false) {
         $('#launch-at-login').disabled = true;
         $('#login-hint').textContent = platform.platform === 'android' ? '安卓端无需常驻，按需打开即可。' : platform.packaged === false ? '开机启动可在安装版客户端中设置。' : '开机启动可在桌面客户端中设置。';

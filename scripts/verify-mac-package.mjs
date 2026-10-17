@@ -100,6 +100,7 @@ async function inspectApp(app, item) {
   item.buildVersion = info.CFBundleVersion;
   ensure(item.bundleId === 'com.brclio.toolbox', `Wrong bundle ID: ${item.bundleId}`);
   ensure(item.version === options.version, `Wrong app version: ${item.version}, expected ${options.version}`);
+  ensure(typeof info.NSAppleEventsUsageDescription === 'string' && info.NSAppleEventsUsageDescription.includes('Finder'), 'The app must explain Finder automation access for the copy shortcut.');
   const iconName = info.CFBundleIconFile;
   ensure(typeof iconName === 'string' && path.basename(iconName) === iconName, 'Invalid or missing app icon filename.');
   const iconPath = path.join(app, 'Contents', 'Resources', iconName.endsWith('.icns') ? iconName : `${iconName}.icns`);

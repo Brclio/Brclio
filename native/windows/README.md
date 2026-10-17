@@ -6,7 +6,7 @@
 node scripts/windows-build-shell.cjs --arch x64 --version 0.1.6 --output native/windows/build/x64
 node native/windows/test.cjs
 node --test native/windows/build.test.cjs
-node scripts/windows-verify-package.cjs --dir release/win-unpacked --version 0.1.7 --report artifacts/windows-package.json
+node scripts/windows-verify-package.cjs --dir release/win-unpacked --version 0.1.8 --report artifacts/windows-package.json
 ```
 
 完整构建需要 Windows、Visual Studio C++ x64 工具及 Windows 10/11 SDK。`scripts/windows-after-pack.cjs` 将结果写入 `<install>/resources/windows-shell/`，供 Electron 打包钩子调用；该目录在 `app.asar` 外。Windows 版本目前仅支持 x64，构建不注册菜单、不更改系统策略、不向信任证书存储写入。

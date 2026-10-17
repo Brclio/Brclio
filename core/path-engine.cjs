@@ -14,7 +14,8 @@
     separator: 'native',
     trailingSlash: false,
     joinWith: 'newline',
-    launchAtLogin: false
+    launchAtLogin: false,
+    copyShortcut: 'Alt+P'
   });
 
   var CONTROLS = /[\u0000-\u001f\u007f-\u009f]/;
@@ -41,7 +42,8 @@
       separator: enumValue(source.separator, ['native', 'forward', 'backward'], DEFAULT_SETTINGS.separator),
       trailingSlash: source.trailingSlash === true,
       joinWith: enumValue(source.joinWith, ['newline', 'space', 'comma'], DEFAULT_SETTINGS.joinWith),
-      launchAtLogin: source.launchAtLogin === true
+      launchAtLogin: source.launchAtLogin === true,
+      copyShortcut: typeof source.copyShortcut === 'string' ? source.copyShortcut : DEFAULT_SETTINGS.copyShortcut
     };
   }
 

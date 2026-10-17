@@ -24,6 +24,18 @@ jobs:
         run: node native/windows/test.cjs
       - name: Verify registration, migration, and ownership contracts
         run: node --test desktop/windows-shell.test.cjs desktop/integration.test.cjs
+      - name: Verify real foreground Explorer selections and reject stale or empty views
+        env:
+          BRCLIO_ALLOW_SELECTION_SMOKE: '1'
+        run: node desktop/windows-selection-smoke.cjs
+      - name: Save native Explorer selection verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-selection-verification
+          path: artifacts/windows-selection-smoke.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   windows-update:
     name: Windows native automatic update

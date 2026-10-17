@@ -121,6 +121,7 @@ jobs:
         if: matrix.platform == 'win'
         env:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          BRCLIO_ALLOW_SELECTION_SMOKE: '1'
         run: |
           $env:BRCLIO_SMOKE_EXECUTABLE = (Resolve-Path 'release/win-unpacked/Brclio.exe').Path
           $env:BRCLIO_SMOKE_VERSION = $env:RELEASE_VERSION

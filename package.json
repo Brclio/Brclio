@@ -1,7 +1,7 @@
 {
   "name": "brclio-toolbox",
   "productName": "Brclio",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Brclio 跨平台工具箱 · 从复制路径开始",
   "author": "Brclio",
   "private": true,
@@ -45,6 +45,9 @@
         "zip"
       ],
       "identity": "-",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "Brclio 使用快捷键读取 Finder 中选中的文件和文件夹路径，并复制到剪贴板。"
+      },
       "artifactName": "Brclio-${version}-mac-${arch}.${ext}",
       "icon": "resources/icon.icns",
       "hardenedRuntime": false,
