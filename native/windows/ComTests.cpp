@@ -97,9 +97,13 @@ ComPtr<IShellItemArray> Selection(const std::vector<std::wstring>& paths) {
         identifiers.push_back(id);
     }
     ComPtr<IShellItemArray> selection;
-    const std::vector<PCIDLIST_ABSOLUTE> references(identifiers.begin(), identifiers.end());
+    // This SDK declares the array as LPCITEMIDLIST*, whose pointer slots are
+    // mutable even though each referenced ITEMIDLIST is read-only.
+    std::vector<LPCITEMIDLIST> readonlyIds;
+    readonlyIds.reserve(identifiers.size());
+    for (auto id : identifiers) readonlyIds.push_back(reinterpret_cast<LPCITEMIDLIST>(id));
     success(SHCreateShellItemArrayFromIDLists(static_cast<UINT>(identifiers.size()),
-        references.data(), &selection), "Cannot create shell selection");
+        readonlyIds.data(), &selection), "Cannot create shell selection");
     return selection;
 }
 

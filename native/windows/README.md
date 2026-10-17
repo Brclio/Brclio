@@ -16,7 +16,7 @@ node --test native/windows/build.test.cjs
 
 生产证书也可通过 `BRCLIO_WINDOWS_SHELL_CERTIFICATE_FILE` 和可选的 `BRCLIO_WINDOWS_SHELL_CERTIFICATE_PASSWORD` 指定。该路径应指向构建环境中已有的 PFX，不能提交或打包私钥。`BRCLIO_WINDOWS_SHELL_PUBLISHER` 可覆盖默认 `CN=Brclio`，必须与证书 Subject 一致；`BRCLIO_WINDOWS_SHELL_TIMESTAMP_URL` 可配置 RFC 3161 时间戳服务。外部证书构建还通过 SignTool 验证证书链。
 
-固定标识：包名 `Brclio.Toolbox.Shell`，应用 ID `Brclio`，CLSID `{CFD1E4D4-3973-45D3-8542-45A77E6C58C9}`，Verb ID `Brclio.CopyPath`。升级时应保留包名、Publisher 和 CLSID。
+固定标识：包名 `Brclio.Toolbox.Shell`，应用 ID `Brclio`，CLSID `{CFD1E4D4-3973-45D3-8542-45A77E6C58C9}`，Verb ID `BrclioCopyPath`（清单只允许字母和数字）。升级时应保留包名、Publisher 和 CLSID。
 
 调用菜单后，扩展一次性取得选区中的 `SIGDN_FILESYSPATH`，通过 `CreateProcessW` 启动相对 DLL 位置解析出的 `Brclio.exe --copy-path -- <paths>`，复用应用已有的格式设置与剪贴板实现。不调用 shell，不读取选中文件内容。支持 Unicode、多选和驱动器根目录；最多 1000 项，同时受 Windows 32,767 个 UTF-16 字符的进程命令行限制。超过限制会拒绝整组选区，避免只复制部分路径。空白处使用站点链的 `IFolderView` / `IPersistFolder2` 取得当前文件夹，不把聚焦文件误当成当前文件夹。
 
