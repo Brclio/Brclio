@@ -36,7 +36,10 @@ async function main() {
       globalThis.__updateSmoke = { corrupted: true, calls: [], opened: [] };
       net.fetch = async url => {
         globalThis.__updateSmoke.calls.push(url);
-        if (url.includes('/releases/latest')) return new Response(JSON.stringify(release));
+        if (url.includes('/releases/latest')) {
+          await new Promise(resolve => setTimeout(resolve, 250));
+          return new Response(JSON.stringify(release));
+        }
         if (url.endsWith('SHA256SUMS.txt')) return new Response(`${hash}  ${assetName}\n`);
         const body = globalThis.__updateSmoke.corrupted ? new Uint8Array(payload.length).fill(120) : payload;
         let offset = 0;
@@ -49,33 +52,43 @@ async function main() {
       };
       shell.openPath = async filename => { globalThis.__updateSmoke.opened.push(filename); return ''; };
     }, { text: fixtureText, hash: crypto.createHash('sha256').update(fixtureText).digest('hex'), architecture: process.arch, version: updateVersion });
-    await page.click('[data-view="settings"]');
-    await page.click('#check-update');
-    await expect(page.locator('#update-status-title')).toHaveText(`v${updateVersion} 已经准备好。`);
+    await page.click('#about-button');
+    await page.click('#about-update');
+    await expect(page.locator('#about-update')).toHaveText('正在检查…');
+    await expect(page.locator('#about-update')).toBeDisabled();
+    await expect(page.locator('#about-dialog')).toBeVisible();
+    await expect(page.locator('#view-copy')).toBeVisible();
+    await expect(page.locator('#about-update-status-title')).toHaveText(`v${updateVersion} 已经准备好。`);
     assert.equal(await application.evaluate(() => globalThis.__updateSmoke.calls.length), 1);
-    await page.click('#download-update');
-    await expect(page.locator('#update-progress')).toBeVisible();
-    await expect(page.locator('#update-status-title')).toHaveText('这次更新未完成，可以重试。');
-    await expect(page.locator('#update-status-detail')).toContainText('SHA256 校验失败');
+    await page.click('#about-update');
+    await expect(page.locator('#about-update-progress')).toBeVisible();
+    await expect(page.locator('#about-update-status-title')).toHaveText('这次更新未完成，可以重试。');
+    await expect(page.locator('#about-update-status-detail')).toContainText('SHA256 校验失败');
     assert.equal(await application.evaluate(() => globalThis.__updateSmoke.opened.length), 0);
     const updates = path.join(temporary, 'updates');
     assert.deepEqual(await fs.readdir(updates), []);
 
     await application.evaluate(() => { globalThis.__updateSmoke.corrupted = false; });
-    await page.click('#check-update');
-    await expect(page.locator('#download-update')).toBeVisible();
-    await page.click('#download-update');
-    await expect(page.locator('#update-progress')).toBeVisible();
-    await expect(page.locator('#update-status-title')).toHaveText('这次更新未完成，可以重试。');
-    await expect(page.locator('#install-update')).toHaveText('重试安装');
-    await expect(page.locator('#update-status-detail')).toContainText(packagedExecutable ? '磁盘' : '安装版');
+    await page.click('#about-update');
+    await expect(page.locator('#about-update')).toHaveText('下载并安装更新');
+    await page.click('#about-update');
+    await expect(page.locator('#about-update-progress')).toBeVisible();
+    await expect(page.locator('#about-update-status-title')).toHaveText('这次更新未完成，可以重试。');
+    await expect(page.locator('#about-update')).toHaveText('重试安装');
+    await expect(page.locator('#about-update-status-detail')).toContainText(packagedExecutable ? '磁盘' : '安装版');
     assert.deepEqual(await fs.readFile(path.join(updates, `Brclio-${updateVersion}-mac-${process.arch}.dmg`)), Buffer.from(fixtureText));
     const requests = await application.evaluate(() => globalThis.__updateSmoke.calls.length);
-    await page.click('#install-update');
-    await expect(page.locator('#update-status-title')).toHaveText('这次更新未完成，可以重试。');
+    await page.click('#about-update');
+    await expect(page.locator('#about-update-status-title')).toHaveText('这次更新未完成，可以重试。');
     assert.equal(await application.evaluate(() => globalThis.__updateSmoke.calls.length), requests);
     assert.equal(await application.evaluate(() => globalThis.__updateSmoke.opened.length), 0);
-    console.log('PASS native update IPC/UI: metadata-only check, streamed progress, failed-hash cleanup, download-to-install continuation, safe preparation failure and cached installation retry. Real native replacement is tested separately.');
+    await expect(page.locator('#about-dialog')).toBeVisible();
+    await expect(page.locator('#view-copy')).toBeVisible();
+    await page.click('#about-dialog [data-close]');
+    await page.click('[data-view="settings"]');
+    await expect(page.locator('#update-status-title')).toHaveText('这次更新未完成，可以重试。');
+    await expect(page.locator('#install-update')).toHaveText('重试安装');
+    console.log('PASS native update IPC/UI in the retained About dialog: metadata-only check, streamed progress, failed-hash cleanup, download-to-install continuation, safe preparation failure, cached installation retry and shared settings state. Real native replacement is tested separately.');
   } finally {
     if (application) await application.close();
     await fs.rm(temporary, { recursive: true, force: true });

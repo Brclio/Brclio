@@ -210,29 +210,45 @@
   $('#path-preview').addEventListener('touchmove', event => { const touch = event.touches[0]; if (touchStart && Math.hypot(touch.clientX - touchStart.x, touch.clientY - touchStart.y) > 10) clearTimeout(longPress); }, { passive: true });
   ['touchend', 'touchcancel'].forEach(name => $('#path-preview').addEventListener(name, () => clearTimeout(longPress), { passive: true }));
   let updateState = { status: 'idle' };
+  let updatePending = false;
   function renderUpdate(state) {
     updateState = state || { status: 'error', error: '未能读取更新状态。' };
     const status = updateState.status;
-    const busy = ['checking', 'downloading', 'preparing', 'restarting', 'installing'].includes(status);
+    const busy = updatePending || ['checking', 'downloading', 'preparing', 'restarting', 'installing'].includes(status);
     $('#check-update').disabled = busy;
+    $('#check-update').textContent = status === 'checking' ? '正在检查…' : '检查更新';
     $('#download-update').hidden = status !== 'available';
+    $('#download-update').disabled = busy;
     $('#install-update').hidden = status !== 'downloaded' && !(status === 'error' && updateState.canInstall);
     $('#install-update').disabled = busy;
-    $('#update-progress').hidden = status !== 'downloading';
     const percent = Math.max(0, Math.min(100, Number(updateState.progress) || 0));
-    $('#update-progress-bar').value = percent;
-    $('#update-progress-label').textContent = `${Math.round(percent)}%`;
     const version = updateState.version ? `v${updateState.version}` : '新版本';
     const titles = { idle: '保持顺手，也保持最新。', checking: '正在检查 GitHub 最新版本…', 'up-to-date': '已经是最新版本。', available: `${version} 已经准备好。`, downloading: `正在下载 ${version}…`, downloaded: '安装包已下载，校验通过。', preparing: '正在准备覆盖安装…', restarting: '正在更新，Brclio 即将重新打开…', installed: '更新完成，欢迎回来。', error: '这次更新未完成，可以重试。', unsupported: '请在客户端中检查和安装更新。', installing: '请在系统安装界面中继续。' };
-    $('#update-status-title').textContent = titles[status] || titles.idle;
     const details = { idle: '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.0'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
-    $('#update-status-detail').textContent = status === 'error' ? updateState.error || '网络连接失败，请检查网络后重试。' : updateState.message || details[status] || details.idle;
-    $('#update-notes').hidden = !updateState.notes || !['available', 'downloaded'].includes(status);
-    $('#update-notes').textContent = (updateState.notes || '').slice(0, 1600);
+    const detail = updateState.requiresPermission ? '请在系统设置中允许 Brclio 安装应用，然后返回并再次点击安装。' : status === 'error' ? updateState.error || '网络连接失败，请检查网络后重试。' : updateState.message || details[status] || details.idle;
+    // Both entry points reflect the same native update without changing views.
+    ['update', 'about-update'].forEach(prefix => {
+      $(`#${prefix}-status-title`).textContent = titles[status] || titles.idle;
+      $(`#${prefix}-status-detail`).textContent = detail;
+      $(`#${prefix}-progress`).hidden = status !== 'downloading';
+      $(`#${prefix}-progress-bar`).value = percent;
+      $(`#${prefix}-progress-label`).textContent = `${Math.round(percent)}%`;
+      $(`#${prefix}-notes`).hidden = !updateState.notes || !['available', 'downloaded'].includes(status);
+      $(`#${prefix}-notes`).textContent = (updateState.notes || '').slice(0, 1600);
+    });
+    const aboutLabels = { checking: '正在检查…', 'up-to-date': '重新检查', available: '下载并安装更新', downloading: `正在下载… ${Math.round(percent)}%`, downloaded: '安装更新', preparing: '正在准备安装…', restarting: '正在重启…', installing: '正在安装…', error: updateState.canInstall ? '重试安装' : '重新检查' };
+    $('#about-update').textContent = aboutLabels[status] || '检查更新';
+    $('#about-update').disabled = busy;
+    $('#about-update').setAttribute('aria-busy', String(busy));
+    $('#about-update').classList.toggle('button-primary', status === 'available' || status === 'downloaded' || (status === 'error' && updateState.canInstall));
+    $('#about-update').classList.toggle('button-outline', !$('#about-update').classList.contains('button-primary'));
+    $('#about-update-status').hidden = status === 'idle';
     $('#download-update').textContent = '下载并安装更新';
     $('#install-update').textContent = status === 'error' ? '重试安装' : '安装更新';
   }
   async function performUpdate(method) {
+    if (updatePending || ['checking', 'downloading', 'preparing', 'restarting', 'installing'].includes(updateState.status)) return;
+    updatePending = true;
     try {
       if (method === 'checkForUpdates') renderUpdate({ status: 'checking' });
       else if (method === 'downloadUpdate') renderUpdate({ ...updateState, status: 'downloading', progress: 0 });
@@ -241,20 +257,22 @@
       if (method === 'downloadUpdate' && state?.status === 'downloaded') {
         renderUpdate(state);
         await saveQueue;
-        await performUpdate('installUpdate');
+        renderUpdate({ ...updateState, status: 'preparing' });
+        const installed = await host.installUpdate();
+        renderUpdate(installed?.installerOpened ? { ...installed, status: 'installing' } : installed || { ...updateState, status: 'installing' });
       }
       else if (method === 'installUpdate' && state?.installerOpened) renderUpdate({ ...state, status: 'installing' });
       else if (state?.status) {
         renderUpdate(state);
-        if (state.requiresPermission) $('#update-status-detail').textContent = '请在系统设置中允许 Brclio 安装应用，然后返回并再次点击安装。';
       }
       else if (method === 'installUpdate') renderUpdate({ ...updateState, status: 'installing' });
     } catch (error) { renderUpdate({ ...updateState, status: 'error', error: error.message }); }
+    finally { updatePending = false; renderUpdate(updateState); }
   }
   $('#check-update').addEventListener('click', () => performUpdate('checkForUpdates'));
   $('#download-update').addEventListener('click', () => performUpdate('downloadUpdate'));
   $('#install-update').addEventListener('click', () => performUpdate('installUpdate'));
-  $('#about-update').addEventListener('click', () => { $('#about-dialog').close(); setView('settings'); performUpdate('checkForUpdates'); });
+  $('#about-update').addEventListener('click', () => performUpdate(updateState.status === 'available' ? 'downloadUpdate' : updateState.status === 'downloaded' || (updateState.status === 'error' && updateState.canInstall) ? 'installUpdate' : 'checkForUpdates'));
   host.onUpdateState?.(state => {
     renderUpdate(state);
     if (state?.status === 'installed') host.getIntegrationStatus().then(status => { integration = status; refreshIntegration(); }).catch(() => {});

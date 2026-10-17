@@ -149,6 +149,164 @@ try {
   report.push('one download-and-install click continues to native installation and preserves Android system guidance');
   await updating.close();
 
+  const about = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
+  observe(about);
+  await about.addInitScript(() => {
+    window.__aboutUpdateCalls = [];
+    const pending = {};
+    const request = method => {
+      window.__aboutUpdateCalls.push(method);
+      return new Promise((resolve, reject) => { (pending[method] ||= []).push({ resolve, reject }); });
+    };
+    window.__finishAboutUpdate = (method, state, error) => {
+      const next = pending[method].shift();
+      if (error) next.reject(new Error(error));
+      else next.resolve(state);
+    };
+    window.brclio = {
+      getPlatform: async () => ({ platform: 'darwin', version: '0.1.3', capabilities: {} }),
+      getSettings: async () => ({}), getIntegrationStatus: async () => ({ supported: false }),
+      getUpdateState: async () => ({ status: 'idle' }),
+      saveSettings: settings => new Promise(resolve => { window.__finishAboutSave = () => resolve(settings); }),
+      onPaths: () => () => {},
+      checkForUpdates: () => request('check'),
+      downloadUpdate: () => request('download'),
+      installUpdate: () => request('install'),
+      onUpdateState: callback => { window.__emitAboutUpdate = callback; return () => {}; },
+    };
+  });
+  await about.goto(url);
+  await about.waitForFunction(() => document.body.dataset.initialized === 'true');
+  // Keep a preference save pending to exercise the download/install handoff.
+  await about.locator('#quote-mode').selectOption('single');
+  await about.waitForFunction(() => typeof window.__finishAboutSave === 'function');
+  const contextBeforeUpdate = await about.evaluate(() => ({
+    view: document.querySelector('.view.active').id,
+    navigation: document.querySelector('.nav-item[aria-current="page"]')?.dataset.view || 'copy',
+    breadcrumb: document.querySelector('#breadcrumb-current').textContent,
+    title: document.title,
+  }));
+  const assertAboutContext = async () => {
+    assert.equal(await about.locator('#about-dialog').evaluate(element => element.open), true);
+    assert.deepEqual(await about.evaluate(() => ({
+      view: document.querySelector('.view.active').id,
+      navigation: document.querySelector('.nav-item[aria-current="page"]')?.dataset.view || 'copy',
+      breadcrumb: document.querySelector('#breadcrumb-current').textContent,
+      title: document.title,
+    })), contextBeforeUpdate);
+  };
+  const assertSharedUpdate = async () => {
+    for (const suffix of ['status-title', 'status-detail', 'progress-label', 'notes']) {
+      assert.equal(await about.locator(`#about-update-${suffix}`).textContent(), await about.locator(`#update-${suffix}`).textContent());
+    }
+    assert.equal(await about.locator('#about-update-progress-bar').evaluate(element => element.value), await about.locator('#update-progress-bar').evaluate(element => element.value));
+  };
+  const finishAboutUpdate = (method, state, error) => about.evaluate(({ method, state, error }) => window.__finishAboutUpdate(method, state, error), { method, state, error });
+  const waitAboutAction = label => about.waitForFunction(label => {
+    const button = document.querySelector('#about-update');
+    return button.textContent === label && !button.disabled && button.getAttribute('aria-busy') === 'false';
+  }, label);
+  await about.locator('#about-button').click();
+  assert.equal(await about.locator('#about-update').innerText(), '检查更新');
+  assert.equal(await about.locator('#about-update-status').isVisible(), false);
+  await about.locator('#about-update').click();
+  assert.equal(await about.locator('#about-update').innerText(), '正在检查…');
+  assert.equal(await about.locator('#about-update').isDisabled(), true);
+  assert.equal(await about.locator('#about-update').getAttribute('aria-busy'), 'true');
+  assert.equal(await about.locator('#check-update').isDisabled(), true);
+  await assertAboutContext();
+  // Even a synthetic second click must not start a concurrent native check.
+  await about.locator('#about-update').dispatchEvent('click');
+  assert.deepEqual(await about.evaluate(() => window.__aboutUpdateCalls), ['check']);
+  await finishAboutUpdate('check', { status: 'up-to-date', currentVersion: '0.1.3' });
+  await waitAboutAction('重新检查');
+  assert.match(await about.locator('#about-update-status-title').innerText(), /已经是最新版本/);
+  await assertSharedUpdate();
+  await assertAboutContext();
+  await about.locator('#about-dialog [data-close]').click();
+  await about.locator('#about-button').click();
+  assert.equal(await about.locator('#about-update').innerText(), '重新检查');
+  assert.match(await about.locator('#about-update-status-detail').innerText(), /0\.1\.3/);
+  report.push('About checks stay in the dialog, preserve the active view and title, prevent concurrent checks, and retain completed status when reopened');
+
+  await about.locator('#about-update').click();
+  await finishAboutUpdate('check', null, '检查超时，请稍后重试。');
+  await waitAboutAction('重新检查');
+  assert.equal(await about.locator('#about-update-status-detail').innerText(), '检查超时，请稍后重试。');
+  await assertAboutContext();
+  await assertSharedUpdate();
+  await about.locator('#about-update').click();
+  const release = { version: '0.1.4', assetName: 'Brclio-0.1.4-mac-arm64.zip', notes: '修复关于弹窗内的更新体验。\n' + 'release-note-'.repeat(180) };
+  await finishAboutUpdate('check', { status: 'available', ...release });
+  await waitAboutAction('下载并安装更新');
+  assert.match(await about.locator('#about-update-status-title').innerText(), /v0\.1\.4/);
+  assert.equal(await about.locator('#about-update-notes').isVisible(), true);
+  assert.equal(await about.locator('#about-update-notes').textContent(), release.notes.slice(0, 1600));
+  await assertSharedUpdate();
+  await about.locator('#about-update').click();
+  assert.equal(await about.locator('#about-update').isDisabled(), true);
+  await about.evaluate(release => window.__emitAboutUpdate({ status: 'downloading', progress: 37.4, ...release }), release);
+  assert.match(await about.locator('#about-update').innerText(), /正在下载…/);
+  assert.equal(await about.locator('#about-update-progress').isVisible(), true);
+  assert.equal(await about.locator('#about-update-progress-label').innerText(), '37%');
+  assert.equal(await about.locator('#about-update-progress-bar').evaluate(element => element.value), 37.4);
+  await assertSharedUpdate();
+  await assertAboutContext();
+  await about.locator('#about-dialog [data-close]').click();
+  await about.locator('#about-button').click();
+  assert.equal(await about.locator('#about-update-progress-label').innerText(), '37%');
+  assert.equal(await about.locator('#about-update').isDisabled(), true);
+  await finishAboutUpdate('download', { status: 'downloaded', canInstall: true, ...release });
+  await about.waitForFunction(() => document.querySelector('#about-update').textContent === '安装更新');
+  assert.equal(await about.locator('#about-update').isDisabled(), true);
+  assert.equal(await about.locator('#install-update').isDisabled(), true);
+  await about.locator('#about-update').dispatchEvent('click');
+  assert.deepEqual(await about.evaluate(() => window.__aboutUpdateCalls), ['check', 'check', 'check', 'download']);
+  await about.evaluate(() => window.__finishAboutSave());
+  await about.waitForFunction(() => window.__aboutUpdateCalls.at(-1) === 'install');
+  assert.equal(await about.locator('#about-update').innerText(), '正在准备安装…');
+  assert.equal(await about.locator('#about-update').isDisabled(), true);
+  await finishAboutUpdate('install', { status: 'error', canInstall: true, error: '安装失败，请重试。', ...release });
+  await waitAboutAction('重试安装');
+  assert.equal(await about.locator('#about-update-status-detail').innerText(), '安装失败，请重试。');
+  await assertSharedUpdate();
+  await assertAboutContext();
+  await about.locator('#about-update').click();
+  assert.deepEqual(await about.evaluate(() => window.__aboutUpdateCalls), ['check', 'check', 'check', 'download', 'install', 'install']);
+  await finishAboutUpdate('install', { status: 'downloaded', installerOpened: true, version: '0.1.4' });
+  await about.waitForFunction(() => document.querySelector('#about-update').textContent === '正在安装…');
+  assert.equal(await about.locator('#about-update').isDisabled(), true);
+  await assertAboutContext();
+  report.push('About handles failed checks, release notes, native download progress, save-before-install locking, automatic installation, and installation-only retries');
+
+  // A downloaded package received from the native host also stays installable
+  // after reopening, and long native errors/notes must fit a narrow viewport.
+  await about.evaluate(release => window.__emitAboutUpdate({ status: 'downloaded', canInstall: true, ...release }), release);
+  await waitAboutAction('安装更新');
+  await about.locator('#about-dialog [data-close]').click();
+  await about.locator('#about-button').click();
+  assert.equal(await about.locator('#about-update').innerText(), '安装更新');
+  for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 950 }, { width: 320, height: 568 }]) {
+    await about.setViewportSize(viewport);
+    for (const state of [{ status: 'available', ...release }, { status: 'error', error: 'download-error-'.repeat(160) }]) {
+      await about.evaluate(state => window.__emitAboutUpdate(state), state);
+      const bounds = await about.locator('#about-dialog').evaluate(dialog => {
+        const box = dialog.getBoundingClientRect();
+        const button = dialog.querySelector('#about-update');
+        button.scrollIntoView({ block: 'nearest' });
+        const action = button.getBoundingClientRect();
+        return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight, horizontalOverflow: dialog.scrollWidth - dialog.clientWidth, actionLeft: action.left, actionRight: action.right, actionTop: action.top, actionBottom: action.bottom };
+      });
+      assert.ok(bounds.left >= 0 && bounds.right <= bounds.viewportWidth, JSON.stringify(bounds));
+      assert.ok(bounds.top >= 0 && bounds.bottom <= bounds.viewportHeight, JSON.stringify(bounds));
+      assert.ok(bounds.horizontalOverflow <= 1, JSON.stringify(bounds));
+      assert.ok(bounds.actionLeft >= bounds.left && bounds.actionRight <= bounds.right && bounds.actionTop >= bounds.top && bounds.actionBottom <= bounds.bottom, JSON.stringify(bounds));
+      await assertAboutContext();
+    }
+  }
+  report.push('About retains downloaded state and keeps update actions and long status content within desktop and narrow dialog bounds');
+  await about.close();
+
   const android = await browser.newPage({ viewport: { width: 390, height: 950 } });
   observe(android);
   await android.addInitScript(() => {
