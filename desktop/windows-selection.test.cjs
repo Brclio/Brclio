@@ -70,14 +70,29 @@ test('maps process failures to actionable Chinese messages without returning std
   }
 });
 
+test('native ambiguity diagnostics are opt-in and keep the user-facing error concise', async () => {
+  const detail = { matchedWindows: 2, visibleViews: 0, unreadable: true, records: [{ browser: 12, error: 'COM failure' }] };
+  const failure = Object.assign(new Error('process failure'), { code: 12, stderr: JSON.stringify(detail) });
+  await assert.rejects(getWindowsSelectedPaths({ execFile: async () => { throw failure; } }), error => error.selectionDiagnostics === undefined && /当前标签页/.test(error.message));
+  await assert.rejects(getWindowsSelectedPaths({ diagnostics: true, execFile: async (_program, _args, options) => {
+    assert.equal(options.env.BRCLIO_SELECTION_DIAGNOSTICS, '1');
+    throw failure;
+  } }), error => {
+    assert.deepEqual(error.selectionDiagnostics, detail);
+    return /当前标签页/.test(error.message) && !error.message.includes('COM failure');
+  });
+});
+
 test('script queries the visible active Shell view and rechecks its focus instead of trusting a tab Document', () => {
   assert.match(WINDOWS_SELECTION_SCRIPT, /GetWindowThreadProcessId/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /ProcessName -ine 'explorer'/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /\$windowNumber -ne \$foregroundNumber/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /browser\.QueryActiveShellView\(\)/);
+  assert.ok(WINDOWS_SELECTION_SCRIPT.indexOf('if (!IsForegroundView(browserWindow, foreground)) return null;') < WINDOWS_SELECTION_SCRIPT.indexOf('browser.QueryActiveShellView()'));
   assert.match(WINDOWS_SELECTION_SCRIPT, /view\.GetItemObject\(0, ref dispatch\)/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /IsWindowVisible\(view\) && GetAncestor\(view, 2\) == foreground/);
-  assert.match(WINDOWS_SELECTION_SCRIPT, /\$unreadableMatch -or \$views.Count -ne 1\) \{ exit 12 \}/);
+  assert.match(WINDOWS_SELECTION_SCRIPT, /\$unreadableMatch -or \$views.Count -ne 1\) \{/);
+  assert.match(WINDOWS_SELECTION_SCRIPT, /exit 12\n  \}/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /FolderView\.SelectedItems\(\)/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /\$selected\.Count -eq 0\) \{ exit 11 \}/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /GetForegroundWindow\(\) -ne \$foreground\) \{ exit 13 \}/);

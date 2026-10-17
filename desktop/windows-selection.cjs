@@ -32,16 +32,21 @@ public static class BrclioSelectionWindow {
     return IsWindowVisible(view) && GetAncestor(view, 2) == foreground;
   }
 
-  public static object GetActiveFolderView(object window, IntPtr foreground, out long viewNumber) {
+  public static object GetActiveFolderView(object window, IntPtr foreground, out long browserNumber, out long viewNumber) {
+    browserNumber = 0;
     viewNumber = 0;
     Guid service = new Guid("4C96BE40-915C-11CF-99D3-00AA004AE837");
     Guid browserId = typeof(IShellBrowser).GUID;
     IShellBrowser browser = (IShellBrowser)((IServiceProvider)window).QueryService(ref service, ref browserId);
+    IntPtr browserWindow;
+    browser.GetWindow(out browserWindow);
+    browserNumber = browserWindow.ToInt64();
+    if (!IsForegroundView(browserWindow, foreground)) return null;
     IShellView view = browser.QueryActiveShellView();
     IntPtr handle;
     view.GetWindow(out handle);
-    if (!IsForegroundView(handle, foreground)) return null;
     viewNumber = handle.ToInt64();
+    if (!IsForegroundView(handle, foreground)) return null;
     Guid dispatch = new Guid("00020400-0000-0000-C000-000000000046");
     return view.GetItemObject(0, ref dispatch);
   }
@@ -53,7 +58,7 @@ public static class BrclioSelectionWindow {
   }
   [ComImport, Guid("000214E2-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
   private interface IShellBrowser {
-    void UnusedGetWindow();
+    void GetWindow(out IntPtr window);
     void UnusedContextSensitiveHelp();
     void UnusedInsertMenusSB();
     void UnusedSetMenuSB();
@@ -98,21 +103,38 @@ public static class BrclioSelectionWindow {
   $matchedWindows = 0
   $unreadableMatch = $false
   $views = @{}
+  $diagnostics = New-Object 'System.Collections.Generic.List[object]'
   foreach ($window in $windows) {
     try {
       $windowNumber = [Int64]$window.HWND -band [Int64]4294967295
       if ($windowNumber -ne $foregroundNumber) { continue }
       if ([IO.Path]::GetFileName([string]$window.FullName) -ine 'explorer.exe') { continue }
       $matchedWindows += 1
+      [Int64]$browserNumber = 0
       [Int64]$viewNumber = 0
       try {
-        $folderView = [BrclioSelectionWindow]::GetActiveFolderView($window, $foreground, [ref]$viewNumber)
+        $folderView = [BrclioSelectionWindow]::GetActiveFolderView($window, $foreground, [ref]$browserNumber, [ref]$viewNumber)
         if ($null -ne $folderView) { $views[[string]$viewNumber] = @{ FolderView = $folderView; Handle = $viewNumber } }
-      } catch { $unreadableMatch = $true }
+        if ($diagnostics.Count -lt 20) { [void]$diagnostics.Add(@{ window = $windowNumber; browser = $browserNumber; view = $viewNumber; accepted = ($null -ne $folderView); browserVisible = [BrclioSelectionWindow]::IsWindowVisible([IntPtr]$browserNumber); viewVisible = [BrclioSelectionWindow]::IsWindowVisible([IntPtr]$viewNumber) }) }
+      } catch {
+        $unreadableMatch = $true
+        if ($diagnostics.Count -lt 20) { [void]$diagnostics.Add(@{ window = $windowNumber; browser = $browserNumber; view = $viewNumber; error = $_.Exception.Message }) }
+      }
     } catch { continue }
   }
   if ($matchedWindows -eq 0) { exit 10 }
-  if ($unreadableMatch -or $views.Count -ne 1) { exit 12 }
+  if ($unreadableMatch -or $views.Count -ne 1) {
+    if ($env:BRCLIO_SELECTION_DIAGNOSTICS -eq '1') {
+      try {
+        $detail = @{ foreground = $foregroundNumber; matchedWindows = $matchedWindows; unreadable = $unreadableMatch; visibleViews = $views.Count; records = @($diagnostics.ToArray()) }
+        $diagnosticBytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $detail -Depth 4 -Compress))
+        $stderr = [Console]::OpenStandardError()
+        $stderr.Write($diagnosticBytes, 0, $diagnosticBytes.Length)
+        $stderr.Flush()
+      } catch {}
+    }
+    exit 12
+  }
   $activeView = @($views.Values)[0]
   $selected = $activeView.FolderView.SelectedItems()
   if ($null -eq $selected -or $selected.Count -eq 0) { exit 11 }
@@ -164,7 +186,7 @@ function parseSelectedPaths(stdout) {
   return paths;
 }
 
-async function getWindowsSelectedPaths({ execFile = promisify(nodeExecFile) } = {}) {
+async function getWindowsSelectedPaths({ execFile = promisify(nodeExecFile), diagnostics = false } = {}) {
   const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   let result;
   try {
@@ -172,13 +194,19 @@ async function getWindowsSelectedPaths({ execFile = promisify(nodeExecFile) } = 
       windowsHide: true,
       encoding: 'utf8',
       timeout: SELECTION_TIMEOUT,
-      maxBuffer: MAX_SELECTION_BYTES
+      maxBuffer: MAX_SELECTION_BYTES,
+      ...(diagnostics ? { env: { ...process.env, BRCLIO_SELECTION_DIAGNOSTICS: '1' } } : {})
     });
   } catch (error) {
     if (error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw new Error(FAILURE_MESSAGES[15]);
     if (error?.killed || error?.code === 'ETIMEDOUT') throw new Error('读取资源管理器选择超时，请重试。');
     if (error?.code === 'ENOENT') throw new Error('未找到 Windows PowerShell，无法读取资源管理器选择。');
-    throw new Error(FAILURE_MESSAGES[error?.code] || FAILURE_MESSAGES[16]);
+    const failure = new Error(FAILURE_MESSAGES[error?.code] || FAILURE_MESSAGES[16]);
+    if (diagnostics && typeof error?.stderr === 'string' && error.stderr.trim()) {
+      const detail = error.stderr.slice(0, 16 * 1024);
+      try { failure.selectionDiagnostics = JSON.parse(detail); } catch { failure.selectionDiagnostics = detail; }
+    }
+    throw failure;
   }
   return parseSelectedPaths(result?.stdout);
 }

@@ -115,6 +115,9 @@ async function main() {
         await focusTestedWindow();
       }
       assert.equal(await tested.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Alt+P')), false);
+      // Receiving selected paths opens the copy page, so return to settings
+      // before exercising capture cleanup after the native shortcut.
+      await page.locator('[data-view="settings"]').click();
       await page.locator('#record-shortcut').click();
       await expect(page.locator('#launch-shortcut')).toHaveValue('请按下快捷键…');
       await page.reload();

@@ -278,21 +278,22 @@ async function main() {
   try {
     fixture = await createWindowsSelectionFixture();
     report.environment = fixture.metadata;
+    const readSelection = () => getWindowsSelectedPaths({ diagnostics: true });
     const equalPaths = (actual, expected) => assert.deepEqual([...actual].sort(), [...expected].sort());
     await fixture.activate('first');
-    equalPaths(await getWindowsSelectedPaths(), fixture.paths.first);
+    equalPaths(await readSelection(), fixture.paths.first);
     report.checks.push('foreground Unicode and literal-symbol file-and-folder multi-selection');
     await fixture.activate('second');
-    equalPaths(await getWindowsSelectedPaths(), fixture.paths.second);
+    equalPaths(await readSelection(), fixture.paths.second);
     report.checks.push('foreground single-selection excludes saved background-window selection');
     await fixture.activate('empty');
-    await assert.rejects(getWindowsSelectedPaths(), /先在资源管理器中选中/);
+    await assert.rejects(readSelection(), /先在资源管理器中选中/);
     report.checks.push('empty selection rejects instead of copying the current folder');
     if (fixture.metadata.productType === 1 && fixture.metadata.build >= 22621) {
       const tab = await fixture.createTab();
-      equalPaths(await getWindowsSelectedPaths(), fixture.paths.second);
+      equalPaths(await readSelection(), fixture.paths.second);
       await fixture.previousTab(tab.window);
-      equalPaths(await getWindowsSelectedPaths(), fixture.paths.first);
+      equalPaths(await readSelection(), fixture.paths.first);
       report.checks.push('Windows 11 active-tab selection and switching exclude hidden-tab selection');
       report.windows11Tabs = 'passed';
     } else {
@@ -300,12 +301,13 @@ async function main() {
     }
     if (fixture.metadata.originalWindow && fixture.metadata.originalProcess !== 'explorer') {
       await fixture.restoreForeground();
-      await assert.rejects(getWindowsSelectedPaths(), /先切换到资源管理器/);
+      await assert.rejects(readSelection(), /先切换到资源管理器/);
       report.checks.push('non-Explorer foreground rejects saved background-window selection');
     }
     report.passed = true;
   } catch (error) {
     report.error = error.message;
+    if (error.selectionDiagnostics) report.selectionDiagnostics = error.selectionDiagnostics;
     throw error;
   } finally {
     try { if (fixture) await fixture.cleanup(); }
@@ -316,4 +318,8 @@ async function main() {
 }
 
 module.exports = { createWindowsSelectionFixture, SELECTION_FIXTURE_SCRIPT };
-if (require.main === module) main().catch(error => { console.error(error.stack); process.exitCode = 1; });
+if (require.main === module) main().catch(error => {
+  console.error(error.stack);
+  if (error.selectionDiagnostics) console.error('Native selection diagnostics:', JSON.stringify(error.selectionDiagnostics));
+  process.exitCode = 1;
+});
