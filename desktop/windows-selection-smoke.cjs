@@ -25,6 +25,16 @@ public static class BrclioExplorerFixture {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr window);
+  [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint from, uint to, bool attach);
+  public static void Activate(IntPtr window) {
+    uint processId;
+    uint foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), out processId);
+    uint currentThread = GetCurrentThreadId();
+    bool attached = foregroundThread != 0 && foregroundThread != currentThread && AttachThreadInput(currentThread, foregroundThread, true);
+    try { ShowWindow(window, 9); SetForegroundWindow(window); }
+    finally { if (attached) AttachThreadInput(currentThread, foregroundThread, false); }
+  }
 }
 '@
 $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:BRCLIO_SELECTION_FIXTURE_REQUEST)) | ConvertFrom-Json
@@ -49,9 +59,13 @@ function Fixture-Diagnostics {
 }
 function Activate-View($window) {
   $handle = Window-Handle $window
-  [void][BrclioExplorerFixture]::ShowWindow($handle, 9)
+  # AppActivate follows normal user activation. A temporary shared input queue
+  # lets the disposable fixture return from the intentional non-Explorer test;
+  # it is detached immediately, without changing the foreground-lock policy.
+  $activation = New-Object -ComObject WScript.Shell
+  [void]$activation.AppActivate([string]$window.LocationName)
   for ($attempt = 0; $attempt -lt 20; $attempt++) {
-    [void][BrclioExplorerFixture]::SetForegroundWindow($handle)
+    [BrclioExplorerFixture]::Activate($handle)
     if ([BrclioExplorerFixture]::GetForegroundWindow() -eq $handle) { return }
     Start-Sleep -Milliseconds 100
   }
@@ -158,7 +172,7 @@ switch ($request.action) {
   }
   'previousTab' {
     $handle = [IntPtr][Int64]$request.window
-    [void][BrclioExplorerFixture]::SetForegroundWindow($handle)
+    [BrclioExplorerFixture]::Activate($handle)
     if ([BrclioExplorerFixture]::GetForegroundWindow() -ne $handle) { throw 'Fixture Explorer lost focus before tab switching.' }
     $keyboard = New-Object -ComObject WScript.Shell
     $keyboard.SendKeys('^+{TAB}')
@@ -168,7 +182,7 @@ switch ($request.action) {
   'restoreForeground' {
     $handle = [IntPtr][Int64]$request.originalWindow
     if (-not [BrclioExplorerFixture]::IsWindow($handle)) { throw 'Original foreground window no longer exists.' }
-    [void][BrclioExplorerFixture]::SetForegroundWindow($handle)
+    [BrclioExplorerFixture]::Activate($handle)
     if ([BrclioExplorerFixture]::GetForegroundWindow() -ne $handle) { throw 'Original foreground window could not be restored.' }
     $result = @{ restored = $true }
   }
@@ -182,7 +196,7 @@ switch ($request.action) {
       } catch {}
     }
     $original = [IntPtr][Int64]$request.originalWindow
-    if ([BrclioExplorerFixture]::IsWindow($original)) { [void][BrclioExplorerFixture]::SetForegroundWindow($original) }
+    if ([BrclioExplorerFixture]::IsWindow($original)) { [BrclioExplorerFixture]::Activate($original) }
     $result = @{ cleaned = $true }
   }
   default { throw 'Unknown Explorer fixture action.' }
