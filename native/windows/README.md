@@ -12,7 +12,7 @@ node --test native/windows/build.test.cjs
 
 输出包含版本目录中的 `<package-version>/BrclioExplorerCommand.dll`、`AppxManifest.xml`、仅含标识清单的 `BrclioShell.msix`、公开叶证书 `BrclioShell.cer`、共享校验函数 `VerifyShellSignature.ps1`、图标，以及记录版本、架构、SHA-256、签名者信息的 `shell-build.json`。包的外部位置必须指向安装目录，清单中的可执行文件、DLL 和图标均相对该位置解析。DLL 使用独立版本目录，使新版安装不会覆盖仍被旧 COM surrogate 加载的旧版 DLL。
 
-默认构建生成一个仅用于该次构建的 Brclio 自签代码签名叶证书，用它签署 DLL 和 MSIX。私钥仅存在于临时内存/临时 PFX，构建结束或失败后删除；安装文件中只包含公开证书。此证书不会因为“已签名”自动被 Windows 信任。运行时注册流程必须验证 MSIX 的实际签名和随附公开证书，并按产品的启用流程处理当前用户的证书信任；构建元数据不能代替签名验证。
+默认构建生成一个仅用于该次构建的 Brclio 自签代码签名叶证书，用它签署 DLL、MSIX 和证书助手。私钥仅存在于临时内存/临时 PFX，构建结束或失败后删除；安装文件中只包含公开证书。此证书不会因为“已签名”自动被 Windows 信任。运行时注册流程必须验证实际签名和随附公开证书，并按产品的启用流程处理当前用户及机器的专用证书信任；构建元数据不能代替签名验证。
 
 `BrclioShellTrust.exe` 是同一证书签名的原生辅助程序，编译时固定本次公开叶证书的 SHA-256。首次启用时，运行时验证该程序的签名及完整文件散列后，通过 Windows UAC 提权，将该公开叶证书加入 `LocalMachine\TrustedPeople`，供 Appx 部署服务验证；不写入 Root，不修改开发者模式。`--add <公开 CER>` 新增时返回 10，已存在且未改动时返回 0；预先存在的证书不会被标记为 Brclio 所有。`--remove <公开 CER>` 只撤回本次构建的证书，`--cleanup` 处理 Brclio 标记的未使用证书；两者都会保留仍被任一用户的 Brclio 标识包使用、或使用状态无法确认的证书。HKLM 所有权标记同时核对公开证书散列和发布者。
 

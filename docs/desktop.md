@@ -110,7 +110,7 @@ Electron 端到端测试可设置 `BRCLIO_USER_DATA` 为临时绝对目录来隔
 - [Microsoft 创建快捷菜单处理程序](https://learn.microsoft.com/en-us/windows/win32/shell/context-menu-handlers)：当前用户 `HKCU\Software\Classes` 注册。
 - [Microsoft Windows 11 应用体验规范](https://github.com/MicrosoftDocs/windows-dev-docs/blob/docs/hub/apps/get-started/best-practices.md)：经典菜单通过“显示更多选项”访问。
 - [Microsoft Windows 11 原生菜单扩展](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/integrate-packaged-app-with-file-explorer)：`IExplorerCommand`、COM surrogate 和三种文件管理器上下文。
-- [Microsoft 外部位置身份包](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps)：sparse package 签名、当前用户 TrustedPeople 和 ExternalLocation 注册。
+- [Microsoft 外部位置身份包](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps)：sparse package 签名与 ExternalLocation 注册。
 - [Apple Finder Sync 扩展](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/Finder.html)：受监控目录中的 Finder 菜单和选中项。
 - [Apple 扩展的签名、启用和分发](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/ExtensionCreation.html)：容器与扩展的签名方式及用户批准。
 - [Apple NSWorkspace 定向打开 URL](https://developer.apple.com/documentation/appkit/nsworkspace/open(_:withApplicationAt:configuration:completionHandler:))：向指定容器应用传递复制路径事件。

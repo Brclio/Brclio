@@ -25,8 +25,36 @@ $start.CreateNoWindow = $true
 // Shared with the NSIS uninstall script below (covered by a source parity test).
 // Sparse packages keep their identity files in WindowsApps; InstallLocation is
 // therefore never evidence that their external COM DLL belongs to this app.
-const SHELL_PACKAGE_FUNCTIONS = String.raw`function Resolve-BrclioShellPath([string]$value) {
-  return [IO.Path]::GetFullPath($value).TrimEnd('\')
+const SHELL_PACKAGE_FUNCTIONS = String.raw`function Initialize-BrclioShellPaths {
+  if ('Brclio.WindowsShell.PathNames' -as [type]) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace Brclio.WindowsShell {
+  public static class PathNames {
+    [DllImport("kernel32.dll", EntryPoint = "GetLongPathNameW", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern UInt32 GetLongPathName(string path, StringBuilder result, UInt32 capacity);
+    public static string Expand(string path) {
+      StringBuilder result = new StringBuilder(32768);
+      UInt32 length = GetLongPathName(path, result, (UInt32)result.Capacity);
+      if (length >= result.Capacity) {
+        result = new StringBuilder(checked((int)length + 1));
+        length = GetLongPathName(path, result, (UInt32)result.Capacity);
+      }
+      return length > 0 && length < result.Capacity ? result.ToString() : path;
+    }
+  }
+}
+'@
+}
+
+function Resolve-BrclioShellPath([string]$value) {
+  $fullPath = [IO.Path]::GetFullPath($value)
+  Initialize-BrclioShellPaths
+  # WinRT reports long paths, while process.execPath and NSIS can retain an
+  # 8.3 alias. Missing paths keep their existing full-path comparison behavior.
+  return [Brclio.WindowsShell.PathNames]::Expand($fullPath).TrimEnd('\')
 }
 
 function Get-BrclioShellDllRelativePath([string]$version) {

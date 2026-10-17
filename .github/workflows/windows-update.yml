@@ -34,7 +34,7 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - name: Compile the Explorer command and verify dedicated per-user certificate trust
+      - name: Compile the Explorer command and verify dedicated certificate trust
         env:
           BRCLIO_ALLOW_SHELL_TRUST_SMOKE: '1'
         run: npm run test:windows-shell

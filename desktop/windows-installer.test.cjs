@@ -206,6 +206,7 @@ test('NSIS cleanup shares strict sparse-package ownership checks and preserves u
   assert.match(script, /GetDirectoryName\(\$env:BRCLIO_NSIS_EXECUTABLE\)/);
   assert.match(SHELL_PACKAGE_FUNCTIONS, /\$package\.Name -cne \$identity\.Name -or \$package\.Publisher -cne \$identity\.Publisher/);
   assert.match(SHELL_PACKAGE_FUNCTIONS, /EffectiveExternalLocation\.Path/);
+  assert.match(SHELL_PACKAGE_FUNCTIONS, /EntryPoint = "GetLongPathNameW"/);
   assert.match(SHELL_PACKAGE_FUNCTIONS, /\$relative = Get-BrclioShellDllRelativePath \(\[string\]\$node\.Version\)/);
   assert.match(SHELL_PACKAGE_FUNCTIONS, /return 'resources\\windows-shell\\' \+ \$version \+ '\\BrclioExplorerCommand\.dll'/);
   assert.doesNotMatch(SHELL_PACKAGE_FUNCTIONS, /\$package\.InstallLocation|Get-AppxPackage[^\n]*-AllUsers/);
@@ -279,6 +280,22 @@ function Get-AppxPackageManifest {
 }
 function Remove-AppxPackage { param([string]$Package) $script:removed += $Package }
 if (-not (Test-BrclioShellPackage $script:package $Directory $identity)) { throw 'The matching sparse package was rejected.' }
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class BrclioLifecycleShortPathTest {
+  [DllImport("kernel32.dll", EntryPoint="GetShortPathNameW", CharSet=CharSet.Unicode, ExactSpelling=true)]
+  public static extern UInt32 GetShortPathName(string path, StringBuilder result, UInt32 capacity);
+}
+'@
+$shortBuffer = New-Object Text.StringBuilder(32768)
+$shortLength = [BrclioLifecycleShortPathTest]::GetShortPathName($Directory, $shortBuffer, [uint32]$shortBuffer.Capacity)
+if ($shortLength -gt 0 -and $shortLength -lt $shortBuffer.Capacity) {
+  $script:external = Resolve-BrclioShellPath $Directory
+  if (-not (Test-BrclioShellPackage $script:package ($shortBuffer.ToString()) $identity)) { throw 'An 8.3 alias of the registered installation was rejected.' }
+} else { Write-Output '8.3 aliases are disabled on this test volume; ordinary ownership checks remain active.' }
+$script:external = $Directory
 $script:package.Publisher = 'CN=Other App'
 if (Test-BrclioShellPackage $script:package $Directory $identity) { throw 'Another publisher was accepted.' }
 $script:package.Publisher = $identity.Publisher
