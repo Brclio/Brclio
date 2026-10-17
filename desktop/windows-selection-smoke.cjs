@@ -39,6 +39,14 @@ function Find-FixtureView([string]$directory) {
   })
   return ,$found
 }
+function Fixture-Diagnostics {
+  $registered = @(foreach ($window in $shell.Windows()) {
+    try { @{ handle = [string]$window.HWND; path = [string]$window.Document.Folder.Self.Path; executable = [string]$window.FullName } }
+    catch { @{ error = $_.Exception.Message } }
+  })
+  $explorer = @(Get-Process explorer -ErrorAction SilentlyContinue | ForEach-Object { @{ id = $_.Id; session = $_.SessionId; window = $_.MainWindowHandle.ToInt64() } })
+  return ConvertTo-Json -InputObject @{ registered = $registered; explorer = $explorer } -Depth 4 -Compress
+}
 function Activate-View($window) {
   $handle = Window-Handle $window
   [void][BrclioExplorerFixture]::ShowWindow($handle, 9)
@@ -87,13 +95,26 @@ switch ($request.action) {
     $views = Find-FixtureView $request.directory
     if ($views.Count -eq 0) {
       $shell.Explore([string]$request.directory)
-      for ($attempt = 0; $attempt -lt 100; $attempt++) {
+      for ($attempt = 0; $attempt -lt 60; $attempt++) {
         Start-Sleep -Milliseconds 100
         $views = Find-FixtureView $request.directory
         if ($views.Count -gt 0) { break }
       }
     }
-    if ($views.Count -ne 1) { throw 'Could not identify a unique temporary Explorer window.' }
+    if ($views.Count -eq 0) {
+      # Hosted Windows may start without a normal desktop shell. Start actual
+      # Explorer explicitly if Shell.Explore did not materialize a folder view.
+      # The unique generated folder is data passed to a fixed executable.
+      if (-not [IO.Directory]::Exists([string]$request.directory) -or ([string]$request.directory).Contains('"')) { throw 'Invalid temporary fixture directory.' }
+      Start-Process -FilePath (Join-Path $env:WINDIR 'explorer.exe') -ArgumentList ('/n,"' + [string]$request.directory + '"')
+      $shell = New-Object -ComObject Shell.Application
+      for ($attempt = 0; $attempt -lt 120; $attempt++) {
+        Start-Sleep -Milliseconds 100
+        $views = Find-FixtureView $request.directory
+        if ($views.Count -gt 0) { break }
+      }
+    }
+    if ($views.Count -ne 1) { throw ('Could not identify a unique temporary Explorer window (found ' + $views.Count + '). ' + (Fixture-Diagnostics)) }
     Select-FixtureItems $views[0] @($request.paths)
     Activate-View $views[0]
     $result = @{ window = (Window-Handle $views[0]).ToInt64() }
@@ -178,11 +199,18 @@ async function createWindowsSelectionFixture() {
   }
   const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const execute = async request => {
-    const { stdout } = await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', Buffer.from(SELECTION_FIXTURE_SCRIPT, 'utf16le').toString('base64')], {
-      windowsHide: true, encoding: 'utf8', timeout: 35000, maxBuffer: 256 * 1024,
-      env: { ...process.env, [REQUEST_ENV]: Buffer.from(JSON.stringify(request), 'utf8').toString('base64') }
-    });
-    return JSON.parse(stdout);
+    try {
+      const { stdout } = await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', Buffer.from(SELECTION_FIXTURE_SCRIPT, 'utf16le').toString('base64')], {
+        windowsHide: true, encoding: 'utf8', timeout: 35000, maxBuffer: 256 * 1024,
+        env: { ...process.env, [REQUEST_ENV]: Buffer.from(JSON.stringify(request), 'utf8').toString('base64') }
+      });
+      return JSON.parse(stdout);
+    } catch (error) {
+      const stderr = String(error.stderr || '');
+      const detail = (stderr.match(/<S S="Error">([\s\S]*?)<\/S>/)?.[1] || stderr || error.message)
+        .replace(/_x000D__x000A_/g, '\n').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+      throw new Error(`Explorer fixture ${request.action} failed: ${detail.slice(0, 6000)}`);
+    }
   };
   const metadata = await execute({ action: 'inspect' });
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'Brclio Explorer selection '));

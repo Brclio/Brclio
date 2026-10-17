@@ -23,7 +23,7 @@ jobs:
       - name: Compile the native DLL, sign its sparse identity, and exercise COM selection dispatch
         run: node native/windows/test.cjs
       - name: Verify registration, migration, and ownership contracts
-        run: node --test desktop/windows-shell.test.cjs desktop/integration.test.cjs
+        run: node --test desktop/windows-shell.test.cjs desktop/integration.test.cjs desktop/windows-selection.test.cjs
       - name: Verify real foreground Explorer selections and reject stale or empty views
         env:
           BRCLIO_ALLOW_SELECTION_SMOKE: '1'
