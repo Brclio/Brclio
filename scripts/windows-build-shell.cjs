@@ -129,7 +129,7 @@ function signPackage(filename, dll, publisher, temporary, output, env) {
   const pinHeader = path.join(temporary, 'CertificatePin.h');
   fs.writeFileSync(pinHeader, `#define EXPECTED_CERT_SHA256 "${signature.certificateSha256}"\n`);
   const trustHelper = path.join(output, 'BrclioShellTrust.exe');
-  execute('cl.exe', ['/nologo', '/std:c++17', '/EHsc', '/O2', '/W4', '/WX', '/MT', '/utf-8', '/guard:cf',
+  execute('cl.exe', ['/nologo', '/std:c++20', '/EHsc', '/O2', '/W4', '/WX', '/MT', '/utf-8', '/guard:cf',
     '/DUNICODE', '/D_UNICODE', '/D_WIN32_WINNT=0x0A00', `/FI${pinHeader}`,
     path.join(native, 'ShellTrust.cpp'), `/Fo${path.join(temporary, 'ShellTrust.obj')}`,
     '/link', `/OUT:${trustHelper}`, '/SUBSYSTEM:WINDOWS', '/MACHINE:X64', '/DYNAMICBASE', '/NXCOMPAT', '/GUARD:CF',

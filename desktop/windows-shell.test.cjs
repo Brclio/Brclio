@@ -224,6 +224,28 @@ test('preexisting trust is preserved after registration failure; existing regist
   assert.deepEqual(fixed.calls.map(item => item.action), ['query', 'trust']);
 });
 
+test('a newly imported machine leaf is included in failed-enable rollback', async () => {
+  const { shell, calls } = fake(request => {
+    if (request.action === 'trust') return result([], {}, { trustImported: true, machineTrustImported: true });
+    if (request.action === 'install') throw new Error('注册失败');
+    if (request.action === 'removeTrust') assert.equal(request.machineImported, true);
+    return result([], { needsTrust: true });
+  });
+  await assert.rejects(shell.set(true), /注册失败/);
+  assert.deepEqual(calls.map(item => item.action), ['query', 'trust', 'install', 'removeTrust']);
+});
+
+test('a preexisting machine leaf is excluded from failed-enable rollback', async () => {
+  const { shell, calls } = fake(request => {
+    if (request.action === 'trust') return result([], {}, { trustImported: true, machineTrustImported: false });
+    if (request.action === 'install') throw new Error('注册失败');
+    if (request.action === 'removeTrust') assert.equal(request.machineImported, false);
+    return result([], { needsTrust: true });
+  });
+  await assert.rejects(shell.set(true), /注册失败/);
+  assert.deepEqual(calls.map(item => item.action), ['query', 'trust', 'install', 'removeTrust']);
+});
+
 test('malformed, oversized, or wrongly typed native output is rejected without claiming success', async () => {
   for (const value of ['not json', '[]', ' '.repeat(256 * 1024 + 1), JSON.stringify(result([entry({ healthy: 'true' })])), JSON.stringify(result([], { needsTrust: 'false' })), JSON.stringify(result([], { certificateThumbprint: 42 })), JSON.stringify(result([], {}, { trustImported: 'true' }))]) assert.throws(() => parseResult(value));
   const { shell } = fake(() => ({ ok: false, error: 'WinRT 查询失败' }));

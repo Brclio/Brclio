@@ -14,24 +14,37 @@ const { createWindowsShell, sameLocation } = require('./windows-shell.cjs');
 const TRUST_QUERY_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
 $request = [Environment]::GetEnvironmentVariable('BRCLIO_WINDOWS_SHELL_SMOKE_REQUEST', 'Process') | ConvertFrom-Json
 if ($request.thumbprint -notmatch '^[a-fA-F0-9]{40}$') { throw 'Invalid fixture certificate thumbprint.' }
-$store = New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPeople', 'CurrentUser')
-try {
-  $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
-  $matches = @($store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $request.thumbprint, $false))
-  $parent = 'HKCU:\Software\Brclio\ShellCertificates'
-  $markers = @()
-  if (Test-Path -LiteralPath $parent) {
-    $markers = @(Get-ChildItem -LiteralPath $parent | ForEach-Object {
-      $values = Get-ItemProperty -LiteralPath $_.PSPath
-      if ($values.BrclioOwner -ceq 'com.brclio.toolbox') { [string]$_.PSChildName }
-    })
-  }
-  $json = ConvertTo-Json -InputObject @{ trustedLeaf = ($matches.Count -gt 0); ownedMarkers = $markers } -Compress
-  $bytes = [Text.Encoding]::UTF8.GetBytes($json)
-  $stdout = [Console]::OpenStandardOutput()
-  $stdout.Write($bytes, 0, $bytes.Length)
-  $stdout.Flush()
-} finally { $store.Close() }
+function Read-StoreLeaf([string]$name, [string]$location) {
+  $store = New-Object Security.Cryptography.X509Certificates.X509Store($name, $location)
+  try {
+    $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+    return @($store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $request.thumbprint, $false)).Count -gt 0
+  } finally { $store.Close() }
+}
+function Read-OwnedMarkers([Microsoft.Win32.RegistryHive]$hive) {
+  $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, [Microsoft.Win32.RegistryView]::Registry64)
+  $parent = $null
+  try {
+    $parent = $base.OpenSubKey('Software\Brclio\ShellCertificates')
+    if ($null -eq $parent) { return }
+    foreach ($name in $parent.GetSubKeyNames()) {
+      $marker = $parent.OpenSubKey($name)
+      try { if ($null -ne $marker -and $marker.GetValue('BrclioOwner') -ceq 'com.brclio.toolbox') { [string]$name } }
+      finally { if ($null -ne $marker) { $marker.Dispose() } }
+    }
+  } finally { if ($null -ne $parent) { $parent.Dispose() }; $base.Dispose() }
+}
+$result = @{
+  trustedLeaf = (Read-StoreLeaf 'TrustedPeople' 'CurrentUser')
+  machineTrustedLeaf = (Read-StoreLeaf 'TrustedPeople' 'LocalMachine')
+  ownedMarkers = @(Read-OwnedMarkers ([Microsoft.Win32.RegistryHive]::CurrentUser))
+  machineOwnedMarkers = @(Read-OwnedMarkers ([Microsoft.Win32.RegistryHive]::LocalMachine))
+  rootLeaf = ((Read-StoreLeaf 'Root' 'CurrentUser') -or (Read-StoreLeaf 'Root' 'LocalMachine'))
+}
+$bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $result -Compress))
+$stdout = [Console]::OpenStandardOutput()
+$stdout.Write($bytes, 0, $bytes.Length)
+$stdout.Flush()
 `;
 
 async function readTrust(thumbprint) {
@@ -42,7 +55,10 @@ async function readTrust(thumbprint) {
     { windowsHide: true, timeout: 30000, maxBuffer: 64 * 1024, env });
   const result = JSON.parse(stdout.replace(/^\uFEFF/, ''));
   assert.equal(typeof result.trustedLeaf, 'boolean');
+  assert.equal(typeof result.machineTrustedLeaf, 'boolean');
+  assert.equal(typeof result.rootLeaf, 'boolean');
   assert.equal(Array.isArray(result.ownedMarkers), true);
+  assert.equal(Array.isArray(result.machineOwnedMarkers), true);
   return result;
 }
 
@@ -54,7 +70,12 @@ async function registrationSmoke(shell, metadata, expectedLocation, before) {
   assert.match(metadata.certificateThumbprint, /^[a-fA-F0-9]{40}$/, 'Signed fixture must identify its public leaf.');
   const initialTrust = await readTrust(metadata.certificateThumbprint);
   assert.deepEqual(initialTrust.ownedMarkers, [], 'Registration smoke requires a disposable user without existing Brclio trust ownership.');
-  if (metadata.selfSigned) assert.equal(initialTrust.trustedLeaf, false, 'The fixture leaf must start untrusted.');
+  assert.deepEqual(initialTrust.machineOwnedMarkers, [], 'Registration smoke requires a disposable machine without existing Brclio trust ownership.');
+  if (metadata.selfSigned) {
+    assert.equal(initialTrust.trustedLeaf, false, 'The fixture leaf must start untrusted.');
+    assert.equal(initialTrust.machineTrustedLeaf, false, 'The machine fixture leaf must start untrusted.');
+    assert.equal(initialTrust.rootLeaf, false, 'The fixture leaf must not be a trusted root.');
+  }
 
   async function verifyCleanup(state) {
     assert.equal(state.error, undefined, state.description);
@@ -63,7 +84,12 @@ async function registrationSmoke(shell, metadata, expectedLocation, before) {
     if (metadata.selfSigned) assert.equal(state.needsTrust, true, 'Disabling must revoke the fixture leaf trust imported by this smoke.');
     const trust = await readTrust(metadata.certificateThumbprint);
     assert.deepEqual(trust.ownedMarkers, [], 'Disabling must remove Brclio certificate ownership markers.');
-    if (metadata.selfSigned) assert.equal(trust.trustedLeaf, false, 'Disabling must remove the imported fixture certificate.');
+    assert.deepEqual(trust.machineOwnedMarkers, [], 'Disabling must remove machine certificate ownership markers through the native helper.');
+    if (metadata.selfSigned) {
+      assert.equal(trust.trustedLeaf, false, 'Disabling must remove the imported fixture certificate.');
+      assert.equal(trust.machineTrustedLeaf, false, 'Disabling must remove the imported machine fixture certificate.');
+      assert.equal(trust.rootLeaf, false, 'No phase may add the fixture certificate to a Root store.');
+    }
   }
 
   let enableAttempted = false;
@@ -78,7 +104,10 @@ async function registrationSmoke(shell, metadata, expectedLocation, before) {
     if (metadata.selfSigned) {
       const trust = await readTrust(metadata.certificateThumbprint);
       assert.equal(trust.trustedLeaf, true, 'Enabling must trust only the fixture public leaf.');
+      assert.equal(trust.machineTrustedLeaf, true, 'Enabling must import the exact machine leaf required by Appx deployment.');
+      assert.equal(trust.rootLeaf, false, 'Enabling must leave Root stores untouched.');
       assert.ok(trust.ownedMarkers.some(value => value.toUpperCase() === metadata.certificateThumbprint.toUpperCase()), 'Enabling must record ownership of the imported fixture certificate.');
+      assert.ok(trust.machineOwnedMarkers.some(value => value.toUpperCase() === metadata.certificateThumbprint.toUpperCase()), 'Enabling must record native helper ownership of the imported machine certificate.');
     }
     await verifyCleanup(await shell.set(false));
   } catch (error) {

@@ -110,7 +110,7 @@ bool LeafCodeSigning(PCCERT_CONTEXT certificate, bool checkTime = true) {
     const auto usages = reinterpret_cast<PCERT_ENHKEY_USAGE>(buffer.data());
     if (!CertGetEnhancedKeyUsage(certificate, 0, usages, &size)) return false;
     for (DWORD index = 0; index < usages->cUsageIdentifier; ++index) {
-        if (std::strcmp(usages->rgpszUsageIdentifier[index], szOID_KP_CODE_SIGNING) == 0) return true;
+        if (std::strcmp(usages->rgpszUsageIdentifier[index], "1.3.6.1.5.5.7.3.3") == 0) return true;
     }
     return false;
 }
