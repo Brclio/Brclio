@@ -6,7 +6,7 @@
 
 ![Brclio 界面预览](docs/screenshots/desktop-preview.png)
 
-## 主要功能（v0.1.6）
+## 主要功能（v0.1.7）
 
 - Windows 资源管理器右键菜单：Windows 11 使用第一层“复制路径 · Brclio”，支持文件、文件夹、多选及文件夹空白处；Windows 10 保留经典菜单入口。
 - macOS Finder 第一层右键菜单“复制路径 · Brclio”：支持文件、文件夹、多选及文件夹空白处；软件关闭时也可调用。

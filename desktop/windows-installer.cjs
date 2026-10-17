@@ -83,18 +83,26 @@ function Read-BrclioShellIdentity([string]$directory) {
 function Get-BrclioShellExternalLocation($package) {
   [Windows.Management.Deployment.PackageManager,Windows.Management.Deployment,ContentType=WindowsRuntime] | Out-Null
   $manager = New-Object Windows.Management.Deployment.PackageManager
-  $registered = $manager.FindPackageForUser('', $package.PackageFullName)
+  $userSid = if ($package.UserSid) { [string]$package.UserSid } else { '' }
+  $registered = $manager.FindPackageForUser($userSid, $package.PackageFullName)
   return [string]$registered.EffectiveExternalLocation.Path
 }
 
-function Test-BrclioShellPackage($package, [string]$directory, [hashtable]$identity) {
+function Test-BrclioShellPackage($package, [string]$directory, [hashtable]$identity, [switch]$Strict) {
   if ($package.Name -cne $identity.Name -or $package.Publisher -cne $identity.Publisher) { return $false }
   try {
-    [xml]$manifest = Get-AppxPackageManifest -Package $package.PackageFullName -ErrorAction Stop
+    if ($package.UserSid) {
+      [xml]$manifest = Get-AppxPackageManifest -Package $package.PackageFullName -User $package.UserSid -ErrorAction Stop
+    } else {
+      [xml]$manifest = Get-AppxPackageManifest -Package $package.PackageFullName -ErrorAction Stop
+    }
     $node = $manifest.SelectSingleNode('/*[local-name()="Package"]/*[local-name()="Identity"]')
     $application = $manifest.SelectSingleNode('/*[local-name()="Package"]/*[local-name()="Applications"]/*[local-name()="Application" and @Id="Brclio"]')
     $classes = @($manifest.SelectNodes('//*[local-name()="Class" and @Id="CFD1E4D4-3973-45D3-8542-45A77E6C58C9"]'))
-    if ($null -eq $node -or $node.Name -cne $identity.Name -or $node.Publisher -cne $identity.Publisher -or $null -eq $application -or $classes.Count -ne 1) { return $false }
+    if ($null -eq $node -or $node.Name -cne $identity.Name -or $node.Publisher -cne $identity.Publisher -or $null -eq $application -or $classes.Count -ne 1) {
+      if ($Strict) { throw 'The registered Brclio shell manifest cannot establish package ownership.' }
+      return $false
+    }
     $classPath = [string]$classes[0].Path
     # The registered version determines its DLL path, even while an installer
     # has replaced the local manifest with the next version.
@@ -103,11 +111,17 @@ function Test-BrclioShellPackage($package, [string]$directory, [hashtable]$ident
     if ([IO.Path]::IsPathRooted($classPath)) {
       return [string]::Equals((Resolve-BrclioShellPath $classPath), $expected, [StringComparison]::OrdinalIgnoreCase)
     }
-    if ($classPath -cne $relative) { return $false }
+    if ($classPath -cne $relative) {
+      if ($Strict) { throw 'The registered Brclio COM DLL path cannot establish package ownership.' }
+      return $false
+    }
     $external = Get-BrclioShellExternalLocation $package
-    if ([string]::IsNullOrWhiteSpace($external)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($external)) {
+      if ($Strict) { throw 'The registered Brclio shell external location is unavailable.' }
+      return $false
+    }
     return [string]::Equals((Resolve-BrclioShellPath $external), (Resolve-BrclioShellPath $directory), [StringComparison]::OrdinalIgnoreCase)
-  } catch { return $false }
+  } catch { if ($Strict) { throw }; return $false }
 }
 
 function Get-BrclioShellPackages([string]$directory, [hashtable]$identity) {
@@ -126,6 +140,36 @@ function Remove-BrclioShellPackages([string]$directory, [hashtable]$identity, [o
         Remove-AppxPackage -Package $package.PackageFullName -ErrorAction Stop
       }
     }
+  }
+}
+
+function Get-BrclioShellPackagesAllUsers([string]$directory, [hashtable]$identity) {
+  if (-not (Get-Command Get-AppxPackage -ErrorAction SilentlyContinue)) { throw 'Appx package commands are unavailable; all-user shell cleanup cannot be confirmed.' }
+  foreach ($package in @(Get-AppxPackage -AllUsers -Name $identity.Name -ErrorAction Stop)) {
+    if ($package.Name -cne $identity.Name -or $package.Publisher -cne $identity.Publisher) { continue }
+    $users = @($package.PackageUserInformation)
+    if ($users.Count -eq 0) { throw 'The registered Brclio package has no readable user registration state.' }
+    foreach ($user in $users) {
+      $state = [string]$user.InstallState
+      # Staging alone creates no user's Explorer registration.
+      if ($state -cin @('NotInstalled', 'Staged')) { continue }
+      $sid = [string]$user.UserSecurityId
+      if ($state -cne 'Installed' -or $sid -cnotmatch '^S-\d-\d+(?:-\d+)+$') { throw 'The registered Brclio package has an unknown user registration state.' }
+      $entry = [pscustomobject]@{ Name = $package.Name; Publisher = $package.Publisher; PackageFullName = $package.PackageFullName; Version = $package.Version; UserSid = $sid }
+      try {
+        if (Test-BrclioShellPackage $entry $directory $identity -Strict) { $entry }
+      } catch { throw ('Unable to validate Brclio shell registration for user ' + $sid + ': ' + $_.Exception.Message) }
+    }
+  }
+}
+
+function Remove-BrclioShellPackagesAllUsers([string]$directory, [hashtable]$identity, [object[]]$packages) {
+  foreach ($saved in $packages) {
+    # A package full name can be registered at different external roots for
+    # different users. Never blindly remove that full name with -AllUsers.
+    $current = @(Get-BrclioShellPackagesAllUsers $directory $identity | Where-Object { $_.PackageFullName -ceq $saved.PackageFullName -and $_.UserSid -ceq $saved.UserSid })
+    if ($current.Count -gt 1) { throw 'Duplicate Brclio shell user registrations prevent safe cleanup.' }
+    if ($current.Count -eq 1) { Remove-AppxPackage -Package $current[0].PackageFullName -User $current[0].UserSid -ErrorAction Stop }
   }
 }
 
@@ -297,8 +341,12 @@ function Restore-Menus {
 
 function Save-ShellIntegration {
   $identity = Read-BrclioShellIdentity $cfg.installDirectory
-  $packages = @(Get-BrclioShellPackages $cfg.installDirectory $identity)
-  $script:shellSnapshot = @{ identity = $identity; enabled = ($packages.Count -gt 0); packages = $packages }
+  $currentPackages = @(Get-BrclioShellPackages $cfg.installDirectory $identity)
+  $packages = $currentPackages
+  if ($script:installMode -ceq '/allusers') { $packages = @(Get-BrclioShellPackagesAllUsers $cfg.installDirectory $identity) }
+  # Shared files may serve another account's opted-in menu. Retain that DLL,
+  # while keeping the invoking account's rollback preference independent.
+  $script:shellSnapshot = @{ identity = $identity; enabled = ($packages.Count -gt 0); restoreEnabled = ($currentPackages.Count -gt 0); packages = $currentPackages }
   if (-not $script:shellSnapshot.enabled) { return }
   if (@($packages | Where-Object { [string]$_.Version -cne $identity.Version }).Count -gt 0) {
     throw '当前外层右键菜单仍指向旧版扩展。请先在 Brclio 中重新启用或关闭右键菜单后再更新；尚未开始安装。'
@@ -346,6 +394,7 @@ function Restore-ShellIntegration {
   # An interrupted installer may have temporarily removed its local manifest.
   # Recheck the saved identity as well before reinstalling the same version.
   Remove-BrclioShellPackages $cfg.installDirectory $script:shellSnapshot.identity $script:shellSnapshot.packages
+  if (-not $script:shellSnapshot.restoreEnabled) { return }
   $identity = Read-BrclioShellIdentity $cfg.installDirectory
   if ($identity.Name -cne $script:shellSnapshot.identity.Name -or $identity.Publisher -cne $script:shellSnapshot.identity.Publisher) {
     throw 'The restored Brclio shell signing identity does not match the saved installation.'

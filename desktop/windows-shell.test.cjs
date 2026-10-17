@@ -141,6 +141,53 @@ test('registration failure restores usable previous root; unrestorable old insta
   assert.deepEqual(blocked.calls.map(item => item.action), ['query']);
 });
 
+test('a committed removal with a failed readback still restores the original usable registration', async () => {
+  const old = entry({ externalLocation: 'C:\\Old' });
+  let packages = [old];
+  const { shell, calls } = fake(request => {
+    if (request.action === 'remove') { packages = []; throw new Error('移除后的状态查询失败'); }
+    if (request.action === 'restore') packages = [old];
+    return result(packages);
+  });
+  await assert.rejects(shell.set(true), /移除后的状态查询失败/);
+  assert.deepEqual(packages, [old]);
+  assert.deepEqual(calls.map(item => item.action), ['query', 'remove', 'query', 'restore']);
+});
+
+test('a failed removal that leaves the original healthy registration intact does not re-register it', async () => {
+  const old = entry({ externalLocation: 'C:\\Old' });
+  const { shell, calls } = fake(request => {
+    if (request.action === 'remove') throw new Error('Windows 拒绝移除');
+    return result([old]);
+  });
+  await assert.rejects(shell.set(true), /Windows 拒绝移除/);
+  assert.deepEqual(calls.map(item => item.action), ['query', 'remove', 'query']);
+});
+
+test('rollback requires the restored package to have usable files and healthy Windows status', async () => {
+  const old = entry({ externalLocation: 'C:\\Old' });
+  let packages = [old];
+  const { shell } = fake(request => {
+    if (request.action === 'remove') packages = [];
+    if (request.action === 'install') throw new Error('注册失败');
+    if (request.action === 'restore') packages = [{ ...old, healthy: false }];
+    return result(packages);
+  });
+  await assert.rejects(shell.set(true), /回滚未全部完成：Windows 未确认原有扩展恢复成功/);
+});
+
+test('a foreign registration appearing during administrator approval is preserved before package mutation', async () => {
+  const foreign = entry({ publisher: 'CN=Foreign', owned: false });
+  const { shell, calls } = fake(request => {
+    if (request.action === 'trust') return result([foreign], {}, { trustImported: true });
+    if (request.action === 'removeTrust') return result([foreign], { needsTrust: true });
+    return result([], { needsTrust: true });
+  });
+  await assert.rejects(shell.set(true), /不属于 Brclio/);
+  assert.deepEqual(calls.map(item => item.action), ['query', 'trust', 'removeTrust']);
+  assert.ok(WINDOWS_SHELL_SCRIPT.includes("if (@(Read-Packages $assets.publisher | Where-Object { !$_.owned }).Count -gt 0)"));
+});
+
 test('same-version stale nonexistent root can be replaced without a usable previous installation', async () => {
   let packages = [entry({ externalLocation: 'C:\\Missing', usable: false, rollbackAvailable: false })];
   const { shell } = fake(request => {

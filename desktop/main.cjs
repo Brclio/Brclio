@@ -62,7 +62,16 @@ async function acknowledgeUpdate() {
     // solely because the renderer loaded or because a process was spawned.
     for (let attempt = 0; attempt < 600; attempt++) {
       const result = await installer.readResult({ consume: true });
-      if (result) { updater.restoreResult(result); break; }
+      if (result) {
+        if (result.status === 'installed' && result.launchAcknowledged === true && process.platform === 'win32' && app.isPackaged) {
+          // Older installed clients allow only 90 seconds for the launch ACK.
+          // Wait for their committed success before any optional UAC prompt,
+          // then refresh integration before publishing the installed UI event.
+          await integration.repairWindows().catch(error => console.warn('Windows 右键菜单修复未完成：', error.message));
+        }
+        updater.restoreResult(result);
+        break;
+      }
       await new Promise(resolve => setTimeout(resolve, 200));
     }
   } catch (error) { console.error('Update launch acknowledgement failed:', error.message); }
@@ -228,9 +237,10 @@ if (!gotLock) {
       app.dock?.setIcon(path.join(__dirname, '../resources/icon.png'));
     }
     registerIPC();
-    if (process.platform === 'win32' && app.isPackaged && !initialPaths) {
+    if (process.platform === 'win32' && app.isPackaged && !initialPaths && !pendingUpdateLaunchArgs.length) {
       // Migrate an already enabled classic entry and repair package versions
-      // after replacement, before the new application's launch is acknowledged.
+      // on normal launches. Update launches repair after the helper's ACK so
+      // administrator consent cannot consume an older client's launch timeout.
       await integration.repairWindows().catch(error => console.warn('Windows 右键菜单修复未完成：', error.message));
     }
     if (installer && !pendingUpdateLaunchArgs.length) updater.restoreResult(await installer.readResult({ consume: true }).catch(() => null));

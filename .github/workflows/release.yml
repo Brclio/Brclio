@@ -97,6 +97,44 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --win --${{ matrix.arch }} --publish never
+      - name: Verify the actual packaged Windows identity, signatures, native dependencies, and key exclusion
+        if: matrix.platform == 'win'
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: node scripts/windows-verify-package.cjs --dir release/win-unpacked --version "$env:RELEASE_VERSION" --report artifacts/windows-package.json
+      - name: Verify peer trust and tamper rejection on the actual Windows release files
+        if: matrix.platform == 'win'
+        env:
+          BRCLIO_ALLOW_SHELL_TRUST_SMOKE: '1'
+        run: |
+          Remove-Item Env:PSModulePath -ErrorAction SilentlyContinue
+          & "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native/windows/TrustSmoke.ps1 -Directory release/win-unpacked/resources/windows-shell
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify installation, update, launch acknowledgement, preservation, and rollback of the actual Windows release
+        if: matrix.platform == 'win'
+        env:
+          BRCLIO_ALLOW_INSTALL_SMOKE: '1'
+          BRCLIO_WINDOWS_BASELINE_VERSION: '0.1.2'
+          BRCLIO_WINDOWS_BASELINE_READ_TOKEN: ${{ github.token }}
+        run: node desktop/windows-installer-smoke.cjs
+      - name: Verify the packaged Windows client, real clipboard, second instance, and cold-launch copying
+        if: matrix.platform == 'win'
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          $env:BRCLIO_SMOKE_EXECUTABLE = (Resolve-Path 'release/win-unpacked/Brclio.exe').Path
+          $env:BRCLIO_SMOKE_VERSION = $env:RELEASE_VERSION
+          node desktop/smoke.cjs
+      - name: Save Windows release verification reports
+        if: always() && matrix.platform == 'win'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-verification
+          path: |
+            artifacts/windows-package.json
+            artifacts/windows-update-smoke.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Build and sign macOS installers without publishing
         if: matrix.platform == 'mac'
         shell: bash

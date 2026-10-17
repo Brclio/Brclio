@@ -6,6 +6,7 @@
 node scripts/windows-build-shell.cjs --arch x64 --version 0.1.6 --output native/windows/build/x64
 node native/windows/test.cjs
 node --test native/windows/build.test.cjs
+node scripts/windows-verify-package.cjs --dir release/win-unpacked --version 0.1.7 --report artifacts/windows-package.json
 ```
 
 完整构建需要 Windows、Visual Studio C++ x64 工具及 Windows 10/11 SDK。`scripts/windows-after-pack.cjs` 将结果写入 `<install>/resources/windows-shell/`，供 Electron 打包钩子调用；该目录在 `app.asar` 外。Windows 版本目前仅支持 x64，构建不注册菜单、不更改系统策略、不向信任证书存储写入。
@@ -25,5 +26,7 @@ node --test native/windows/build.test.cjs
 原生命令行测试可在 macOS/Linux 运行。Windows 下同一命令还编译真正的 DLL，直接激活其 COM 类，用模拟文件夹站点和真实 Shell 项验证多选、Unicode、驱动器根目录、空白处路径、生命周期，以及子进程真正收到的参数；它不安装包、不导入信任、不操作 Explorer。直接激活测试通过仍不能证明 Windows 11 菜单实际显示，发布前还需在安装后的 Windows 11 中检查菜单及剪贴板结果。
 
 在隔离、已提升权限的 Windows CI 中可显式设置 `BRCLIO_ALLOW_SHELL_TRUST_SMOKE=1` 再运行该测试：它临时将本次构建的公开叶证书添加到当前用户 `TrustedPeople`，验证签名后的原生辅助程序，再用该程序建立专用机器叶证书信任，使用运行时相同的签名校验策略验证 DLL、MSIX 和辅助程序，并在 `finally` 中撤回本次新增的信任；预先存在的信任会保留。日志记录 Authenticode 状态和实际 WinVerifyTrust 代码。测试还分别篡改 DLL/辅助程序代码和 MSIX 清单、同步修改散列记录，确认原生签名校验仍会拒绝，并检查 Root 存储在测试前后相同。该测试不注册 Appx 包，不写入 Root 存储，也不修改开发者模式。
+
+发布前对实际 `win-unpacked` 目录运行 `windows-verify-package.cjs`。它只读检查应用版本、原生 x64 PE、DLL/助手没有 Visual C++ 运行库 DLL 依赖、签名者及完整文件散列、公钥证书没有私钥、包内及 ASAR 中没有私钥文件名、实际 MSIX 清单和版本化 COM 路径、图标及共享校验脚本，并输出 JSON 报告。它不更改信任或包注册。实际产物的信任导入/撤回由隔离 CI 的 `TrustSmoke.ps1` 另行验证；NSIS 安装及升级、已注册 surrogate 激活、Explorer 菜单可见性和真实剪贴板结果分别保留各自的验收证据。
 
 Microsoft 参考：[Explorer 菜单注册](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/integrate-packaged-app-with-file-explorer)、[IFolderView.GetFolder](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ifolderview-getfolder)、[CertificateRequest.CreateSelfSigned](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.x509certificates.certificaterequest.createselfsigned)。

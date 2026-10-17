@@ -317,6 +317,7 @@ try {
     $candidate = Read-Assets $root
     if (!$candidate.available -or $candidate.needsTrust -or $candidate.publisher -cne $assets.publisher) { throw '右键扩展尚未通过可信签名和完整性验证。' }
     if ($request.action -eq 'restore' -and $candidate.version -cne $request.restoreVersion) { throw '原有右键扩展安装包已变化，无法恢复注册。' }
+    if (@(Read-Packages $assets.publisher | Where-Object { !$_.owned }).Count -gt 0) { throw '发现不属于 Brclio 的同名扩展，已保留原有设置。' }
     Add-AppxPackage -Path $candidate.packagePath -ExternalLocation $root -ForceUpdateFromAnyVersion -ErrorAction Stop | Out-Null
   }
   Write-Result @{ ok = $true; assets = $assets; packages = @(Read-Packages $assets.publisher); trustImported = $trustImported; machineTrustImported = $machineTrustImported }
@@ -410,9 +411,15 @@ function createWindowsShell({ launch, run = defaultRun, powershell = path.win32.
         if (!before.assets.available || before.assets.needsTrust) throw new Error(before.assets.error || 'Windows 未确认右键扩展签名可信。');
         if (snapshot(before).installed) return snapshot(before);
       }
+      if (before.packages.some(item => !item.owned)) throw new Error('发现不属于 Brclio 的同名扩展，已保留原有设置。');
       const replaced = before.packages.filter(item => item.owned && item.name === PACKAGE_NAME && item.publisher === before.assets.publisher && item.version === before.assets.version);
       if (replaced.some(item => item.usable && !item.rollbackAvailable)) throw new Error('原有右键扩展的已签名安装包不可用；为保留当前菜单，请先修复或卸载旧版 Brclio。');
-      for (const item of replaced) { await invoke('remove', { fullName: item.fullName }); removed.push(item); }
+      for (const item of replaced) {
+        // Removal may commit before its follow-up query fails. Record the
+        // attempt first, then inspect actual state before deciding to restore.
+        removed.push(item);
+        await invoke('remove', { fullName: item.fullName });
+      }
       const after = snapshot(await invoke('install'));
       if (!after.installed) throw new Error('Windows 未确认外层右键菜单注册成功，请重新启用。');
       return after;
@@ -422,10 +429,13 @@ function createWindowsShell({ launch, run = defaultRun, powershell = path.win32.
       if (restore.length > 0) {
         try {
           const current = await invoke('query');
-          for (const item of current.packages.filter(item => item.owned && item.publisher === before.assets.publisher && item.version === before.assets.version && sameLocation(item.externalLocation, root))) await invoke('remove', { fullName: item.fullName });
-          for (const item of restore) {
-            const restored = await invoke('restore', { restoreRoot: item.externalLocation, restoreVersion: item.version });
-            if (!restored.packages.some(entry => entry.owned && entry.publisher === item.publisher && entry.version === item.version && sameLocation(entry.externalLocation, item.externalLocation))) throw new Error('Windows 未确认原有扩展恢复成功。');
+          const needsRestore = restore.filter(item => !current.packages.some(entry => entry.owned && entry.usable && entry.healthy && entry.publisher === item.publisher && entry.version === item.version && sameLocation(entry.externalLocation, item.externalLocation)));
+          if (needsRestore.length > 0) {
+            for (const item of current.packages.filter(item => item.owned && item.publisher === before.assets.publisher && item.version === before.assets.version && sameLocation(item.externalLocation, root))) await invoke('remove', { fullName: item.fullName });
+            for (const item of needsRestore) {
+              const restored = await invoke('restore', { restoreRoot: item.externalLocation, restoreVersion: item.version });
+              if (!restored.packages.some(entry => entry.owned && entry.usable && entry.healthy && entry.publisher === item.publisher && entry.version === item.version && sameLocation(entry.externalLocation, item.externalLocation))) throw new Error('Windows 未确认原有扩展恢复成功。');
+            }
           }
         } catch (failure) { rollbackError = failure; }
       }
