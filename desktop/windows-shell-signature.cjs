@@ -39,6 +39,8 @@ namespace Brclio.WindowsShell {
       FileInfo file = new FileInfo();
       file.cbStruct = (UInt32)Marshal.SizeOf(typeof(FileInfo));
       file.filePath = path;
+      file.fileHandle = IntPtr.Zero;
+      file.knownSubject = IntPtr.Zero;
       IntPtr pointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(FileInfo)));
       bool marshaled = false;
       try {
@@ -46,12 +48,18 @@ namespace Brclio.WindowsShell {
         marshaled = true;
         TrustData data = new TrustData();
         data.cbStruct = (UInt32)Marshal.SizeOf(typeof(TrustData));
+        data.policyCallback = IntPtr.Zero;
+        data.sipClient = IntPtr.Zero;
         data.uiChoice = 2;             // WTD_UI_NONE
         data.revocationChecks = 0;     // WTD_REVOKE_NONE
         data.unionChoice = 1;          // WTD_CHOICE_FILE
         data.fileInfo = pointer;
         data.stateAction = 1;          // WTD_STATEACTION_VERIFY
+        data.stateData = IntPtr.Zero;
+        data.urlReference = IntPtr.Zero;
         data.providerFlags = 0x1000;   // WTD_CACHE_ONLY_URL_RETRIEVAL
+        data.uiContext = 0;
+        data.signatureSettings = IntPtr.Zero;
         Guid action = new Guid("00AAC56B-CD44-11D0-8CC2-00C04FC295EE");
         try {
           return unchecked((UInt32)WinVerifyTrust(new IntPtr(-1), ref action, ref data));

@@ -1,5 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Directory)
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression
 if ($env:BRCLIO_ALLOW_SHELL_TRUST_SMOKE -ne '1') { throw 'Trust smoke requires explicit opt-in.' }
 . (Join-Path $Directory 'VerifyShellSignature.ps1')
 Add-Type -AssemblyName System.IO.Compression.FileSystem
