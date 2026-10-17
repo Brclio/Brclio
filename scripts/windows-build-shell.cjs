@@ -62,6 +62,9 @@ function compilerEnvironment() {
     }
   }
   if (environment.VSCMD_ARG_TGT_ARCH !== 'x64') throw new Error('Visual Studio did not initialize the x64 toolchain.');
+  // Let Windows PowerShell 5.1 rebuild its native module search path when the
+  // build was launched from PowerShell 7, as on GitHub's Windows runners.
+  for (const key of Object.keys(environment)) if (key.toLowerCase() === 'psmodulepath') delete environment[key];
   return environment;
 }
 

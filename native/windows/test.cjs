@@ -27,7 +27,7 @@ try {
     if (process.env.BRCLIO_ALLOW_SHELL_TRUST_SMOKE === '1') {
       const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
       console.log(execute(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', path.join(__dirname, 'TrustSmoke.ps1'), '-Directory', shellDirectory]));
+        '-File', path.join(__dirname, 'TrustSmoke.ps1'), '-Directory', shellDirectory], { env }));
       console.log(execute(process.execPath, [path.resolve(__dirname, '../../desktop/windows-shell-smoke.cjs'), install]));
     }
   } else {
