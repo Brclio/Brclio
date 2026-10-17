@@ -34,7 +34,17 @@ enum FinderSyncTests {
         precondition(FinderSync.selectedPaths(for: .contextualMenuForItems, selected: selected, target: target) == Array(paths.prefix(2)))
         precondition(FinderSync.selectedPaths(for: .contextualMenuForItems, selected: [], target: target) == [target.path])
         precondition(FinderSync.selectedPaths(for: .contextualMenuForItems, selected: [], target: nil) == nil)
-        precondition(FinderSync.selectedPaths(for: .toolbarItemMenu, selected: selected, target: target) == nil)
+        precondition(FinderSync.selectedPaths(for: .toolbarItemMenu, selected: selected, target: target) == Array(paths.prefix(2)))
+        precondition(FinderSync.selectedPaths(for: .toolbarItemMenu, selected: [selected[0]], target: nil) == [paths[0]])
+        precondition(FinderSync.selectedPaths(for: .toolbarItemMenu, selected: [], target: target) == [target.path])
+        precondition(FinderSync.selectedPaths(for: .toolbarItemMenu, selected: [], target: nil) == nil)
+        let nonFileURL = URL(string: "https://example.com/file")!
+        precondition(FinderSync.selectedPaths(for: .toolbarItemMenu, selected: [nonFileURL], target: target) == nil)
+        precondition(FinderSync.selectedPaths(for: .toolbarItemMenu, selected: [], target: nonFileURL) == nil)
+        precondition(FinderSync.selectedPaths(for: .toolbarItemMenu, selected: Array(repeating: selected[0], count: 1_001), target: target) == nil)
+        let oversizedURL = URL(fileURLWithPath: "/" + String(repeating: "x", count: 128 * 1_024))
+        precondition(FinderSync.selectedPaths(for: .toolbarItemMenu, selected: [oversizedURL], target: target) == nil)
+        precondition(FinderSync.selectedPaths(for: .toolbarItemMenu, selected: [URL(fileURLWithPath: "/line\nbreak")], target: target) == nil)
         precondition(FinderSync.selectedPaths(for: .contextualMenuForItems, selected: [URL(string: "https://example.com/file")!], target: target) == nil)
         print("PASS: native Finder selection semantics, exact Unicode/shell-text URL roundtrip, limits and invalid input")
     }

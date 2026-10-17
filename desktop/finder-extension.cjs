@@ -32,7 +32,7 @@ function createFinderExtension({ launch, run }) {
     return { installed, supported: true, available: true, kind: 'finder-extension', location,
       registered: Boolean(own), stale: !own && found.some(entry => entry.election === '+'),
       awaitingApproval: Boolean(own && !installed), menuLabel: '复制路径 · Brclio',
-      description: installed ? '在 Finder 右键菜单中直接选择“复制路径 · Brclio”；文件夹空白处可复制当前文件夹路径。'
+      description: installed ? '选中文件或文件夹，在 Finder 顶部工具栏点击复制路径图标，再选择“复制路径 · Brclio”；也可从右键菜单使用。'
         : queryError ? '暂时无法读取 Finder 扩展状态，请重新启用。'
         : '启用 Finder 扩展后，右键菜单会直接显示“复制路径 · Brclio”。如未生效，请在系统设置的 Finder 扩展中允许 Brclio。' };
   }

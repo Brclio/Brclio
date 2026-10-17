@@ -1,6 +1,8 @@
-# Finder 右键扩展
+# Finder 复制路径扩展
 
 `BrclioFinderSync.appex` 为文件、多选、文件夹及文件夹空白处提供一级菜单“复制路径 · Brclio”。扩展只把选中的绝对文件路径交给其容器 Brclio，继续使用桌面客户端已有的格式设置与剪贴板实现。
+
+扩展还提供 Finder 顶部工具栏的复制图标。点击图标后选择“复制路径 · Brclio”：有选中项目时复制选中路径；没有选中项目时，若 Finder 提供当前文件夹位置，则复制该文件夹路径。Finder 未提供有效位置时显示不可点击的“请先选择文件或文件夹”。首次启用后若工具栏未显示图标，可在 Finder 的“显示 → 自定义工具栏”中添加“复制路径 · Brclio”（旧系统可能称“自定工具栏”）。工具栏按钮由 Finder 打开菜单，仍需选择菜单项。右键菜单相对系统菜单项的位置由 Finder 决定，公开接口不提供插到“显示检查器”上下的设置。
 
 ```sh
 node scripts/build-mac-finder-extension.mjs --arch arm64 --version 0.1.1

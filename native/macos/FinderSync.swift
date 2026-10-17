@@ -19,10 +19,35 @@ final class FinderSync: FIFinderSync {
         FIFinderSyncController.default().directoryURLs = [URL(fileURLWithPath: "/", isDirectory: true)]
     }
 
+    override var toolbarItemName: String { "复制路径 · Brclio" }
+
+    override var toolbarItemToolTip: String {
+        "复制选中项目或当前文件夹的路径"
+    }
+
+    override var toolbarItemImage: NSImage {
+        let image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: toolbarItemName)
+            ?? NSImage(named: NSImage.multipleDocumentsName)!
+        image.isTemplate = true
+        return image
+    }
+
     override func menu(for menuKind: FIMenuKind) -> NSMenu? {
         let controller = FIFinderSyncController.default()
-        guard let paths = Self.selectedPaths(for: menuKind, selected: controller.selectedItemURLs() ?? [], target: controller.targetedURL()) else { return nil }
+        let selected = controller.selectedItemURLs() ?? []
+        let target = controller.targetedURL()
         let menu = NSMenu(title: "Brclio")
+        guard let paths = Self.selectedPaths(for: menuKind, selected: selected, target: target) else {
+            guard menuKind == .toolbarItemMenu else { return nil }
+            // Finder can show the toolbar outside the extension's managed
+            // locations. Keep the button informative without copying stale data.
+            menu.autoenablesItems = false
+            let title = selected.isEmpty && target == nil ? "请先选择文件或文件夹" : "当前选择无法复制路径，请调整选择"
+            let unavailable = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            unavailable.isEnabled = false
+            menu.addItem(unavailable)
+            return menu
+        }
         let item = NSMenuItem(title: "复制路径 · Brclio", action: #selector(copyPath(_:)), keyEquivalent: "")
         item.target = self
         // Finder forwards the tag through its remote menu, but discards an
@@ -44,7 +69,9 @@ final class FinderSync: FIFinderSync {
             // A background click copies the displayed folder, even when Finder
             // still has selected items from an earlier click.
             urls = target.map { [$0] } ?? []
-        case .contextualMenuForItems:
+        case .contextualMenuForItems, .toolbarItemMenu:
+            // The toolbar acts on the current selection, or the displayed
+            // folder, if Finder supplies it, using the same URL handoff.
             urls = selected.isEmpty ? target.map { [$0] } ?? [] : selected
         default:
             return nil

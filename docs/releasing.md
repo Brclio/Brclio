@@ -79,7 +79,7 @@ node scripts/checksums.mjs release-files --version 0.1.0 --verify
 
 检查 [Releases](https://github.com/Brclio/Brclio/releases/latest) 中七个文件均可下载，版本与提交正确，并以清单校验实际下载。然后分别验证 Windows 安装/右键菜单、两种 Mac 架构的安装/Finder 快速操作，以及 Android 安装/分享/文件夹选择。Mac 还需通过浏览器下载最终包再执行首次打开测试，以覆盖下载隔离标记与 Gatekeeper。CI 中隔离目录启动确认了签名完整性与客户端运行，发布后仍需记录每种设备的安装和首次打开结果。
 
-Finder 第一层菜单需另行在实际 Finder 中验收：先允许打开容器应用，再由用户启用 FinderSync 扩展，选择文件、文件夹和多个项目检查菜单与实际剪贴板内容，并验证设置变化及关闭扩展后的行为。Apple 允许开发测试采用 ad-hoc 签名，但沙盒、扩展注册和 Finder 加载是不同的检查。流水线不会注册或启用系统扩展，报告中的 `finderExtensionRegistrationTested` 和 `finderMenuTested` 因此为 `false`；编译、验签和 Electron smoke 成功不证明 Finder 菜单已可用。
+Finder 第一层菜单和工具栏需另行在实际 Finder 中验收：先允许打开容器应用，再由用户启用 FinderSync 扩展，选择文件、文件夹和多个项目检查菜单与实际剪贴板内容，并验证设置变化及关闭扩展后的行为。工具栏还需检查图标、点击后的菜单、无选区时 Finder 提供当前位置的回退，以及无法取得有效位置时的禁用提示。Apple 允许开发测试采用 ad-hoc 签名，但沙盒、扩展注册和 Finder 加载是不同的检查。流水线不会注册或启用系统扩展，报告中的 `finderExtensionRegistrationTested` 和 `finderMenuTested` 因此为 `false`；编译、验签和 Electron smoke 成功不证明 Finder 菜单已可用。
 
 软件更新功能依赖公开 Release 的固定资产名称和 `SHA256SUMS.txt`。不要在已发布版本中替换同名安装包；保持 Android 签名连续，并通过新的稳定版本发布更新。
 

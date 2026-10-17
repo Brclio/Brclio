@@ -23,7 +23,7 @@
     });
   }
   const browser = {
-    getPlatform: async () => ({ platform: 'browser', version: '0.1.5', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false } }),
+    getPlatform: async () => ({ platform: 'browser', version: '0.1.6', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false } }),
     getSettings: async () => { const saved = localStorage.getItem(STORE); return saved ? JSON.parse(saved) : {}; },
     saveSettings: async settings => { localStorage.setItem(STORE, JSON.stringify(settings)); return settings; },
     copyText: async text => {
@@ -38,7 +38,7 @@
     getIntegrationStatus: async () => ({ installed: false, supported: false }),
     setIntegration: async () => { throw new Error('请在桌面客户端启用系统右键菜单。'); },
     onPaths: () => () => {},
-    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.1.5' }),
+    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.1.6' }),
     downloadUpdate: async () => { throw new Error('请在客户端中下载安装包。'); },
     installUpdate: async () => { throw new Error('请在客户端中安装更新。'); },
     onUpdateState: () => () => {},
