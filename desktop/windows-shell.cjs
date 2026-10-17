@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { POWERSHELL_SIGNATURE_FUNCTIONS } = require('./windows-shell-signature.cjs');
 
 const PACKAGE_NAME = 'Brclio.Toolbox.Shell';
 const DEFAULT_PUBLISHER = 'CN=Brclio';
@@ -20,6 +21,7 @@ const REQUEST_ENV = 'BRCLIO_WINDOWS_SHELL_REQUEST';
 // Windows PowerShell 5.1 uses an explicit UTF-8 stream for its JSON response.
 const WINDOWS_SHELL_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+${POWERSHELL_SIGNATURE_FUNCTIONS}
 function Write-Result($value) {
   $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $value -Depth 10 -Compress))
   $stdout = [Console]::OpenStandardOutput()
@@ -115,16 +117,11 @@ function Read-Assets([string]$root) {
     $result.version = $manifest.version
     $dllPath = Join-Path $directory ($manifest.version + '\BrclioExplorerCommand.dll')
     if (!(Test-Path -LiteralPath $dllPath -PathType Leaf) -or !(Test-Path -LiteralPath $packagePath -PathType Leaf)) { throw '请安装包含已签名 Windows 右键扩展的 Brclio 新版安装包。' }
-    $signature = Get-AuthenticodeSignature -LiteralPath $packagePath
-    $pinned = Read-PinnedCertificate $directory $signature $manifest.publisher
-    if ($null -ne $pinned) { $result.certificateThumbprint = $pinned.certificate.Thumbprint }
-    if ($signature.Status -ne 'Valid') {
-      if ($null -eq $pinned -or $signature.Status -notin @('UnknownError', 'NotTrusted')) { throw 'Windows 右键扩展未通过可信签名验证，请安装已签名的正式安装包。' }
-      $result.needsTrust = $true
-    }
-    if ($null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Subject -cne $manifest.publisher) { throw 'Windows 右键扩展签名与包身份不匹配，请重新安装正式安装包。' }
-    $dllSignature = Get-AuthenticodeSignature -LiteralPath $dllPath
-    if ($null -eq $dllSignature.SignerCertificate -or [Convert]::ToBase64String($dllSignature.SignerCertificate.RawData) -cne [Convert]::ToBase64String($signature.SignerCertificate.RawData) -or ($dllSignature.Status -ne 'Valid' -and (!$result.needsTrust -or $dllSignature.Status -notin @('UnknownError', 'NotTrusted')))) { throw 'Windows 右键扩展 DLL 签名验证失败，请重新安装正式安装包。' }
+    $signature = Test-BrclioShellSignature $packagePath $manifest.publisher $directory
+    $dllSignature = Test-BrclioShellSignature $dllPath $manifest.publisher $directory
+    if ($signature.certificateThumbprint -cne $dllSignature.certificateThumbprint) { throw 'Windows 右键扩展 DLL 与 MSIX 签名证书不一致。' }
+    $result.certificateThumbprint = $signature.certificateThumbprint
+    $result.needsTrust = !$signature.trusted -or !$dllSignature.trusted
     $packed = Manifest-Info (Read-MsixManifest $packagePath)
     if (!$packed.valid -or $packed.publisher -cne $manifest.publisher -or $packed.version -cne $manifest.version) { throw 'Windows 右键扩展 MSIX 与安装清单不一致，请重新安装正式安装包。' }
     $result.available = $true
@@ -134,6 +131,7 @@ function Read-Assets([string]$root) {
 function Trust-Certificate($assets) {
   if (!$assets.available) { throw $assets.error }
   $directory = Join-Path $request.root 'resources\windows-shell'
+  $beforeTrust = Test-BrclioShellSignature $assets.packagePath $assets.publisher $directory
   $signature = Get-AuthenticodeSignature -LiteralPath $assets.packagePath
   $pinned = Read-PinnedCertificate $directory $signature $assets.publisher
   if ($null -eq $pinned) { throw 'Windows 右键扩展缺少有效的专用签名证书。' }
@@ -154,11 +152,11 @@ function Trust-Certificate($assets) {
     } elseif (@($existing | Where-Object { (Certificate-Hash $_) -ine $pinned.hash }).Count -gt 0) {
       throw '已有同指纹证书与扩展签名不匹配，已保留原有证书。'
     }
-    # Trust alone never establishes MSIX integrity. Windows must now validate
-    # the entire package before Add-AppxPackage is allowed to run.
-    $verified = Get-AuthenticodeSignature -LiteralPath $assets.packagePath
-    $verifiedDll = Get-AuthenticodeSignature -LiteralPath (Join-Path $directory ($assets.version + '\BrclioExplorerCommand.dll'))
-    if ($verified.Status -ne 'Valid' -or $verifiedDll.Status -ne 'Valid' -or [Convert]::ToBase64String($verified.SignerCertificate.RawData) -cne [Convert]::ToBase64String($certificate.RawData) -or [Convert]::ToBase64String($verifiedDll.SignerCertificate.RawData) -cne [Convert]::ToBase64String($certificate.RawData)) { throw 'Windows 右键扩展完整性验证失败。' }
+    # Verify full-file hashes, exact leaf peer trust and WinVerifyTrust
+    # integrity before the OS independently validates Add-AppxPackage.
+    $verified = Test-BrclioShellSignature $assets.packagePath $assets.publisher $directory
+    $verifiedDll = Test-BrclioShellSignature (Join-Path $directory ($assets.version + '\BrclioExplorerCommand.dll')) $assets.publisher $directory
+    if (!$verified.trusted -or !$verifiedDll.trusted -or $verified.certificateThumbprint -cne $certificate.Thumbprint -or $verifiedDll.certificateThumbprint -cne $certificate.Thumbprint) { throw 'Windows 右键扩展完整性验证失败。' }
   } catch {
     if ($imported) { $store.Remove($certificate); Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue }
     throw

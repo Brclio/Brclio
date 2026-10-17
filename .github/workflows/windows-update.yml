@@ -8,6 +8,21 @@ permissions:
   contents: read
 
 jobs:
+  modern-shell:
+    name: Modern Windows shell registration and certificate cleanup
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Compile, sign, register, and remove the actual sparse shell package
+        env:
+          BRCLIO_ALLOW_SHELL_TRUST_SMOKE: '1'
+          BRCLIO_ALLOW_SHELL_REGISTRATION_SMOKE: '1'
+        run: npm run test:windows-shell
+
   nsis-update:
     name: Real old-install to new-install update and rollback
     runs-on: windows-2022
@@ -35,6 +50,13 @@ jobs:
           BRCLIO_ALLOW_INSTALL_SMOKE: '1'
           BRCLIO_WINDOWS_BASELINE_VERSION: '0.1.2'
         run: node desktop/windows-installer-smoke.cjs
+      - name: Save the tested Windows installer for manual menu verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-context-menu-test-installer
+          path: release/Brclio-*-windows-x64.exe
+          if-no-files-found: error
+          retention-days: 14
       - name: Preserve the native Windows verification report
         if: always()
         uses: actions/upload-artifact@v4

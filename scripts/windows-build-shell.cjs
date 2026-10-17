@@ -6,6 +6,7 @@ const { createHash, randomBytes } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { POWERSHELL_SIGNATURE_FUNCTIONS } = require('../desktop/windows-shell-signature.cjs');
 
 const root = path.resolve(__dirname, '..');
 const native = path.join(root, 'native', 'windows');
@@ -155,6 +156,7 @@ function build({ output, version, arch = 'x64', publisher = process.env.BRCLIO_W
     fs.mkdirSync(versionDirectory, { recursive: true });
     fs.copyFileSync(dll, outputDLL);
     fs.writeFileSync(path.join(output, 'AppxManifest.xml'), manifest);
+    fs.writeFileSync(path.join(output, 'VerifyShellSignature.ps1'), `\uFEFF${POWERSHELL_SIGNATURE_FUNCTIONS}`, 'utf8');
     fs.cpSync(path.join(native, 'Assets'), path.join(output, 'Assets'), { recursive: true });
     const identityLayout = path.join(temporary, 'identity');
     fs.mkdirSync(identityLayout);

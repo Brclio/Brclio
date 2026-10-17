@@ -10,7 +10,7 @@ node --test native/windows/build.test.cjs
 
 完整构建需要 Windows、Visual Studio C++ x64 工具及 Windows 10/11 SDK。`scripts/windows-after-pack.cjs` 将结果写入 `<install>/resources/windows-shell/`，供 Electron 打包钩子调用；该目录在 `app.asar` 外。Windows 版本目前仅支持 x64，构建不注册菜单、不更改系统策略、不向信任证书存储写入。
 
-输出包含版本目录中的 `<package-version>/BrclioExplorerCommand.dll`、`AppxManifest.xml`、仅含标识清单的 `BrclioShell.msix`、公开叶证书 `BrclioShell.cer`、图标，以及记录版本、架构、SHA-256、签名者信息的 `shell-build.json`。包的外部位置必须指向安装目录，清单中的可执行文件、DLL 和图标均相对该位置解析。DLL 使用独立版本目录，使新版安装不会覆盖仍被旧 COM surrogate 加载的旧版 DLL。
+输出包含版本目录中的 `<package-version>/BrclioExplorerCommand.dll`、`AppxManifest.xml`、仅含标识清单的 `BrclioShell.msix`、公开叶证书 `BrclioShell.cer`、共享校验函数 `VerifyShellSignature.ps1`、图标，以及记录版本、架构、SHA-256、签名者信息的 `shell-build.json`。包的外部位置必须指向安装目录，清单中的可执行文件、DLL 和图标均相对该位置解析。DLL 使用独立版本目录，使新版安装不会覆盖仍被旧 COM surrogate 加载的旧版 DLL。
 
 默认构建生成一个仅用于该次构建的 Brclio 自签代码签名叶证书，用它签署 DLL 和 MSIX。私钥仅存在于临时内存/临时 PFX，构建结束或失败后删除；安装文件中只包含公开证书。此证书不会因为“已签名”自动被 Windows 信任。运行时注册流程必须验证 MSIX 的实际签名和随附公开证书，并按产品的启用流程处理当前用户的证书信任；构建元数据不能代替签名验证。
 
@@ -22,6 +22,6 @@ node --test native/windows/build.test.cjs
 
 原生命令行测试可在 macOS/Linux 运行。Windows 下同一命令还编译真正的 DLL，直接激活其 COM 类，用模拟文件夹站点和真实 Shell 项验证多选、Unicode、驱动器根目录、空白处路径、生命周期，以及子进程真正收到的参数；它不安装包、不导入信任、不操作 Explorer。直接激活测试通过仍不能证明 Windows 11 菜单实际显示，发布前还需在安装后的 Windows 11 中检查菜单及剪贴板结果。
 
-在隔离的 Windows CI 中可显式设置 `BRCLIO_ALLOW_SHELL_TRUST_SMOKE=1` 再运行该测试：它临时将本次构建的公开叶证书添加到当前用户 `TrustedPeople`，验证 DLL 与 MSIX 的真实 Authenticode 状态，并在 `finally` 中撤回本次新增的信任；预先存在的信任会保留。该测试不注册 Appx 包，不写入 Root 存储，也不修改开发者模式。
+在隔离的 Windows CI 中可显式设置 `BRCLIO_ALLOW_SHELL_TRUST_SMOKE=1` 再运行该测试：它临时将本次构建的公开叶证书添加到当前用户 `TrustedPeople`，使用运行时相同的签名校验策略验证 DLL 与 MSIX，并在 `finally` 中撤回本次新增的信任；预先存在的信任会保留。日志记录 Authenticode 状态和实际 WinVerifyTrust 代码。测试还分别篡改 DLL 代码和 MSIX 清单、同步修改散列记录，确认原生签名校验仍会拒绝，并检查 Root 存储在测试前后相同。该测试不注册 Appx 包，不写入 Root 存储，也不修改开发者模式。
 
 Microsoft 参考：[Explorer 菜单注册](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/integrate-packaged-app-with-file-explorer)、[IFolderView.GetFolder](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ifolderview-getfolder)、[CertificateRequest.CreateSelfSigned](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.x509certificates.certificaterequest.createselfsigned)。

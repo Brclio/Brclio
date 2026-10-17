@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { createReadStream } = require('node:fs');
 const { spawn } = require('node:child_process');
+const { POWERSHELL_SIGNATURE_FUNCTIONS } = require('./windows-shell-signature.cjs');
 
 // PowerShell 5.1 silently exits before -File under libuv's DETACHED_PROCESS.
 // A normal hidden launcher can run PowerShell, then create the real helper via
@@ -155,6 +156,7 @@ $rollbackShellPackages = @()
 $rollbackShellError = $null
 
 ${SHELL_PACKAGE_FUNCTIONS}
+${POWERSHELL_SIGNATURE_FUNCTIONS}
 
 function Write-Report([string]$destination, [hashtable]$report) {
   $report.version = $cfg.version
@@ -225,8 +227,8 @@ function Save-ShellIntegration {
   $script:shellSnapshot = @{ identity = $identity; enabled = ($packages.Count -gt 0); packages = $packages }
   if (-not $script:shellSnapshot.enabled) { return }
   $payload = Join-Path $cfg.installDirectory 'resources\windows-shell\BrclioShell.msix'
-  $signature = Get-AuthenticodeSignature -LiteralPath $payload -ErrorAction Stop
-  if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Subject -cne $identity.Publisher) {
+  $signature = Test-BrclioShellSignature $payload $identity.Publisher (Join-Path $cfg.installDirectory 'resources\windows-shell')
+  if (-not $signature.trusted) {
     throw 'The enabled Brclio shell package cannot be backed up with its trusted signing identity.'
   }
 }
@@ -246,8 +248,8 @@ function Restore-ShellIntegration {
     throw 'The restored Brclio shell signing identity does not match the saved installation.'
   }
   $payload = Join-Path $cfg.installDirectory 'resources\windows-shell\BrclioShell.msix'
-  $signature = Get-AuthenticodeSignature -LiteralPath $payload -ErrorAction Stop
-  if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Subject -cne $identity.Publisher) {
+  $signature = Test-BrclioShellSignature $payload $identity.Publisher (Join-Path $cfg.installDirectory 'resources\windows-shell')
+  if (-not $signature.trusted) {
     throw 'The restored Brclio shell package is not trusted.'
   }
   Add-AppxPackage -Path $payload -ExternalLocation $cfg.installDirectory -ForceUpdateFromAnyVersion -ErrorAction Stop

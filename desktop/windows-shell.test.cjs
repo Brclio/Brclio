@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const { createWindowsShell, WINDOWS_SHELL_SCRIPT, PACKAGE_NAME, REQUEST_ENV, parseResult, sameLocation } = require('./windows-shell.cjs');
+const { POWERSHELL_SIGNATURE_FUNCTIONS } = require('./windows-shell-signature.cjs');
 
 const root = "C:\\用户's & folder\\Brclio";
 const launch = { packaged: true, executable: `${root}\\Brclio.exe` };
@@ -170,9 +171,37 @@ test('pinned self-signed leaf is trusted before registration and trust is rolled
   assert.match(WINDOWS_SHELL_SCRIPT, /CertificateSha256/);
   assert.match(WINDOWS_SHELL_SCRIPT, /certificate\.HasPrivateKey/);
   assert.match(WINDOWS_SHELL_SCRIPT, /1\.3\.6\.1\.5\.5\.7\.3\.3/);
-  assert.match(WINDOWS_SHELL_SCRIPT, /verifiedDll.Status -ne 'Valid'/);
+  assert.ok(WINDOWS_SHELL_SCRIPT.includes(POWERSHELL_SIGNATURE_FUNCTIONS));
+  assert.match(WINDOWS_SHELL_SCRIPT, /!\$verified.trusted -or !\$verifiedDll.trusted/);
   assert.match(WINDOWS_SHELL_SCRIPT, /\$store.Remove\(\$certificate\)/);
   assert.match(WINDOWS_SHELL_SCRIPT, /\$_.Publisher -ceq \$values.Publisher/);
+});
+
+test('shared signature policy pins exact current-user leaf and rejects every WinVerifyTrust failure except explicit untrusted-root', () => {
+  const source = POWERSHELL_SIGNATURE_FUNCTIONS;
+  assert.match(source, /WinVerifyTrust\(new IntPtr\(-1\), ref action, ref data\)/);
+  assert.match(source, /data.uiChoice = 2/);
+  assert.match(source, /data.stateAction = 1/);
+  assert.match(source, /data.stateAction = 2/);
+  assert.match(source, /data.providerFlags = 0x1000/);
+  assert.match(source, /00AAC56B-CD44-11D0-8CC2-00C04FC295EE/);
+  assert.match(source, /\$code -ne \[uint32\]0 -and \$code -ne \[uint32\]2148204809/);
+  assert.doesNotMatch(source, /\[uint32\]0x800B0109|UnknownError|NotTrusted|LocalMachine|Import-Certificate|ReadWrite/);
+  assert.match(source, /X509Store\('TrustedPeople', 'CurrentUser'\)/);
+  assert.match(source, /OpenFlags\]::ReadOnly/);
+  assert.match(source, /\$certificate.Subject -cne \$Publisher/);
+  assert.match(source, /\$certificate.Issuer -cne \$certificate.Subject/);
+  assert.match(source, /CertificateAuthority/);
+  assert.match(source, /DigitalSignature/);
+  assert.match(source, /1\.3\.6\.1\.5\.5\.7\.3\.3/);
+  assert.match(source, /\$certificate.NotBefore -gt \[DateTime\]::Now/);
+  assert.match(source, /\$certificate.NotAfter -lt \[DateTime\]::Now/);
+  assert.match(source, /ToBase64String\(\$certificate.RawData\) -cne \[Convert\]::ToBase64String\(\$signature.SignerCertificate.RawData\)/);
+  assert.match(source, /ToBase64String\(\$_.RawData\) -ceq \[Convert\]::ToBase64String\(\$certificate.RawData\)/);
+  assert.match(source, /Get-BrclioShellFileHash \$Path\) -ine \$expectedHash/);
+  assert.match(source, /\$expectedHash = \$metadata.sha256/);
+  assert.match(source, /\$expectedHash = \$metadata.msixSha256/);
+  assert.match(source, /\$signature.Status -ne 'Valid'/);
 });
 
 test('preexisting trust is preserved after registration failure; existing registration can be fixed by trust only', async () => {

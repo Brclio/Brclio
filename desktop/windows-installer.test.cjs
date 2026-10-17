@@ -11,6 +11,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { createWindowsInstaller, HELPER, LAUNCHER, SHELL_PACKAGE_FUNCTIONS } = require('./windows-installer.cjs');
 const { QUERY_SCRIPT } = require('./windows-registry.cjs');
+const { POWERSHELL_SIGNATURE_FUNCTIONS } = require('./windows-shell-signature.cjs');
 
 async function readUninstallScript() {
   const source = await fs.readFile(path.join(__dirname, 'uninstall.nsh'), 'utf8');
@@ -208,13 +209,15 @@ test('NSIS cleanup shares strict sparse-package ownership checks and preserves u
 });
 
 test('Windows updater snapshots trusted opt-in shell registration before ready and restores it during rollback', () => {
+  assert.ok(HELPER.includes(POWERSHELL_SIGNATURE_FUNCTIONS));
   assert.ok(HELPER.indexOf('  Save-ShellIntegration\n') < HELPER.indexOf('  Write-Report $cfg.readyPath'));
   assert.match(HELPER, /enabled = \(\$packages\.Count -gt 0\)/);
   assert.match(HELPER, /if \(-not \$script:shellSnapshot.enabled\) \{ return \}/);
-  assert.match(HELPER, /\$signature\.SignerCertificate\.Subject -cne \$identity\.Publisher/);
+  assert.equal((HELPER.match(/Test-BrclioShellSignature \$payload \$identity\.Publisher \(Join-Path \$cfg\.installDirectory 'resources\\windows-shell'\)/g) || []).length, 2);
+  assert.equal((HELPER.match(/if \(-not \$signature\.trusted\)/g) || []).length, 2);
   const restore = HELPER.slice(HELPER.indexOf('function Restore-ShellIntegration'), HELPER.indexOf('function Save-Installation'));
   assert.ok(restore.indexOf('Remove-BrclioShellPackages') < restore.indexOf('Add-AppxPackage'));
-  assert.ok(restore.indexOf('$signature.Status') < restore.indexOf('Add-AppxPackage'));
+  assert.ok(restore.indexOf('$signature.trusted') < restore.indexOf('Add-AppxPackage'));
   assert.match(restore, /-ExternalLocation \$cfg.installDirectory -ForceUpdateFromAnyVersion/);
   assert.ok(HELPER.indexOf('try { Restore-Installation }') < HELPER.indexOf('try { Restore-ShellIntegration }'));
   assert.doesNotMatch(HELPER, /\n  Remove-BrclioShellCertificateTrust\n/);
@@ -283,6 +286,56 @@ $script:classPath = Join-Path $Directory 'resources\windows-shell\1.0.0.0\Brclio
 if (-not (Test-BrclioShellPackage $script:package $Directory $identity)) { throw 'The matching absolute COM path was rejected.' }
 Remove-BrclioShellPackages $Directory $identity $saved
 if ($script:removed.Count -ne 1) { throw 'The owned sparse package was not removed exactly once.' }
+`);
+  const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-File', filename, temporary], { timeout: 30000 });
+});
+
+test('Windows shell update backup and rollback require the shared verifier to confirm trusted integrity', { skip: process.platform !== 'win32' }, async t => {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-shell-update-trust-'));
+  t.after(() => fs.rm(temporary, { recursive: true, force: true }));
+  const filename = path.join(temporary, 'shell-update.ps1');
+  const lifecycle = HELPER.slice(HELPER.indexOf('function Save-ShellIntegration'), HELPER.indexOf('function Save-Installation'));
+  await fs.writeFile(filename, '\uFEFF' + `param([string]$Directory)\n$ErrorActionPreference = 'Stop'\n${lifecycle}\n` + String.raw`
+$cfg = @{ installDirectory = $Directory }
+$backupReady = $true
+$installerStarted = $true
+$rollbackShellIdentity = $null
+$rollbackShellError = $null
+$script:trusted = $false
+$script:registered = 0
+$script:checks = @()
+function Read-BrclioShellIdentity { param([string]$directory) return @{ Name='Brclio.Toolbox.Shell'; Publisher='CN=Brclio' } }
+function Get-BrclioShellPackages { param([string]$directory, $identity) return [pscustomobject]@{ PackageFullName='owned-package' } }
+function Remove-BrclioShellPackages { param([string]$directory, $identity, $packages) }
+function Test-BrclioShellSignature {
+  param([string]$Path, [string]$Publisher, [string]$Directory)
+  $script:checks += @{ Path=$Path; Publisher=$Publisher; Directory=$Directory }
+  return @{ trusted=$script:trusted; needsTrust=(-not $script:trusted) }
+}
+function Add-AppxPackage {
+  param([string]$Path, [string]$ExternalLocation, [switch]$ForceUpdateFromAnyVersion)
+  if ($ExternalLocation -cne $cfg.installDirectory) { throw 'Rollback external location differs.' }
+  $script:registered += 1
+}
+$rejected = $false
+try { Save-ShellIntegration } catch { $rejected = $true }
+if (-not $rejected) { throw 'An untrusted shell snapshot was accepted.' }
+$script:trusted = $true
+Save-ShellIntegration
+if (-not $script:shellSnapshot.enabled) { throw 'An enabled shell snapshot was lost.' }
+$script:trusted = $false
+$rejected = $false
+try { Restore-ShellIntegration } catch { $rejected = $true }
+if (-not $rejected -or $script:registered -ne 0) { throw 'An untrusted rollback package was registered.' }
+$script:trusted = $true
+Restore-ShellIntegration
+if ($script:registered -ne 1) { throw 'A trusted rollback package was not registered.' }
+foreach ($check in $script:checks) {
+  if ($check.Path -cne (Join-Path $cfg.installDirectory 'resources\windows-shell\BrclioShell.msix') -or $check.Publisher -cne 'CN=Brclio' -or $check.Directory -cne (Join-Path $cfg.installDirectory 'resources\windows-shell')) {
+    throw 'The shared verifier did not receive the saved package identity and installation assets.'
+  }
+}
 `);
   const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-File', filename, temporary], { timeout: 30000 });
