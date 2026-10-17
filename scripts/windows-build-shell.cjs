@@ -46,7 +46,11 @@ function compilerEnvironment() {
   // Only the trusted Visual Studio installation path enters cmd.exe. Source,
   // output and selected file paths are passed directly to native processes.
   const cmd = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
-  const output = execute(cmd, ['/d', '/u', '/s', '/c', command], { encoding: 'utf16le' });
+  // cmd.exe consumes source after /c, not CRT argv. Node's ordinary Windows
+  // argv quoting would turn the batch path's quotes into literal backslashes.
+  const output = execute(cmd, ['/d', '/u', '/s', '/c', command], {
+    encoding: 'utf16le', windowsVerbatimArguments: true,
+  });
   const environment = { ...process.env };
   for (const line of output.split(/\r?\n/)) {
     const equals = line.indexOf('=');
