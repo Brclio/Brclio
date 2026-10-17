@@ -27,6 +27,29 @@ public static class BrclioSelectionWindow {
   public static extern bool IsWindowVisible(IntPtr window);
   [DllImport("user32.dll")]
   private static extern IntPtr GetAncestor(IntPtr window, uint flags);
+  [DllImport("user32.dll")]
+  private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
+  [DllImport("user32.dll")]
+  private static extern bool IsChild(IntPtr parent, IntPtr child);
+  [StructLayout(LayoutKind.Sequential)]
+  private struct Rect { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)]
+  private struct GuiThreadInfo {
+    public uint Size, Flags;
+    public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret;
+    public Rect CaretRectangle;
+  }
+
+  public static IntPtr GetFocusedWindow(IntPtr foreground) {
+    GuiThreadInfo info = new GuiThreadInfo();
+    info.Size = (uint)Marshal.SizeOf(typeof(GuiThreadInfo));
+    if (!GetGUIThreadInfo(0, ref info) || info.Active != foreground) return IntPtr.Zero;
+    return info.Focus;
+  }
+
+  public static bool ViewContainsFocus(IntPtr view, IntPtr focus) {
+    return focus != IntPtr.Zero && (view == focus || IsChild(view, focus));
+  }
 
   public static bool IsForegroundView(IntPtr view, IntPtr foreground) {
     return IsWindowVisible(view) && GetAncestor(view, 2) == foreground;
@@ -97,6 +120,8 @@ public static class BrclioSelectionWindow {
   [void][BrclioSelectionWindow]::GetWindowThreadProcessId($foreground, [ref]$foregroundProcessId)
   $foregroundProcess = Get-Process -Id $foregroundProcessId -ErrorAction Stop
   if ($foregroundProcess.ProcessName -ine 'explorer') { exit 10 }
+  $focus = [BrclioSelectionWindow]::GetFocusedWindow($foreground)
+  $focusRequired = $false
   $foregroundNumber = $foreground.ToInt64() -band [Int64]4294967295
   $shell = New-Object -ComObject Shell.Application
   $windows = $shell.Windows()
@@ -115,7 +140,7 @@ public static class BrclioSelectionWindow {
       try {
         $folderView = [BrclioSelectionWindow]::GetActiveFolderView($window, $foreground, [ref]$browserNumber, [ref]$viewNumber)
         if ($null -ne $folderView) { $views[[string]$viewNumber] = @{ FolderView = $folderView; Handle = $viewNumber } }
-        if ($diagnostics.Count -lt 20) { [void]$diagnostics.Add(@{ window = $windowNumber; browser = $browserNumber; view = $viewNumber; accepted = ($null -ne $folderView); browserVisible = [BrclioSelectionWindow]::IsWindowVisible([IntPtr]$browserNumber); viewVisible = [BrclioSelectionWindow]::IsWindowVisible([IntPtr]$viewNumber) }) }
+        if ($diagnostics.Count -lt 20) { [void]$diagnostics.Add(@{ window = $windowNumber; browser = $browserNumber; view = $viewNumber; accepted = ($null -ne $folderView); browserVisible = [BrclioSelectionWindow]::IsWindowVisible([IntPtr]$browserNumber); viewVisible = [BrclioSelectionWindow]::IsWindowVisible([IntPtr]$viewNumber); ownsFocus = [BrclioSelectionWindow]::ViewContainsFocus([IntPtr]$viewNumber, $focus) }) }
       } catch {
         $unreadableMatch = $true
         if ($diagnostics.Count -lt 20) { [void]$diagnostics.Add(@{ window = $windowNumber; browser = $browserNumber; view = $viewNumber; error = $_.Exception.Message }) }
@@ -123,10 +148,21 @@ public static class BrclioSelectionWindow {
     } catch { continue }
   }
   if ($matchedWindows -eq 0) { exit 10 }
+  # Windows 11 can retain WS_VISIBLE on background tab panes. Only the pane
+  # containing the foreground keyboard focus can disambiguate those views.
+  if (-not $unreadableMatch -and $views.Count -gt 1) {
+    $focusedViews = @(foreach ($candidate in $views.Values) {
+      if ([BrclioSelectionWindow]::ViewContainsFocus([IntPtr]$candidate.Handle, $focus)) { $candidate }
+    })
+    if ($focusedViews.Count -eq 1) {
+      $views = @{ focused = $focusedViews[0] }
+      $focusRequired = $true
+    }
+  }
   if ($unreadableMatch -or $views.Count -ne 1) {
     if ($env:BRCLIO_SELECTION_DIAGNOSTICS -eq '1') {
       try {
-        $detail = @{ foreground = $foregroundNumber; matchedWindows = $matchedWindows; unreadable = $unreadableMatch; visibleViews = $views.Count; records = @($diagnostics.ToArray()) }
+        $detail = @{ foreground = $foregroundNumber; focus = $focus.ToInt64(); matchedWindows = $matchedWindows; unreadable = $unreadableMatch; visibleViews = $views.Count; records = @($diagnostics.ToArray()) }
         $diagnosticBytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $detail -Depth 4 -Compress))
         $stderr = [Console]::OpenStandardError()
         $stderr.Write($diagnosticBytes, 0, $diagnosticBytes.Length)
@@ -147,6 +183,10 @@ public static class BrclioSelectionWindow {
   )
   if ([BrclioSelectionWindow]::GetForegroundWindow() -ne $foreground) { exit 13 }
   if (-not [BrclioSelectionWindow]::IsForegroundView([IntPtr]$activeView.Handle, $foreground)) { exit 13 }
+  if ($focusRequired) {
+    $finalFocus = [BrclioSelectionWindow]::GetFocusedWindow($foreground)
+    if ($finalFocus -ne $focus -or -not [BrclioSelectionWindow]::ViewContainsFocus([IntPtr]$activeView.Handle, $finalFocus)) { exit 13 }
+  }
   $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $paths -Compress))
   if ($bytes.Length -gt 4194304) { exit 15 }
   $stdout = [Console]::OpenStandardOutput()
@@ -158,7 +198,7 @@ public static class BrclioSelectionWindow {
 const FAILURE_MESSAGES = {
   10: '请先切换到资源管理器，并选中要复制路径的文件或文件夹。',
   11: '请先在资源管理器中选中文件或文件夹。',
-  12: '无法确认资源管理器当前标签页，请切换到所需标签页后重试。',
+  12: '无法确认资源管理器当前标签页，请先点击该页中已选中的文件或文件夹后重试。',
   13: '当前窗口已切换，请返回资源管理器后重试。',
   14: '所选项目不是文件或文件夹，无法复制路径。',
   15: '选中的路径过多或内容过大，请减少选择后重试。',

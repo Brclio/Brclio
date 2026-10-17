@@ -91,6 +91,10 @@ test('script queries the visible active Shell view and rechecks its focus instea
   assert.ok(WINDOWS_SELECTION_SCRIPT.indexOf('if (!IsForegroundView(browserWindow, foreground)) return null;') < WINDOWS_SELECTION_SCRIPT.indexOf('browser.QueryActiveShellView()'));
   assert.match(WINDOWS_SELECTION_SCRIPT, /view\.GetItemObject\(0, ref dispatch\)/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /IsWindowVisible\(view\) && GetAncestor\(view, 2\) == foreground/);
+  assert.match(WINDOWS_SELECTION_SCRIPT, /GetGUIThreadInfo\(0, ref info\).*info.Active != foreground/);
+  assert.match(WINDOWS_SELECTION_SCRIPT, /view == focus \|\| IsChild\(view, focus\)/);
+  assert.match(WINDOWS_SELECTION_SCRIPT, /\$focusedViews.Count -eq 1/);
+  assert.match(WINDOWS_SELECTION_SCRIPT, /\$finalFocus -ne \$focus/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /\$unreadableMatch -or \$views.Count -ne 1\) \{/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /exit 12\n  \}/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /FolderView\.SelectedItems\(\)/);
