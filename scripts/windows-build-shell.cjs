@@ -125,9 +125,22 @@ function signPackage(filename, dll, publisher, temporary, output, env) {
     '-File', path.join(native, 'ReadShellSignature.ps1'), '-PackagePath', filename,
     '-CertificatePath', publicCertificate], { env }));
   if (signature.publisher !== publisher) throw new Error('Signed MSIX publisher does not match its manifest.');
+  if (!/^[a-f0-9]{64}$/.test(signature.certificateSha256)) throw new Error('Cannot compile the shell trust helper without an exact public certificate pin.');
+  const pinHeader = path.join(temporary, 'CertificatePin.h');
+  fs.writeFileSync(pinHeader, `#define EXPECTED_CERT_SHA256 "${signature.certificateSha256}"\n`);
+  const trustHelper = path.join(output, 'BrclioShellTrust.exe');
+  execute('cl.exe', ['/nologo', '/std:c++17', '/EHsc', '/O2', '/W4', '/WX', '/MT', '/utf-8', '/guard:cf',
+    '/DUNICODE', '/D_UNICODE', '/D_WIN32_WINNT=0x0A00', `/FI${pinHeader}`,
+    path.join(native, 'ShellTrust.cpp'), `/Fo${path.join(temporary, 'ShellTrust.obj')}`,
+    '/link', `/OUT:${trustHelper}`, '/SUBSYSTEM:WINDOWS', '/MACHINE:X64', '/DYNAMICBASE', '/NXCOMPAT', '/GUARD:CF',
+    'crypt32.lib', 'advapi32.lib', 'shell32.lib', 'shlwapi.lib', 'windowsapp.lib', 'runtimeobject.lib'], { cwd: temporary, env });
+  const helperSignArgs = args.slice(0, -2).concat(trustHelper);
+  try { execute(signtool, helperSignArgs, { env }); }
+  catch { throw new Error('Windows shell trust helper signing failed. Check the configured certificate and timestamp service.'); }
   password = undefined;
   return { signed: true, selfSigned, certificate: 'BrclioShell.cer',
-    certificateSha256: signature.certificateSha256, certificateThumbprint: signature.certificateThumbprint };
+    certificateSha256: signature.certificateSha256, certificateThumbprint: signature.certificateThumbprint,
+    trustHelper: 'BrclioShellTrust.exe', trustHelperSha256: createHash('sha256').update(fs.readFileSync(trustHelper)).digest('hex') };
 }
 
 function build({ output, version, arch = 'x64', publisher = process.env.BRCLIO_WINDOWS_SHELL_PUBLISHER || 'CN=Brclio' }) {

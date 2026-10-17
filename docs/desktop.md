@@ -17,9 +17,9 @@ npm run build:win
 
 Windows 11（build 22000 及以上）使用原生 `IExplorerCommand` COM 扩展和 sparse identity package，菜单“复制路径 · Brclio”注册在第一层。包名固定为 `Brclio.Toolbox.Shell`，COM 类固定为 `{CFD1E4D4-3973-45D3-8542-45A77E6C58C9}`，身份包、公钥证书和 manifest 位于安装目录的 `resources/windows-shell/`，DLL 另放在其中的包版本子目录，避免升级时覆盖被 COM 宿主占用的旧文件。支持文件、文件夹、多选及文件夹空白处；多选只启动一次 Brclio，将整个选区交给现有复制流程，保留已保存的格式设置。
 
-构建 Windows 安装包需要 Visual Studio C++ x64 工具链和 Windows SDK；`electron-builder` 的 afterPack 钩子自动编译静态 CRT 的 DLL、生成 MSIX 并签名。默认生成专用自签名代码签名证书；私钥及临时 PFX 构建后删除，只将公钥 `BrclioShell.cer` 与已签名 MSIX 放入安装包。启用时验证包的签名证书与附带公钥一致，再向当前用户 `TrustedPeople` 导入这个叶证书，复验系统签名结果后注册包。不会导入 Root 或更改开发者模式。只记录本应用新导入的证书，已有的信任项保持原样；停用和真正卸载时清理本应用记录的未使用证书，升级保留注册和信任。
+构建 Windows 安装包需要 Visual Studio C++ x64 工具链和 Windows SDK；`electron-builder` 的 afterPack 钩子自动编译静态 CRT 的 DLL、生成 MSIX 并签名。默认生成专用自签名代码签名证书；私钥及临时 PFX 构建后删除，只将公钥 `BrclioShell.cer`、已签名 MSIX 和限定操作的证书助手放入安装包。启用时验证签名公钥、证书用途、文件哈希和 Windows 原生签名校验结果，再通过标准 UAC 管理员授权将这个专用叶证书加入机器 `TrustedPeople`，满足 Windows 部署服务的签名信任要求；当前用户的包注册仍由原用户完成。助手内编译固定的公钥指纹，只能添加该公钥或清理具有 Brclio 归属记录、且没有用户仍在使用的专用证书。不会导入 Root 或更改开发者模式。已有的信任项保持原样，升级保留注册和信任。
 
-已有 CA 签名证书也可通过 `BRCLIO_WINDOWS_SHELL_CERTIFICATE_FILE`、`BRCLIO_WINDOWS_SHELL_CERTIFICATE_PASSWORD`、`BRCLIO_WINDOWS_SHELL_PUBLISHER` 和可选 `BRCLIO_WINDOWS_SHELL_TIMESTAMP_URL` 提供给构建。Publisher 必须与证书 Subject 一致。不需要把私钥放进仓库。自签名方案的信任限于启用菜单的当前用户；企业策略禁止本地证书信任或 AppX 注册时，会显示注册错误。
+已有 CA 签名证书也可通过 `BRCLIO_WINDOWS_SHELL_CERTIFICATE_FILE`、`BRCLIO_WINDOWS_SHELL_CERTIFICATE_PASSWORD`、`BRCLIO_WINDOWS_SHELL_PUBLISHER` 和可选 `BRCLIO_WINDOWS_SHELL_TIMESTAMP_URL` 提供给构建。Publisher 必须与证书 Subject 一致。不需要把私钥放进仓库。默认构建的私钥每次生成，因此更换安装包证书后需要再次授权；不具备管理员权限或企业策略禁止证书信任、AppX 注册时，会显示注册错误。
 
 首次安装保持关闭。已启用旧版菜单的用户打开新版时会自动迁移；新版注册确认后才移除带 Brclio 归属标记的旧入口。注册失败时保留旧入口，不把它算作第一层菜单已启用。菜单可能需要重新打开资源管理器窗口，或注销后登录才能刷新，程序不会主动结束 Explorer。
 

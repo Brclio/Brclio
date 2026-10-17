@@ -120,13 +120,48 @@ function Read-Assets([string]$root) {
     $signature = Test-BrclioShellSignature $packagePath $manifest.publisher $directory
     $dllSignature = Test-BrclioShellSignature $dllPath $manifest.publisher $directory
     if ($signature.certificateThumbprint -cne $dllSignature.certificateThumbprint) { throw 'Windows 右键扩展 DLL 与 MSIX 签名证书不一致。' }
+    if ($signature.pinned) {
+      $helperSignature = Test-BrclioShellSignature (Join-Path $directory 'BrclioShellTrust.exe') $manifest.publisher $directory
+      if (!$helperSignature.pinned -or $helperSignature.certificateThumbprint -cne $signature.certificateThumbprint) { throw 'Windows 右键扩展的专用证书助手签名不匹配。' }
+    }
     $result.certificateThumbprint = $signature.certificateThumbprint
-    $result.needsTrust = !$signature.trusted -or !$dllSignature.trusted
+    $result.needsTrust = $signature.needsTrust -or $dllSignature.needsTrust
     $packed = Manifest-Info (Read-MsixManifest $packagePath)
     if (!$packed.valid -or $packed.publisher -cne $manifest.publisher -or $packed.version -cne $manifest.version) { throw 'Windows 右键扩展 MSIX 与安装清单不一致，请重新安装正式安装包。' }
     $result.available = $true
   } catch { $result.error = $_.Exception.Message }
   return $result
+}
+function Invoke-MachineTrustHelper([string]$operation, [string]$publisher, [string]$thumbprint) {
+  if ($operation -notin @('--add', '--remove', '--cleanup')) { throw '无效的 Brclio 专用证书操作。' }
+  $directory = Join-Path $request.root 'resources\windows-shell'
+  $helper = Join-Path $directory 'BrclioShellTrust.exe'
+  $verified = Test-BrclioShellSignature $helper $publisher $directory
+  if (!$verified.pinned -or ($thumbprint -and $verified.certificateThumbprint -cne $thumbprint)) { throw 'Windows 右键扩展证书助手未通过专用签名验证。' }
+  $arguments = @($operation)
+  if ($operation -ne '--cleanup') { $arguments += ('"' + (Join-Path $directory 'BrclioShell.cer') + '"') }
+  $parameters = @{ FilePath = $helper; ArgumentList = $arguments; Wait = $true; PassThru = $true }
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  try { $administrator = (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+  finally { $identity.Dispose() }
+  if ($administrator) { $parameters.NoNewWindow = $true }
+  else { $parameters.Verb = 'RunAs'; $parameters.WindowStyle = 'Hidden' }
+  try { $process = Start-Process @parameters }
+  catch { throw ('Windows 管理员确认未完成，无法设置 Brclio 专用证书信任：' + $_.Exception.Message) }
+  $process.Refresh()
+  $code = $process.ExitCode
+  $process.Dispose()
+  if ($operation -eq '--add' -and $code -eq 10) { return $true }
+  if ($code -eq 0) { return $false }
+  throw ('Brclio 专用证书助手操作失败（退出代码 ' + $code + '）。')
+}
+function Owned-MachineMarkers([string]$thumbprint) {
+  $parent = 'HKLM:\Software\Brclio\ShellCertificates'
+  if (!(Test-Path -LiteralPath $parent)) { return @() }
+  return @(Get-ChildItem -LiteralPath $parent | Where-Object {
+    $values = Get-ItemProperty -LiteralPath $_.PSPath
+    $_.PSChildName -match '^[a-fA-F0-9]{40}$' -and (!$thumbprint -or $_.PSChildName -ieq $thumbprint) -and $values.BrclioOwner -ceq 'com.brclio.toolbox' -and $values.CertificateSha256 -match '^[a-fA-F0-9]{64}$'
+  })
 }
 function Trust-Certificate($assets) {
   if (!$assets.available) { throw $assets.error }
@@ -138,6 +173,7 @@ function Trust-Certificate($assets) {
   $certificate = $pinned.certificate
   $store = New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPeople', 'CurrentUser')
   $imported = $false
+  $machineImported = $false
   $marker = 'HKCU:\Software\Brclio\ShellCertificates\' + $certificate.Thumbprint
   try {
     $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
@@ -152,16 +188,27 @@ function Trust-Certificate($assets) {
     } elseif (@($existing | Where-Object { (Certificate-Hash $_) -ine $pinned.hash }).Count -gt 0) {
       throw '已有同指纹证书与扩展签名不匹配，已保留原有证书。'
     }
+    if (!$beforeTrust.machineTrusted) {
+      $machineImported = Invoke-MachineTrustHelper '--add' $assets.publisher $certificate.Thumbprint
+    }
     # Verify full-file hashes, exact leaf peer trust and WinVerifyTrust
     # integrity before the OS independently validates Add-AppxPackage.
     $verified = Test-BrclioShellSignature $assets.packagePath $assets.publisher $directory
     $verifiedDll = Test-BrclioShellSignature (Join-Path $directory ($assets.version + '\BrclioExplorerCommand.dll')) $assets.publisher $directory
-    if (!$verified.trusted -or !$verifiedDll.trusted -or $verified.certificateThumbprint -cne $certificate.Thumbprint -or $verifiedDll.certificateThumbprint -cne $certificate.Thumbprint) { throw 'Windows 右键扩展完整性验证失败。' }
+    if (!$verified.trusted -or !$verifiedDll.trusted -or $verified.needsTrust -or $verifiedDll.needsTrust -or $verified.certificateThumbprint -cne $certificate.Thumbprint -or $verifiedDll.certificateThumbprint -cne $certificate.Thumbprint) { throw 'Windows 右键扩展完整性验证失败。' }
   } catch {
+    $failure = $_.Exception.Message
+    if ($machineImported) {
+      try {
+        [void](Invoke-MachineTrustHelper '--remove' $assets.publisher $certificate.Thumbprint)
+        $after = Test-BrclioShellSignature $assets.packagePath $assets.publisher $directory
+        if ($after.machineTrusted) { throw '仍有依赖扩展或无法确认使用状态，已保留本次专用机器证书信任。' }
+      } catch { $failure += (' 证书回滚未完成：' + $_.Exception.Message) }
+    }
     if ($imported) { $store.Remove($certificate); Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue }
-    throw
+    throw $failure
   } finally { $store.Close() }
-  return $imported
+  return @{ currentUserImported = $imported; machineImported = $machineImported }
 }
 function Package-UsesCertificate($package, [string]$hash) {
   try {
@@ -178,9 +225,22 @@ function Package-UsesCertificate($package, [string]$hash) {
     return (Certificate-Hash $cms.SignerInfos[0].Certificate) -ieq $hash
   } catch { return $true }
 }
-function Remove-OwnedCertificates([string]$onlyThumbprint) {
+function Remove-OwnedCertificates([string]$onlyThumbprint, [bool]$machineImported) {
+  $machineError = $null
+  if ((!$onlyThumbprint -or $machineImported) -and @(Owned-MachineMarkers $onlyThumbprint).Count -gt 0) {
+    try {
+      $operation = '--cleanup'
+      if ($onlyThumbprint) { $operation = '--remove' }
+      [void](Invoke-MachineTrustHelper $operation $assets.publisher $onlyThumbprint)
+      if ($onlyThumbprint) {
+        $directory = Join-Path $request.root 'resources\windows-shell'
+        $after = Test-BrclioShellSignature (Join-Path $directory 'BrclioShellTrust.exe') $assets.publisher $directory
+        if ($after.machineTrusted) { throw '仍有依赖扩展或无法确认使用状态，已保留本次专用机器证书信任。' }
+      }
+    } catch { $machineError = $_.Exception.Message }
+  }
   $parent = 'HKCU:\Software\Brclio\ShellCertificates'
-  if (!(Test-Path -LiteralPath $parent)) { return }
+  if (!(Test-Path -LiteralPath $parent)) { if ($machineError) { throw $machineError }; return }
   $packages = @(Get-AppxPackage -ErrorAction Stop)
   $store = New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPeople', 'CurrentUser')
   try {
@@ -204,6 +264,7 @@ function Remove-OwnedCertificates([string]$onlyThumbprint) {
       if ($certificates.Count -eq 0 -or @($certificates | Where-Object { (Certificate-Hash $_) -ine $values.CertificateSha256 -or $_.Subject -cne $values.Publisher }).Count -eq 0) { Remove-Item -LiteralPath $marker.PSPath -Force }
     }
   } finally { $store.Close() }
+  if ($machineError) { throw $machineError }
 }
 function Read-Packages([string]$publisher) {
   $manager = New-Object Windows.Management.Deployment.PackageManager
@@ -234,11 +295,14 @@ try {
   [void][Windows.Management.Deployment.PackageManager, Windows.Management.Deployment, ContentType=WindowsRuntime]
   $assets = Read-Assets $request.root
   $trustImported = $false
+  $machineTrustImported = $false
   if ($request.action -eq 'trust') {
-    $trustImported = Trust-Certificate $assets
+    $imported = Trust-Certificate $assets
+    $trustImported = $imported.currentUserImported -or $imported.machineImported
+    $machineTrustImported = $imported.machineImported
     $assets = Read-Assets $request.root
   } elseif ($request.action -eq 'removeTrust') {
-    Remove-OwnedCertificates ([string]$request.thumbprint)
+    Remove-OwnedCertificates ([string]$request.thumbprint) ([bool]$request.machineImported)
     $assets = Read-Assets $request.root
   } elseif ($request.action -eq 'remove') {
     $packages = Read-Packages $assets.publisher
@@ -255,7 +319,7 @@ try {
     if ($request.action -eq 'restore' -and $candidate.version -cne $request.restoreVersion) { throw '原有右键扩展安装包已变化，无法恢复注册。' }
     Add-AppxPackage -Path $candidate.packagePath -ExternalLocation $root -ForceUpdateFromAnyVersion -ErrorAction Stop | Out-Null
   }
-  Write-Result @{ ok = $true; assets = $assets; packages = @(Read-Packages $assets.publisher); trustImported = $trustImported }
+  Write-Result @{ ok = $true; assets = $assets; packages = @(Read-Packages $assets.publisher); trustImported = $trustImported; machineTrustImported = $machineTrustImported }
 } catch { Write-Result @{ ok = $false; error = $_.Exception.Message } }
 `;
 
@@ -269,7 +333,7 @@ function parseResult(stdout) {
   if (!result || typeof result.ok !== 'boolean') throw new Error('无法读取 Windows 右键扩展状态。');
   if (!result.ok) throw new Error(typeof result.error === 'string' ? result.error : 'Windows 右键扩展操作失败。');
   const { assets, packages } = result;
-  if (!assets || typeof assets.available !== 'boolean' || typeof assets.publisher !== 'string' || (assets.version !== null && typeof assets.version !== 'string') || (assets.error !== null && typeof assets.error !== 'string') || (assets.needsTrust !== undefined && typeof assets.needsTrust !== 'boolean') || (assets.certificateThumbprint !== undefined && assets.certificateThumbprint !== null && (typeof assets.certificateThumbprint !== 'string' || !/^[a-fA-F0-9]{40}$/.test(assets.certificateThumbprint))) || (result.trustImported !== undefined && typeof result.trustImported !== 'boolean') || !Array.isArray(packages) || packages.length > 32 || packages.some(item => !item || ['name', 'publisher', 'fullName', 'version'].some(key => typeof item[key] !== 'string') || ['owned', 'usable', 'healthy', 'rollbackAvailable'].some(key => typeof item[key] !== 'boolean') || (item.externalLocation !== null && typeof item.externalLocation !== 'string'))) throw new Error('无法读取 Windows 右键扩展状态。');
+  if (!assets || typeof assets.available !== 'boolean' || typeof assets.publisher !== 'string' || (assets.version !== null && typeof assets.version !== 'string') || (assets.error !== null && typeof assets.error !== 'string') || (assets.needsTrust !== undefined && typeof assets.needsTrust !== 'boolean') || (assets.certificateThumbprint !== undefined && assets.certificateThumbprint !== null && (typeof assets.certificateThumbprint !== 'string' || !/^[a-fA-F0-9]{40}$/.test(assets.certificateThumbprint))) || ['trustImported', 'machineTrustImported'].some(key => result[key] !== undefined && typeof result[key] !== 'boolean') || !Array.isArray(packages) || packages.length > 32 || packages.some(item => !item || ['name', 'publisher', 'fullName', 'version'].some(key => typeof item[key] !== 'string') || ['owned', 'usable', 'healthy', 'rollbackAvailable'].some(key => typeof item[key] !== 'boolean') || (item.externalLocation !== null && typeof item.externalLocation !== 'string'))) throw new Error('无法读取 Windows 右键扩展状态。');
   return result;
 }
 
@@ -292,7 +356,8 @@ function createWindowsShell({ launch, run = defaultRun, powershell = path.win32.
     try {
       const script = path.join(temporary, 'shell.ps1');
       await fs.writeFile(script, `\uFEFF${WINDOWS_SHELL_SCRIPT}`, { encoding: 'utf8', mode: 0o600 });
-      const result = await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], { env });
+      const timeout = action === 'trust' || action === 'removeTrust' ? 240000 : 60000;
+      const result = await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], { env, timeout });
       return parseResult(result.stdout);
     } finally { await fs.rm(temporary, { recursive: true, force: true }); }
   }
@@ -304,10 +369,10 @@ function createWindowsShell({ launch, run = defaultRun, powershell = path.win32.
     const dllLocation = result.assets.version ? path.win32.join(location, result.assets.version, DLL_NAME) : location;
     return { installed, supported: true, available: result.assets.available, requiresInstall: !result.assets.available, kind: 'windows-shell-extension', location: dllLocation,
       registered: owned.length > 0, stale: owned.length > 0 && !installed, menuLabel: MENU_LABEL, ...(result.assets.error ? { error: result.assets.error } : {}),
-      ...(result.assets.needsTrust ? { needsTrust: true } : {}),
+      ...(result.assets.needsTrust ? { needsTrust: true, requiresElevation: true } : {}),
       ...(conflict ? { conflict: true } : {}),
       description: installed ? '已添加 Windows 11 外层右键菜单，可直接选择“复制路径 · Brclio”。如菜单尚未刷新，请重新打开资源管理器或重新登录。'
-        : result.assets.error || (conflict ? '发现不属于 Brclio 的同名扩展，已保留原有设置。' : '启用后，“复制路径 · Brclio”会直接显示在 Windows 11 外层右键菜单。') };
+        : result.assets.error || (conflict ? '发现不属于 Brclio 的同名扩展，已保留原有设置。' : `启用后，“复制路径 · Brclio”会直接显示在 Windows 11 外层右键菜单。${result.assets.needsTrust ? '首次启用或签名证书变化时需要 Windows 管理员授权。' : ''}`) };
   }
   function unavailable() {
     return { installed: false, supported: true, available: false, requiresInstall: true, registered: false, stale: false, kind: 'windows-shell-extension', location: shellLocation(), menuLabel: MENU_LABEL,
@@ -336,10 +401,12 @@ function createWindowsShell({ launch, run = defaultRun, powershell = path.win32.
     // location. Preserve any usable old install before removing that version.
     const removed = [];
     let importedThumbprint = null;
+    let importedMachineTrust = false;
     try {
       if (before.assets.needsTrust) {
         before = await invoke('trust');
         if (before.trustImported) importedThumbprint = before.assets.certificateThumbprint;
+        importedMachineTrust = before.machineTrustImported === true;
         if (!before.assets.available || before.assets.needsTrust) throw new Error(before.assets.error || 'Windows 未确认右键扩展签名可信。');
         if (snapshot(before).installed) return snapshot(before);
       }
@@ -363,7 +430,7 @@ function createWindowsShell({ launch, run = defaultRun, powershell = path.win32.
         } catch (failure) { rollbackError = failure; }
       }
       if (importedThumbprint) {
-        try { await invoke('removeTrust', { thumbprint: importedThumbprint }); }
+        try { await invoke('removeTrust', { thumbprint: importedThumbprint, machineImported: importedMachineTrust }); }
         catch (failure) { rollbackError ||= failure; }
       }
       if (rollbackError) throw new Error(`${error.message} 回滚未全部完成：${rollbackError.message}`);

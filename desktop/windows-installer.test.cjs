@@ -13,10 +13,13 @@ const { createWindowsInstaller, HELPER, LAUNCHER, SHELL_PACKAGE_FUNCTIONS } = re
 const { QUERY_SCRIPT } = require('./windows-registry.cjs');
 const { POWERSHELL_SIGNATURE_FUNCTIONS } = require('./windows-shell-signature.cjs');
 
-async function readUninstallScript() {
-  const source = await fs.readFile(path.join(__dirname, 'uninstall.nsh'), 'utf8');
-  return source.split('\n').filter(line => line.startsWith('  FileWrite $R3 "'))
+function extractUninstallScript(source) {
+  return source.split(/\r?\n/).filter(line => line.startsWith('  FileWrite $R3 "'))
     .map(line => line.slice('  FileWrite $R3 "'.length, -1).replace(/\$\\r\$\\n$/, '').replaceAll('$\\"', '"').replaceAll('$$', '$')).join('\n') + '\n';
+}
+
+async function readUninstallScript() {
+  return extractUninstallScript(await fs.readFile(path.join(__dirname, 'uninstall.nsh'), 'utf8'));
 }
 
 async function fixture(t, { readyError, spawnError, readyTimeout } = {}) {
@@ -175,6 +178,11 @@ test('Windows helper keeps NSIS directory argument last and guards all menu clea
   assert.ok(uninstall.indexOf('${IfNot} ${isUpdated}') < uninstall.indexOf('DeleteRegKey'));
   assert.match(hook, /!macro customCheckAppRunning/);
   assert.match(hook, /SetEnvironmentVariable\(t "BRCLIO_NSIS_EXECUTABLE", t "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}"\)/);
+  const modernCleanup = hook.slice(hook.indexOf('!macro BrclioRemoveModernMenu'), hook.indexOf('; Only remove integration keys'));
+  assert.match(modernCleanup, /StrCpy \$R4 "\$WINDIR\\Sysnative\\WindowsPowerShell\\v1\.0\\powershell\.exe"/);
+  assert.match(modernCleanup, /IfFileExists "\$R4" \+2 0\s+StrCpy \$R4 "\$PowerShellPath"/);
+  assert.match(modernCleanup, /nsExec::ExecToStack `"\$R4"/);
+  assert.doesNotMatch(modernCleanup, /StrCpy \$PowerShellPath/);
   for (const command of hook.split('\n').filter(line => line.includes('nsExec::ExecToStack'))) {
     assert.doesNotMatch(command, /\$INSTDIR/);
     if (command.includes('-Command')) assert.match(command, /\$\$env:BRCLIO_NSIS_EXECUTABLE/);
@@ -187,12 +195,13 @@ test('Windows helper keeps NSIS directory argument last and guards all menu clea
 
 test('NSIS cleanup shares strict sparse-package ownership checks and preserves unrelated certificate trust', async () => {
   const hook = await fs.readFile(path.join(__dirname, 'uninstall.nsh'), 'utf8');
-  for (const line of hook.split('\n').filter(value => value.startsWith('  FileWrite $R3 "'))) {
+  for (const line of hook.split(/\r?\n/).filter(value => value.startsWith('  FileWrite $R3 "'))) {
     const encoded = line.slice('  FileWrite $R3 "'.length, -1);
     assert.doesNotMatch(encoded.replaceAll('$$', '').replaceAll('$\\"', '').replaceAll('$\\r$\\n', ''), /\$/,
       'All PowerShell dollars must be escaped for the NSIS compiler.');
   }
   const script = await readUninstallScript();
+  assert.equal(extractUninstallScript(hook.replace(/\r?\n/g, '\r\n')), script, 'Windows CRLF checkout produces the same PowerShell script.');
   assert.ok(script.includes(SHELL_PACKAGE_FUNCTIONS.trim()));
   assert.match(script, /GetDirectoryName\(\$env:BRCLIO_NSIS_EXECUTABLE\)/);
   assert.match(SHELL_PACKAGE_FUNCTIONS, /\$package\.Name -cne \$identity\.Name -or \$package\.Publisher -cne \$identity\.Publisher/);
@@ -204,8 +213,14 @@ test('NSIS cleanup shares strict sparse-package ownership checks and preserves u
   assert.match(SHELL_PACKAGE_FUNCTIONS, /CertificateSha256/);
   assert.match(SHELL_PACKAGE_FUNCTIONS, /ComputeHash\(\$certificate\.RawData\)/);
   assert.match(SHELL_PACKAGE_FUNCTIONS, /X509Store\('TrustedPeople', 'CurrentUser'\)/);
-  assert.doesNotMatch(SHELL_PACKAGE_FUNCTIONS, /LocalMachine|Import-Certificate|TrustedRoot|Set-ExecutionPolicy/);
+  assert.match(SHELL_PACKAGE_FUNCTIONS, /RegistryHive\]::LocalMachine, \[Microsoft\.Win32\.RegistryView\]::Registry64/);
+  assert.match(SHELL_PACKAGE_FUNCTIONS, /\$metadata\.trustHelperSha256/);
+  assert.match(SHELL_PACKAGE_FUNCTIONS, /\$start\.Arguments = '--cleanup'/);
+  assert.match(SHELL_PACKAGE_FUNCTIONS, /\$start\.Verb = 'runas'/);
+  assert.doesNotMatch(SHELL_PACKAGE_FUNCTIONS, /Import-Certificate|TrustedRoot|Set-ExecutionPolicy/);
+  assert.ok(script.includes(POWERSHELL_SIGNATURE_FUNCTIONS.trim()));
   assert.ok(script.indexOf('Remove-BrclioShellPackages $directory $identity $packages') < script.indexOf('  Remove-BrclioShellCertificateTrust\n'));
+  assert.ok(script.indexOf('  Remove-BrclioShellMachineCertificateTrust $directory $identity\n') < script.indexOf('  Remove-BrclioShellCertificateTrust\n'));
 });
 
 test('Windows updater snapshots trusted opt-in shell registration before ready and restores it during rollback', () => {
@@ -214,7 +229,9 @@ test('Windows updater snapshots trusted opt-in shell registration before ready a
   assert.match(HELPER, /enabled = \(\$packages\.Count -gt 0\)/);
   assert.match(HELPER, /if \(-not \$script:shellSnapshot.enabled\) \{ return \}/);
   assert.equal((HELPER.match(/Test-BrclioShellSignature \$payload \$identity\.Publisher \(Join-Path \$cfg\.installDirectory 'resources\\windows-shell'\)/g) || []).length, 2);
-  assert.equal((HELPER.match(/if \(-not \$signature\.trusted\)/g) || []).length, 2);
+  assert.equal((HELPER.match(/if \(-not \$signature\.trusted -or \$signature\.needsTrust\)/g) || []).length, 2);
+  assert.match(HELPER, /if \(-not \$dllSignature\.trusted -or \$dllSignature\.needsTrust\)/);
+  assert.ok(HELPER.indexOf('  Preserve-PreviousShellDll\n') < HELPER.indexOf('  $newProcess = Start-Process'));
   const restore = HELPER.slice(HELPER.indexOf('function Restore-ShellIntegration'), HELPER.indexOf('function Save-Installation'));
   assert.ok(restore.indexOf('Remove-BrclioShellPackages') < restore.indexOf('Add-AppxPackage'));
   assert.ok(restore.indexOf('$signature.trusted') < restore.indexOf('Add-AppxPackage'));
@@ -297,21 +314,25 @@ test('Windows shell update backup and rollback require the shared verifier to co
   const filename = path.join(temporary, 'shell-update.ps1');
   const lifecycle = HELPER.slice(HELPER.indexOf('function Save-ShellIntegration'), HELPER.indexOf('function Save-Installation'));
   await fs.writeFile(filename, '\uFEFF' + `param([string]$Directory)\n$ErrorActionPreference = 'Stop'\n${lifecycle}\n` + String.raw`
-$cfg = @{ installDirectory = $Directory }
+$cfg = @{ installDirectory = $Directory; backupDirectory = (Join-Path $Directory 'previous-app') }
 $backupReady = $true
 $installerStarted = $true
 $rollbackShellIdentity = $null
 $rollbackShellError = $null
 $script:trusted = $false
+$script:needsTrust = $true
 $script:registered = 0
+$script:registeredVersion = '1.0.0.0'
 $script:checks = @()
-function Read-BrclioShellIdentity { param([string]$directory) return @{ Name='Brclio.Toolbox.Shell'; Publisher='CN=Brclio' } }
-function Get-BrclioShellPackages { param([string]$directory, $identity) return [pscustomobject]@{ PackageFullName='owned-package' } }
+function Read-BrclioShellIdentity { param([string]$directory) return @{ Name='Brclio.Toolbox.Shell'; Publisher='CN=Brclio'; Version='1.0.0.0' } }
+function Get-BrclioShellDllRelativePath { param([string]$version) return ('resources\windows-shell\' + $version + '\BrclioExplorerCommand.dll') }
+function Get-BrclioShellFileHash { param([string]$Path) return ('A' * 64) }
+function Get-BrclioShellPackages { param([string]$directory, $identity) return [pscustomobject]@{ PackageFullName='owned-package'; Version=$script:registeredVersion } }
 function Remove-BrclioShellPackages { param([string]$directory, $identity, $packages) }
 function Test-BrclioShellSignature {
   param([string]$Path, [string]$Publisher, [string]$Directory)
   $script:checks += @{ Path=$Path; Publisher=$Publisher; Directory=$Directory }
-  return @{ trusted=$script:trusted; needsTrust=(-not $script:trusted) }
+  return @{ trusted=$script:trusted; needsTrust=$script:needsTrust }
 }
 function Add-AppxPackage {
   param([string]$Path, [string]$ExternalLocation, [switch]$ForceUpdateFromAnyVersion)
@@ -322,6 +343,15 @@ $rejected = $false
 try { Save-ShellIntegration } catch { $rejected = $true }
 if (-not $rejected) { throw 'An untrusted shell snapshot was accepted.' }
 $script:trusted = $true
+$rejected = $false
+try { Save-ShellIntegration } catch { $rejected = $true }
+if (-not $rejected) { throw 'A CurrentUser-only peer was accepted for Appx rollback deployment.' }
+$script:needsTrust = $false
+$script:registeredVersion = '0.9.0.0'
+$rejected = $false
+try { Save-ShellIntegration } catch { $rejected = $true }
+if (-not $rejected) { throw 'A registered shell version with no matching rollback assets was accepted.' }
+$script:registeredVersion = '1.0.0.0'
 Save-ShellIntegration
 if (-not $script:shellSnapshot.enabled) { throw 'An enabled shell snapshot was lost.' }
 $script:trusted = $false
@@ -332,13 +362,58 @@ $script:trusted = $true
 Restore-ShellIntegration
 if ($script:registered -ne 1) { throw 'A trusted rollback package was not registered.' }
 foreach ($check in $script:checks) {
-  if ($check.Path -cne (Join-Path $cfg.installDirectory 'resources\windows-shell\BrclioShell.msix') -or $check.Publisher -cne 'CN=Brclio' -or $check.Directory -cne (Join-Path $cfg.installDirectory 'resources\windows-shell')) {
+  if ($check.Path -cnotin @((Join-Path $cfg.installDirectory 'resources\windows-shell\BrclioShell.msix'), (Join-Path $cfg.installDirectory 'resources\windows-shell\1.0.0.0\BrclioExplorerCommand.dll')) -or $check.Publisher -cne 'CN=Brclio' -or $check.Directory -cne (Join-Path $cfg.installDirectory 'resources\windows-shell')) {
     throw 'The shared verifier did not receive the saved package identity and installation assets.'
   }
 }
 `);
   const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-File', filename, temporary], { timeout: 30000 });
+});
+
+test('Windows update preserves only the verified previous version DLL and rejects a conflicting file', { skip: process.platform !== 'win32' }, async t => {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-previous-shell-dll-'));
+  t.after(() => fs.rm(temporary, { recursive: true, force: true }));
+  const install = path.join(temporary, 'install');
+  const backup = path.join(temporary, 'backup');
+  const oldRelative = path.join('resources', 'windows-shell', '1.0.0.0', 'BrclioExplorerCommand.dll');
+  const currentRelative = path.join('resources', 'windows-shell', '2.0.0.0', 'BrclioExplorerCommand.dll');
+  await fs.mkdir(path.dirname(path.join(backup, oldRelative)), { recursive: true });
+  await fs.mkdir(path.dirname(path.join(install, currentRelative)), { recursive: true });
+  await fs.writeFile(path.join(backup, oldRelative), 'verified previous DLL');
+  await fs.writeFile(path.join(install, currentRelative), 'new DLL');
+  await fs.writeFile(path.join(install, 'resources', 'windows-shell', 'AppxManifest.xml'), 'new manifest');
+  const filename = path.join(temporary, 'preserve.ps1');
+  const preserve = HELPER.slice(HELPER.indexOf('function Preserve-PreviousShellDll'), HELPER.indexOf('function Restore-ShellIntegration'));
+  const hash = POWERSHELL_SIGNATURE_FUNCTIONS.slice(POWERSHELL_SIGNATURE_FUNCTIONS.indexOf('function Get-BrclioShellFileHash'), POWERSHELL_SIGNATURE_FUNCTIONS.indexOf('function Test-BrclioShellSignature'));
+  await fs.writeFile(filename, '\uFEFF' + `param([string]$Directory,[string]$Backup)\n$ErrorActionPreference = 'Stop'\n${hash}\n${preserve}\n` + String.raw`
+$cfg = @{ installDirectory=$Directory; backupDirectory=$Backup }
+$relative = 'resources\windows-shell\1.0.0.0\BrclioExplorerCommand.dll'
+$source = Join-Path $Backup $relative
+$destination = Join-Path $Directory $relative
+$script:currentVersion = '2.0.0.0'
+$shellSnapshot = @{ enabled=$true; version='1.0.0.0'; dllHash=(Get-BrclioShellFileHash $source) }
+function Read-BrclioShellIdentity { param([string]$directory) return @{ Version=$script:currentVersion } }
+function Get-BrclioShellDllRelativePath { param([string]$version) return ('resources\windows-shell\' + $version + '\BrclioExplorerCommand.dll') }
+Preserve-PreviousShellDll
+if ([IO.File]::ReadAllText($destination) -cne 'verified previous DLL') { throw 'The previous DLL was not preserved.' }
+if ([IO.File]::ReadAllText((Join-Path $Directory 'resources\windows-shell\AppxManifest.xml')) -cne 'new manifest') { throw 'New metadata was overwritten.' }
+if ([IO.File]::ReadAllText((Join-Path $Directory 'resources\windows-shell\2.0.0.0\BrclioExplorerCommand.dll')) -cne 'new DLL') { throw 'The new DLL was overwritten.' }
+Preserve-PreviousShellDll
+[IO.File]::WriteAllText($destination, 'conflicting file')
+$rejected = $false
+try { Preserve-PreviousShellDll } catch { $rejected = $true }
+if (-not $rejected -or [IO.File]::ReadAllText($destination) -cne 'conflicting file') { throw 'A conflicting existing DLL was overwritten.' }
+$script:currentVersion = '1.0.0.0'
+Preserve-PreviousShellDll
+if ([IO.File]::ReadAllText($destination) -cne 'conflicting file') { throw 'A same-version installation DLL was overwritten.' }
+[IO.File]::Delete($destination)
+$shellSnapshot.enabled = $false
+Preserve-PreviousShellDll
+if ([IO.File]::Exists($destination)) { throw 'A disabled shell integration restored files.' }
+`);
+  const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-File', filename, install, backup], { timeout: 30000 });
 });
 
 test('The real hidden PowerShell helper survives its Node parent exiting', { skip: process.platform !== 'win32' }, async t => {

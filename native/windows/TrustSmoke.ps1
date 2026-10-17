@@ -23,6 +23,29 @@ function File-Hash([string]$Path) {
     finally { $sha.Dispose() }
 }
 
+function Invoke-TrustHelper([string]$Action) {
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = Join-Path $Directory 'BrclioShellTrust.exe'
+    $start.Arguments = $Action + ' "' + (Join-Path $Directory 'BrclioShell.cer') + '"'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $process = [Diagnostics.Process]::Start($start)
+    try {
+        if (!$process.WaitForExit(60000)) { throw 'The isolated machine trust helper smoke timed out.' }
+        return $process.ExitCode
+    } finally { $process.Dispose() }
+}
+
+function Machine-CertificatePresent {
+    $machine = [Security.Cryptography.X509Certificates.X509Store]::new('TrustedPeople', 'LocalMachine')
+    try {
+        $machine.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+        return @($machine.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $certificate.Thumbprint, $false) | Where-Object {
+            [Convert]::ToBase64String($_.RawData) -ceq [Convert]::ToBase64String($certificate.RawData)
+        }).Count -gt 0
+    } finally { $machine.Close() }
+}
+
 function Assert-TamperedRejected([string]$Path, [string]$HashKey, [bool]$IsPackage) {
     $metadataPath = Join-Path $Directory 'shell-build.json'
     $savedMetadata = [IO.File]::ReadAllBytes($metadataPath)
@@ -80,6 +103,7 @@ $metadata = [IO.File]::ReadAllText((Join-Path $Directory 'shell-build.json')) | 
 $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new((Join-Path $Directory 'BrclioShell.cer'))
 $store = [Security.Cryptography.X509Certificates.X509Store]::new('TrustedPeople', 'CurrentUser')
 $imported = $false
+$machineImported = $false
 $rootBefore = Root-StoreSnapshot
 try {
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -104,18 +128,39 @@ try {
         $signature = Get-AuthenticodeSignature -LiteralPath $path
         $policy = Test-BrclioShellSignature $path $metadata.publisher $Directory
         Write-Output ('After trust ' + [IO.Path]::GetFileName($path) + ': Authenticode=' + $signature.Status + ', WinVerifyTrust=' + ('0x{0:X8}' -f [uint32]$policy.statusCode) + ', trusted=' + $policy.trusted)
-        if (!$policy.trusted -or $policy.needsTrust) { throw ('The shared per-user policy did not trust the signed fixture: ' + [IO.Path]::GetFileName($path)) }
+        if (!$policy.trusted) { throw ('The shared peer policy did not trust the signed fixture: ' + [IO.Path]::GetFileName($path)) }
+    }
+    $helper = Join-Path $Directory 'BrclioShellTrust.exe'
+    $helperPolicy = Test-BrclioShellSignature $helper $metadata.publisher $Directory
+    if (!$helperPolicy.trusted) { throw 'The machine trust helper did not pass its signature and exact hash policy.' }
+    if ($metadata.selfSigned -eq $true) {
+        $added = Invoke-TrustHelper '--add'
+        if ($added -eq 10) { $machineImported = $true }
+        elseif ($added -ne 0) { throw ('The isolated trust smoke requires an elevated Windows runner; helper exit ' + $added) }
+        foreach ($path in @($paths + $helper)) {
+            $policy = Test-BrclioShellSignature $path $metadata.publisher $Directory
+            if (!$policy.trusted -or !$policy.machineTrusted -or $policy.needsTrust) { throw 'The dedicated machine leaf did not establish the exact peer policy.' }
+        }
     }
     Assert-TamperedRejected $paths[0] 'sha256' $false
     Assert-TamperedRejected $paths[1] 'msixSha256' $true
+    Assert-TamperedRejected $helper 'trustHelperSha256' $false
     if ((Root-StoreSnapshot) -cne $rootBefore) { throw 'The Root certificate stores changed during the leaf trust smoke.' }
-    Write-Output 'Windows DLL and MSIX signature trust and tamper smoke passed (CurrentUser TrustedPeople only)'
+    Write-Output 'Windows DLL, MSIX and machine helper trust/tamper smoke passed (TrustedPeople leaf stores only)'
 } finally {
-    if ($imported) {
-        foreach ($item in @($store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $certificate.Thumbprint, $false))) {
-            if ([Convert]::ToBase64String($item.RawData) -ceq [Convert]::ToBase64String($certificate.RawData)) { $store.Remove($item) }
-        }
+    $cleanupFailure = $null
+    if ($machineImported) {
+        try {
+            $removed = Invoke-TrustHelper '--remove'
+            if ($removed -ne 0 -or (Machine-CertificatePresent)) { throw 'The isolated smoke could not remove its newly imported machine leaf.' }
+        } catch { $cleanupFailure = $_ }
     }
-    $store.Close()
-    $certificate.Dispose()
+    try {
+        if ($imported) {
+            foreach ($item in @($store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $certificate.Thumbprint, $false))) {
+                if ([Convert]::ToBase64String($item.RawData) -ceq [Convert]::ToBase64String($certificate.RawData)) { $store.Remove($item) }
+            }
+        }
+    } finally { $store.Close(); $certificate.Dispose() }
+    if ($cleanupFailure) { throw $cleanupFailure }
 }

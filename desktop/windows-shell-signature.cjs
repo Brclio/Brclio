@@ -2,7 +2,7 @@
 
 // Shared by runtime registration, updater rollback and Windows build smoke.
 // Peer trust is intentionally limited to the exact bundled non-CA leaf in
-// CurrentUser\TrustedPeople. It never changes a Root store or Windows policy.
+// TrustedPeople stores. It never changes a Root store or Windows policy.
 const POWERSHELL_SIGNATURE_FUNCTIONS = String.raw`function Initialize-BrclioShellWinTrust {
   if ('Brclio.WindowsShell.WinTrust' -as [type]) { return }
   Add-Type -TypeDefinition @'
@@ -95,7 +95,7 @@ function Test-BrclioShellSignature([string]$Path, [string]$Publisher, [string]$D
   if ($null -ne $metadata -and $null -ne $metadata.PSObject.Properties['selfSigned'] -and $metadata.selfSigned -isnot [bool]) { throw 'Windows 右键扩展签名元数据类型无效。' }
   if ($null -eq $metadata -or $metadata.selfSigned -ne $true) {
     if ($signature.Status -ne 'Valid') { throw ('Windows 右键扩展未通过可信签名验证：' + $signature.Status + ': ' + $signature.StatusMessage) }
-    return @{ trusted = $true; needsTrust = $false; certificateThumbprint = $signature.SignerCertificate.Thumbprint; pinned = $false; statusCode = [uint32]0 }
+    return @{ trusted = $true; needsTrust = $false; currentUserTrusted = $false; machineTrusted = $false; certificateThumbprint = $signature.SignerCertificate.Thumbprint; pinned = $false; statusCode = [uint32]0 }
   }
   if ($metadata.signed -isnot [bool] -or !$metadata.signed -or $metadata.publisher -cne $Publisher -or $metadata.certificateSha256 -isnot [string] -or $metadata.certificateSha256 -notmatch '^[a-fA-F0-9]{64}$' -or $metadata.packageVersion -isnot [string] -or $metadata.packageVersion -notmatch '^\d+\.\d+\.\d+\.\d+$' -or $metadata.dll -cne ($metadata.packageVersion + '\BrclioExplorerCommand.dll')) { throw 'Windows 右键扩展签名元数据不完整或与包身份不匹配。' }
   $certificatePath = Join-Path $Directory 'BrclioShell.cer'
@@ -111,9 +111,11 @@ function Test-BrclioShellSignature([string]$Path, [string]$Publisher, [string]$D
     $actualPath = [IO.Path]::GetFullPath($Path)
     $dllPath = [IO.Path]::GetFullPath((Join-Path $Directory $metadata.dll))
     $msixPath = [IO.Path]::GetFullPath((Join-Path $Directory 'BrclioShell.msix'))
+    $helperPath = [IO.Path]::GetFullPath((Join-Path $Directory 'BrclioShellTrust.exe'))
     $expectedHash = $null
     if ([string]::Equals($actualPath, $dllPath, [StringComparison]::OrdinalIgnoreCase)) { $expectedHash = $metadata.sha256 }
     elseif ([string]::Equals($actualPath, $msixPath, [StringComparison]::OrdinalIgnoreCase)) { $expectedHash = $metadata.msixSha256 }
+    elseif ([string]::Equals($actualPath, $helperPath, [StringComparison]::OrdinalIgnoreCase) -and $metadata.trustHelper -ceq 'BrclioShellTrust.exe') { $expectedHash = $metadata.trustHelperSha256 }
     else { throw 'Windows 右键扩展签名文件路径与版本化安装清单不匹配。' }
     if ($expectedHash -isnot [string] -or $expectedHash -notmatch '^[a-fA-F0-9]{64}$' -or (Get-BrclioShellFileHash $Path) -ine $expectedHash) { throw 'Windows 右键扩展文件校验和不匹配。' }
     Initialize-BrclioShellWinTrust
@@ -122,13 +124,19 @@ function Test-BrclioShellSignature([string]$Path, [string]$Publisher, [string]$D
     # root-chain error is eligible for our scoped peer policy. Bad digests,
     # revocation, expiration and every other failure remain fatal.
     if ($code -ne [uint32]0 -and $code -ne [uint32]2148204809) { throw ('Windows 右键扩展完整性验证失败：0x' + $code.ToString('X8')) }
-    $store = New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPeople', 'CurrentUser')
-    try {
-      $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
-      $matches = @($store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $certificate.Thumbprint, $false) | Where-Object { [Convert]::ToBase64String($_.RawData) -ceq [Convert]::ToBase64String($certificate.RawData) })
-      $trusted = $matches.Count -gt 0
-    } finally { $store.Close() }
-    return @{ trusted = [bool]$trusted; needsTrust = !$trusted; certificateThumbprint = $certificate.Thumbprint; pinned = $true; statusCode = $code }
+    $peerTrust = @{}
+    foreach ($storeLocation in @('CurrentUser', 'LocalMachine')) {
+      $store = New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPeople', $storeLocation)
+      try {
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+        $matches = @($store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $certificate.Thumbprint, $false) | Where-Object { [Convert]::ToBase64String($_.RawData) -ceq [Convert]::ToBase64String($certificate.RawData) })
+        $peerTrust[$storeLocation] = $matches.Count -gt 0
+      } finally { $store.Close() }
+    }
+    $trusted = $peerTrust.CurrentUser -or $peerTrust.LocalMachine
+    # Appx deployment validates against machine peer trust even though our
+    # integrity policy can recognize the exact leaf in either peer store.
+    return @{ trusted = [bool]$trusted; needsTrust = !$peerTrust.LocalMachine; currentUserTrusted = [bool]$peerTrust.CurrentUser; machineTrusted = [bool]$peerTrust.LocalMachine; certificateThumbprint = $certificate.Thumbprint; pinned = $true; statusCode = $code }
   } finally { $certificate.Dispose() }
 }
 `;

@@ -14,6 +14,8 @@ node --test native/windows/build.test.cjs
 
 默认构建生成一个仅用于该次构建的 Brclio 自签代码签名叶证书，用它签署 DLL 和 MSIX。私钥仅存在于临时内存/临时 PFX，构建结束或失败后删除；安装文件中只包含公开证书。此证书不会因为“已签名”自动被 Windows 信任。运行时注册流程必须验证 MSIX 的实际签名和随附公开证书，并按产品的启用流程处理当前用户的证书信任；构建元数据不能代替签名验证。
 
+`BrclioShellTrust.exe` 是同一证书签名的原生辅助程序，编译时固定本次公开叶证书的 SHA-256。首次启用时，运行时验证该程序的签名及完整文件散列后，通过 Windows UAC 提权，将该公开叶证书加入 `LocalMachine\TrustedPeople`，供 Appx 部署服务验证；不写入 Root，不修改开发者模式。`--add <公开 CER>` 新增时返回 10，已存在且未改动时返回 0；预先存在的证书不会被标记为 Brclio 所有。`--remove <公开 CER>` 只撤回本次构建的证书，`--cleanup` 处理 Brclio 标记的未使用证书；两者都会保留仍被任一用户的 Brclio 标识包使用、或使用状态无法确认的证书。HKLM 所有权标记同时核对公开证书散列和发布者。
+
 生产证书也可通过 `BRCLIO_WINDOWS_SHELL_CERTIFICATE_FILE` 和可选的 `BRCLIO_WINDOWS_SHELL_CERTIFICATE_PASSWORD` 指定。该路径应指向构建环境中已有的 PFX，不能提交或打包私钥。`BRCLIO_WINDOWS_SHELL_PUBLISHER` 可覆盖默认 `CN=Brclio`，必须与证书 Subject 一致；`BRCLIO_WINDOWS_SHELL_TIMESTAMP_URL` 可配置 RFC 3161 时间戳服务。外部证书构建还通过 SignTool 验证证书链。
 
 固定标识：包名 `Brclio.Toolbox.Shell`，应用 ID `Brclio`，CLSID `{CFD1E4D4-3973-45D3-8542-45A77E6C58C9}`，Verb ID `BrclioCopyPath`（清单只允许字母和数字）。升级时应保留包名、Publisher 和 CLSID。
@@ -22,6 +24,6 @@ node --test native/windows/build.test.cjs
 
 原生命令行测试可在 macOS/Linux 运行。Windows 下同一命令还编译真正的 DLL，直接激活其 COM 类，用模拟文件夹站点和真实 Shell 项验证多选、Unicode、驱动器根目录、空白处路径、生命周期，以及子进程真正收到的参数；它不安装包、不导入信任、不操作 Explorer。直接激活测试通过仍不能证明 Windows 11 菜单实际显示，发布前还需在安装后的 Windows 11 中检查菜单及剪贴板结果。
 
-在隔离的 Windows CI 中可显式设置 `BRCLIO_ALLOW_SHELL_TRUST_SMOKE=1` 再运行该测试：它临时将本次构建的公开叶证书添加到当前用户 `TrustedPeople`，使用运行时相同的签名校验策略验证 DLL 与 MSIX，并在 `finally` 中撤回本次新增的信任；预先存在的信任会保留。日志记录 Authenticode 状态和实际 WinVerifyTrust 代码。测试还分别篡改 DLL 代码和 MSIX 清单、同步修改散列记录，确认原生签名校验仍会拒绝，并检查 Root 存储在测试前后相同。该测试不注册 Appx 包，不写入 Root 存储，也不修改开发者模式。
+在隔离、已提升权限的 Windows CI 中可显式设置 `BRCLIO_ALLOW_SHELL_TRUST_SMOKE=1` 再运行该测试：它临时将本次构建的公开叶证书添加到当前用户 `TrustedPeople`，验证签名后的原生辅助程序，再用该程序建立专用机器叶证书信任，使用运行时相同的签名校验策略验证 DLL、MSIX 和辅助程序，并在 `finally` 中撤回本次新增的信任；预先存在的信任会保留。日志记录 Authenticode 状态和实际 WinVerifyTrust 代码。测试还分别篡改 DLL/辅助程序代码和 MSIX 清单、同步修改散列记录，确认原生签名校验仍会拒绝，并检查 Root 存储在测试前后相同。该测试不注册 Appx 包，不写入 Root 存储，也不修改开发者模式。
 
 Microsoft 参考：[Explorer 菜单注册](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/integrate-packaged-app-with-file-explorer)、[IFolderView.GetFolder](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ifolderview-getfolder)、[CertificateRequest.CreateSelfSigned](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.x509certificates.certificaterequest.createselfsigned)。

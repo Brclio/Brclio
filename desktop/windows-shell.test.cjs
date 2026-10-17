@@ -44,7 +44,7 @@ test('fixed PowerShell script uses safe environment data, UTF-8, official packag
   assert.match(WINDOWS_SHELL_SCRIPT, /Read-MsixManifest/);
   assert.ok(WINDOWS_SHELL_SCRIPT.includes("'resources\\windows-shell\\' + $version + '\\BrclioExplorerCommand.dll'"));
   assert.ok(WINDOWS_SHELL_SCRIPT.includes("'resources\\windows-shell\\' + $entry.version + '\\BrclioExplorerCommand.dll'"));
-  assert.doesNotMatch(WINDOWS_SHELL_SCRIPT, /Add-AppxPackage[^\n]*-Register|AllowAllTrustedApps|AllowDevelopmentWithoutDevLicense|LocalMachine|Cert:\\.*Root|Import-PfxCertificate/);
+  assert.doesNotMatch(WINDOWS_SHELL_SCRIPT, /Add-AppxPackage[^\n]*-Register|AllowAllTrustedApps|AllowDevelopmentWithoutDevLicense|Cert:\\.*Root|Import-PfxCertificate|X509Store\('Root'/);
   assert.doesNotMatch(WINDOWS_SHELL_SCRIPT, /用户's|folder/);
 });
 
@@ -177,7 +177,7 @@ test('pinned self-signed leaf is trusted before registration and trust is rolled
   assert.match(WINDOWS_SHELL_SCRIPT, /\$_.Publisher -ceq \$values.Publisher/);
 });
 
-test('shared signature policy pins exact current-user leaf and rejects every WinVerifyTrust failure except explicit untrusted-root', () => {
+test('shared signature policy pins exact peer leaf and rejects every WinVerifyTrust failure except explicit untrusted-root', () => {
   const source = POWERSHELL_SIGNATURE_FUNCTIONS;
   assert.match(source, /WinVerifyTrust\(new IntPtr\(-1\), ref action, ref data\)/);
   assert.match(source, /data.uiChoice = 2/);
@@ -186,8 +186,10 @@ test('shared signature policy pins exact current-user leaf and rejects every Win
   assert.match(source, /data.providerFlags = 0x1000/);
   assert.match(source, /00AAC56B-CD44-11D0-8CC2-00C04FC295EE/);
   assert.match(source, /\$code -ne \[uint32\]0 -and \$code -ne \[uint32\]2148204809/);
-  assert.doesNotMatch(source, /\[uint32\]0x800B0109|UnknownError|NotTrusted|LocalMachine|Import-Certificate|ReadWrite/);
-  assert.match(source, /X509Store\('TrustedPeople', 'CurrentUser'\)/);
+  assert.doesNotMatch(source, /\[uint32\]0x800B0109|UnknownError|NotTrusted|Import-Certificate|ReadWrite|X509Store\('Root'/);
+  assert.match(source, /X509Store\('TrustedPeople', \$storeLocation\)/);
+  assert.match(source, /@\('CurrentUser', 'LocalMachine'\)/);
+  assert.match(source, /needsTrust = !\$peerTrust.LocalMachine/);
   assert.match(source, /OpenFlags\]::ReadOnly/);
   assert.match(source, /\$certificate.Subject -cne \$Publisher/);
   assert.match(source, /\$certificate.Issuer -cne \$certificate.Subject/);
@@ -201,7 +203,12 @@ test('shared signature policy pins exact current-user leaf and rejects every Win
   assert.match(source, /Get-BrclioShellFileHash \$Path\) -ine \$expectedHash/);
   assert.match(source, /\$expectedHash = \$metadata.sha256/);
   assert.match(source, /\$expectedHash = \$metadata.msixSha256/);
+  assert.match(source, /\$expectedHash = \$metadata.trustHelperSha256/);
   assert.match(source, /\$signature.Status -ne 'Valid'/);
+  assert.match(WINDOWS_SHELL_SCRIPT, /\$parameters.Verb = 'RunAs'/);
+  assert.match(WINDOWS_SHELL_SCRIPT, /Test-BrclioShellSignature \$helper \$publisher \$directory/);
+  assert.match(WINDOWS_SHELL_SCRIPT, /\$operation -eq '--add' -and \$code -eq 10/);
+  assert.match(WINDOWS_SHELL_SCRIPT, /Invoke-MachineTrustHelper '--remove'/);
 });
 
 test('preexisting trust is preserved after registration failure; existing registration can be fixed by trust only', async () => {
