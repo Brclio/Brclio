@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+         xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+         xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+         xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+         IgnorableNamespaces="uap uap10 rescap com desktop4 desktop5">
+  <Identity Name="Brclio.Toolbox.Shell" Publisher="CN=Brclio"
+            Version="__VERSION__" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>Brclio</DisplayName>
+    <PublisherDisplayName>Brclio</PublisherDisplayName>
+    <Logo>resources\windows-shell\Assets\StoreLogo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources><Resource Language="zh-CN" /></Resources>
+  <Applications>
+    <Application Id="Brclio" Executable="Brclio.exe"
+                 uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements DisplayName="Brclio" Description="Brclio 复制路径"
+                          BackgroundColor="transparent" AppListEntry="none"
+                          Square44x44Logo="resources\windows-shell\Assets\Square44x44Logo.png"
+                          Square150x150Logo="resources\windows-shell\Assets\Square150x150Logo.png" />
+      <Extensions>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="Brclio Copy Path">
+              <com:Class Id="CFD1E4D4-3973-45D3-8542-45A77E6C58C9"
+                         Path="resources\windows-shell\__VERSION__\BrclioExplorerCommand.dll" ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="*">
+              <desktop5:Verb Id="Brclio.CopyPath" Clsid="CFD1E4D4-3973-45D3-8542-45A77E6C58C9" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory">
+              <desktop5:Verb Id="Brclio.CopyPath" Clsid="CFD1E4D4-3973-45D3-8542-45A77E6C58C9" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory\Background">
+              <desktop5:Verb Id="Brclio.CopyPath" Clsid="CFD1E4D4-3973-45D3-8542-45A77E6C58C9" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+</Package>

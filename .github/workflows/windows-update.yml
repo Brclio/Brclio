@@ -19,6 +19,10 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Compile the Explorer command and verify dedicated per-user certificate trust
+        env:
+          BRCLIO_ALLOW_SHELL_TRUST_SMOKE: '1'
+        run: npm run test:windows-shell
       - name: Verify contracts and parse the real PowerShell helper
         run: npm test
       - run: npm run sync

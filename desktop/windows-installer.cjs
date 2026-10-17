@@ -21,6 +21,118 @@ $start.CreateNoWindow = $true
 [Diagnostics.Process]::Start($start) | Out-Null
 `;
 
+// Shared with the NSIS uninstall script below (covered by a source parity test).
+// Sparse packages keep their identity files in WindowsApps; InstallLocation is
+// therefore never evidence that their external COM DLL belongs to this app.
+const SHELL_PACKAGE_FUNCTIONS = String.raw`function Resolve-BrclioShellPath([string]$value) {
+  return [IO.Path]::GetFullPath($value).TrimEnd('\')
+}
+
+function Get-BrclioShellDllRelativePath([string]$version) {
+  if ($version -cnotmatch '^(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})$' -or @($version.Split('.') | Where-Object { [int]$_ -gt 65535 }).Count -gt 0) {
+    throw 'The Brclio shell package version is invalid.'
+  }
+  return 'resources\windows-shell\' + $version + '\BrclioExplorerCommand.dll'
+}
+
+function Read-BrclioShellIdentity([string]$directory) {
+  $manifestPath = Join-Path $directory 'resources\windows-shell\AppxManifest.xml'
+  $identity = @{ Name = 'Brclio.Toolbox.Shell'; Publisher = 'CN=Brclio' }
+  if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $identity }
+  [xml]$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8
+  $node = $manifest.SelectSingleNode('/*[local-name()="Package"]/*[local-name()="Identity"]')
+  $application = $manifest.SelectSingleNode('/*[local-name()="Package"]/*[local-name()="Applications"]/*[local-name()="Application" and @Id="Brclio"]')
+  $classes = @($manifest.SelectNodes('//*[local-name()="Class" and @Id="CFD1E4D4-3973-45D3-8542-45A77E6C58C9"]'))
+  if ($null -eq $node -or $node.Name -cne $identity.Name -or [string]::IsNullOrWhiteSpace($node.Publisher) -or $null -eq $application -or $classes.Count -ne 1 -or $classes[0].Path -cne (Get-BrclioShellDllRelativePath ([string]$node.Version))) {
+    throw 'The installed Brclio shell manifest is invalid; package ownership cannot be confirmed.'
+  }
+  $identity.Publisher = [string]$node.Publisher
+  return $identity
+}
+
+function Get-BrclioShellExternalLocation($package) {
+  [Windows.Management.Deployment.PackageManager,Windows.Management.Deployment,ContentType=WindowsRuntime] | Out-Null
+  $manager = New-Object Windows.Management.Deployment.PackageManager
+  $registered = $manager.FindPackageForUser('', $package.PackageFullName)
+  return [string]$registered.EffectiveExternalLocation.Path
+}
+
+function Test-BrclioShellPackage($package, [string]$directory, [hashtable]$identity) {
+  if ($package.Name -cne $identity.Name -or $package.Publisher -cne $identity.Publisher) { return $false }
+  try {
+    [xml]$manifest = Get-AppxPackageManifest -Package $package.PackageFullName -ErrorAction Stop
+    $node = $manifest.SelectSingleNode('/*[local-name()="Package"]/*[local-name()="Identity"]')
+    $application = $manifest.SelectSingleNode('/*[local-name()="Package"]/*[local-name()="Applications"]/*[local-name()="Application" and @Id="Brclio"]')
+    $classes = @($manifest.SelectNodes('//*[local-name()="Class" and @Id="CFD1E4D4-3973-45D3-8542-45A77E6C58C9"]'))
+    if ($null -eq $node -or $node.Name -cne $identity.Name -or $node.Publisher -cne $identity.Publisher -or $null -eq $application -or $classes.Count -ne 1) { return $false }
+    $classPath = [string]$classes[0].Path
+    # The registered version determines its DLL path, even while an installer
+    # has replaced the local manifest with the next version.
+    $relative = Get-BrclioShellDllRelativePath ([string]$node.Version)
+    $expected = Resolve-BrclioShellPath (Join-Path $directory $relative)
+    if ([IO.Path]::IsPathRooted($classPath)) {
+      return [string]::Equals((Resolve-BrclioShellPath $classPath), $expected, [StringComparison]::OrdinalIgnoreCase)
+    }
+    if ($classPath -cne $relative) { return $false }
+    $external = Get-BrclioShellExternalLocation $package
+    if ([string]::IsNullOrWhiteSpace($external)) { return $false }
+    return [string]::Equals((Resolve-BrclioShellPath $external), (Resolve-BrclioShellPath $directory), [StringComparison]::OrdinalIgnoreCase)
+  } catch { return $false }
+}
+
+function Get-BrclioShellPackages([string]$directory, [hashtable]$identity) {
+  if (-not (Get-Command Get-AppxPackage -ErrorAction SilentlyContinue)) { return }
+  foreach ($package in @(Get-AppxPackage -Name $identity.Name -ErrorAction Stop)) {
+    if (Test-BrclioShellPackage $package $directory $identity) { $package }
+  }
+}
+
+function Remove-BrclioShellPackages([string]$directory, [hashtable]$identity, [object[]]$packages) {
+  foreach ($saved in $packages) {
+    # Re-read immediately before removal; another installation may have moved
+    # the shared identity while an update or uninstall was in progress.
+    foreach ($package in @(Get-AppxPackage -Name $identity.Name -ErrorAction Stop)) {
+      if ($package.PackageFullName -ceq $saved.PackageFullName -and (Test-BrclioShellPackage $package $directory $identity)) {
+        Remove-AppxPackage -Package $package.PackageFullName -ErrorAction Stop
+      }
+    }
+  }
+}
+
+function Remove-BrclioShellCertificateTrust {
+  if (-not (Get-Command Get-AppxPackage -ErrorAction SilentlyContinue)) { return }
+  $markers = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Brclio\ShellCertificates', $true)
+  if ($null -eq $markers) { return }
+  $store = New-Object Security.Cryptography.X509Certificates.X509Store('TrustedPeople', 'CurrentUser')
+  try {
+    $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+    foreach ($thumbprint in $markers.GetSubKeyNames()) {
+      if ($thumbprint -cnotmatch '^[A-Fa-f0-9]{40}$') { continue }
+      $marker = $markers.OpenSubKey($thumbprint)
+      try {
+        $owner = $marker.GetValue('BrclioOwner')
+        $expected = [string]$marker.GetValue('CertificateSha256')
+        $publisher = [string]$marker.GetValue('Publisher')
+      } finally { $marker.Dispose() }
+      if ($owner -cne 'com.brclio.toolbox' -or $expected -cnotmatch '^[A-Fa-f0-9]{64}$' -or [string]::IsNullOrWhiteSpace($publisher)) { continue }
+      # Other current-user sparse packages can share this Publisher. Keep the
+      # leaf trusted until every dependent package has been removed.
+      if (@(Get-AppxPackage -ErrorAction Stop | Where-Object { $_.Publisher -ceq $publisher }).Count -gt 0) { continue }
+      $matches = @($store.Certificates | Where-Object { [string]::Equals($_.Thumbprint, $thumbprint, [StringComparison]::OrdinalIgnoreCase) })
+      $owned = $true
+      foreach ($certificate in $matches) {
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try { $actual = [BitConverter]::ToString($sha256.ComputeHash($certificate.RawData)).Replace('-', '') } finally { $sha256.Dispose() }
+        if ($certificate.Subject -cne $publisher -or -not [string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) { $owned = $false; break }
+      }
+      if (-not $owned) { continue }
+      foreach ($certificate in $matches) { $store.Remove($certificate) }
+      $markers.DeleteSubKey($thumbprint, $false)
+    }
+  } finally { $store.Close(); $markers.Dispose() }
+}
+`;
+
 // Values travel through a JSON file, never through generated PowerShell source
 // or a command shell. The helper lives outside the directory NSIS replaces.
 const HELPER = String.raw`param([Parameter(Mandatory=$true)][string]$Configuration)
@@ -37,6 +149,12 @@ $newProcess = $null
 $installMode = ''
 $launchConfirmed = $false
 $phase = 'preparing'
+$shellSnapshot = $null
+$rollbackShellIdentity = $null
+$rollbackShellPackages = @()
+$rollbackShellError = $null
+
+${SHELL_PACKAGE_FUNCTIONS}
 
 function Write-Report([string]$destination, [hashtable]$report) {
   $report.version = $cfg.version
@@ -101,6 +219,43 @@ function Restore-Menus {
   }
 }
 
+function Save-ShellIntegration {
+  $identity = Read-BrclioShellIdentity $cfg.installDirectory
+  $packages = @(Get-BrclioShellPackages $cfg.installDirectory $identity)
+  $script:shellSnapshot = @{ identity = $identity; enabled = ($packages.Count -gt 0); packages = $packages }
+  if (-not $script:shellSnapshot.enabled) { return }
+  $payload = Join-Path $cfg.installDirectory 'resources\windows-shell\BrclioShell.msix'
+  $signature = Get-AuthenticodeSignature -LiteralPath $payload -ErrorAction Stop
+  if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Subject -cne $identity.Publisher) {
+    throw 'The enabled Brclio shell package cannot be backed up with its trusted signing identity.'
+  }
+}
+
+function Restore-ShellIntegration {
+  if (-not $script:backupReady -or -not $script:installerStarted) { return }
+  if ($null -ne $script:rollbackShellError) { throw $script:rollbackShellError }
+  if ($null -ne $script:rollbackShellIdentity) {
+    Remove-BrclioShellPackages $cfg.installDirectory $script:rollbackShellIdentity $script:rollbackShellPackages
+  }
+  if ($null -eq $script:shellSnapshot -or -not $script:shellSnapshot.enabled) { return }
+  # An interrupted installer may have temporarily removed its local manifest.
+  # Recheck the saved identity as well before reinstalling the same version.
+  Remove-BrclioShellPackages $cfg.installDirectory $script:shellSnapshot.identity $script:shellSnapshot.packages
+  $identity = Read-BrclioShellIdentity $cfg.installDirectory
+  if ($identity.Name -cne $script:shellSnapshot.identity.Name -or $identity.Publisher -cne $script:shellSnapshot.identity.Publisher) {
+    throw 'The restored Brclio shell signing identity does not match the saved installation.'
+  }
+  $payload = Join-Path $cfg.installDirectory 'resources\windows-shell\BrclioShell.msix'
+  $signature = Get-AuthenticodeSignature -LiteralPath $payload -ErrorAction Stop
+  if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Subject -cne $identity.Publisher) {
+    throw 'The restored Brclio shell package is not trusted.'
+  }
+  Add-AppxPackage -Path $payload -ExternalLocation $cfg.installDirectory -ForceUpdateFromAnyVersion -ErrorAction Stop
+  if (@(Get-BrclioShellPackages $cfg.installDirectory $identity).Count -eq 0) {
+    throw 'The previous Brclio shell package registration could not be restored.'
+  }
+}
+
 function Save-Installation {
   # electron-builder 26 derives this UUIDv5 from com.brclio.toolbox. Only
   # matching registered installations are eligible; unpacked builds are not.
@@ -143,6 +298,12 @@ function Restore-Installation {
     Invoke-Native $taskkill @('/PID', $script:newProcess.Id, '/T', '/F') | Out-Null
     $script:newProcess.WaitForExit(10000) | Out-Null
   }
+  # Capture the new registration before restoring the previous manifest. Keep
+  # file recovery independent of a package query failure.
+  try {
+    $script:rollbackShellIdentity = Read-BrclioShellIdentity $cfg.installDirectory
+    $script:rollbackShellPackages = @(Get-BrclioShellPackages $cfg.installDirectory $script:rollbackShellIdentity)
+  } catch { $script:rollbackShellError = $_.Exception.Message }
   $robocopy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
   if ((Invoke-Native $robocopy @($cfg.backupDirectory, $cfg.installDirectory, '/MIR', '/COPY:DAT', '/DCOPY:DAT', '/R:1', '/W:1', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS', '/NP')) -ge 8) { throw '无法完整恢复旧版文件。备份仍保留，请关闭 Brclio 后重新安装。' }
   $reg = Join-Path $env:SystemRoot 'System32\reg.exe'
@@ -155,6 +316,7 @@ try {
   Assert-Installer
   Save-Menus
   Save-Installation
+  Save-ShellIntegration
   $parent = Get-Process -Id $cfg.parentPid -ErrorAction SilentlyContinue
   Write-Report $cfg.readyPath @{ status = 'ready' }
   $commitDeadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -200,7 +362,9 @@ try {
   # Quote with the Windows command-line rule, not PowerShell source escaping.
   $arguments = '--updated --brclio-update-job "' + $work + '" --brclio-update-token ' + $cfg.token
   $newProcess = Start-Process -FilePath $cfg.executable -ArgumentList $arguments -PassThru
-  $deadline = [DateTime]::UtcNow.AddSeconds(90)
+  # Startup repairs an opted-in shell package before acknowledging launch.
+  # Its bounded trust/query/registration steps may each take up to one minute.
+  $deadline = [DateTime]::UtcNow.AddSeconds(600)
   $acknowledged = $false
   while ([DateTime]::UtcNow -lt $deadline) {
     if (Test-Path -LiteralPath $cfg.ackPath -PathType Leaf) {
@@ -239,6 +403,7 @@ try {
   $rollbackSucceeded = -not $installerRunning
   if (-not $installerRunning) {
     try { Restore-Installation } catch { $message += ' ' + $_.Exception.Message; $rollbackSucceeded = $false }
+    try { Restore-ShellIntegration } catch { $message += ' ' + $_.Exception.Message; $rollbackSucceeded = $false }
     try { Restore-Menus } catch { $message += ' ' + $_.Exception.Message; $rollbackSucceeded = $false }
   }
   $errorReport = @{ status = 'error'; error = $message; phase = $phase; rollbackSucceeded = $rollbackSucceeded; installerStillRunning = $installerRunning }
@@ -420,4 +585,4 @@ function createWindowsInstaller(options) {
   return { start, acknowledgeLaunch, readResult, cancelPending, resultPath };
 }
 
-module.exports = { createWindowsInstaller, HELPER, LAUNCHER };
+module.exports = { createWindowsInstaller, HELPER, LAUNCHER, SHELL_PACKAGE_FUNCTIONS };

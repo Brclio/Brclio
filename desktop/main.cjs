@@ -228,6 +228,11 @@ if (!gotLock) {
       app.dock?.setIcon(path.join(__dirname, '../resources/icon.png'));
     }
     registerIPC();
+    if (process.platform === 'win32' && app.isPackaged && !initialPaths) {
+      // Migrate an already enabled classic entry and repair package versions
+      // after replacement, before the new application's launch is acknowledged.
+      await integration.repairWindows().catch(error => console.warn('Windows 右键菜单修复未完成：', error.message));
+    }
     if (installer && !pendingUpdateLaunchArgs.length) updater.restoreResult(await installer.readResult({ consume: true }).catch(() => null));
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       ...(process.platform === 'darwin' ? [{ label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] }] : []),

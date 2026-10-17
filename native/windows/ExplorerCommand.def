@@ -1,0 +1,4 @@
+LIBRARY BrclioExplorerCommand
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE

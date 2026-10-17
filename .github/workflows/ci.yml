@@ -11,6 +11,20 @@ permissions:
   contents: read
 
 jobs:
+  windows-shell:
+    name: Windows Explorer command and identity package
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Compile the native DLL, sign its sparse identity, and exercise COM selection dispatch
+        run: node native/windows/test.cjs
+      - name: Verify registration, migration, and ownership contracts
+        run: node --test desktop/windows-shell.test.cjs desktop/integration.test.cjs
+
   windows-update:
     name: Windows native automatic update
     uses: ./.github/workflows/windows-update.yml
