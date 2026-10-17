@@ -96,6 +96,22 @@ function Select-FixtureItems($window, $paths) {
   }
   throw 'Explorer did not apply the fixture selection.'
 }
+function Focus-FixtureItem([IntPtr]$handle, [string]$path) {
+  Add-Type -AssemblyName UIAutomationClient
+  Add-Type -AssemblyName UIAutomationTypes
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+  foreach ($name in @([IO.Path]::GetFileName($path), [IO.Path]::GetFileNameWithoutExtension($path))) {
+    $named = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $name)
+    $focusable = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::IsKeyboardFocusableProperty, $true)
+    $condition = [System.Windows.Automation.AndCondition]::new($named, $focusable)
+    $item = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    if ($null -eq $item -or $item.Current.IsOffscreen) { continue }
+    $item.SetFocus()
+    Start-Sleep -Milliseconds 100
+    if ($item.Current.HasKeyboardFocus) { return }
+  }
+  throw 'Could not focus the selected fixture file in the active Explorer file pane.'
+}
 function Identity($window) {
   $pointer = [Runtime.InteropServices.Marshal]::GetIUnknownForObject($window)
   try { return $pointer.ToInt64() } finally { [void][Runtime.InteropServices.Marshal]::Release($pointer) }
@@ -165,6 +181,7 @@ switch ($request.action) {
     if (-not $loaded) { throw 'The new fixture tab did not navigate to its temporary folder.' }
     Select-FixtureItems $tab @($request.paths)
     Activate-View $tab
+    Focus-FixtureItem $handle ([string]$request.paths[0])
     $result = @{ window = $handle.ToInt64(); tabs = $before.Count + 1 }
   }
   'previousTab' {
@@ -174,6 +191,7 @@ switch ($request.action) {
     $keyboard = New-Object -ComObject WScript.Shell
     $keyboard.SendKeys('^+{TAB}')
     Start-Sleep -Milliseconds 300
+    Focus-FixtureItem $handle ([string]$request.path)
     $result = @{ switched = $true }
   }
   'restoreForeground' {
@@ -265,7 +283,7 @@ async function createWindowsSelectionFixture() {
       windows.add(result.window);
       return result;
     },
-    previousTab: window => execute({ action: 'previousTab', window }),
+    previousTab: window => execute({ action: 'previousTab', window, path: paths.first[0] }),
     restoreForeground: () => execute({ action: 'restoreForeground', originalWindow: metadata.originalWindow }),
     cleanup
   };
