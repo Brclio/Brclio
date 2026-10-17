@@ -45,6 +45,15 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --win --x64 --publish never
+      - name: Verify the actual packaged native files and absence of private keys
+        run: |
+          $version = node -p 'require("./package.json").version'
+          node scripts/windows-verify-package.cjs --dir release/win-unpacked --version $version --report artifacts/windows-package.json
+      - name: Verify the packaged Windows client and real clipboard
+        run: |
+          $env:BRCLIO_SMOKE_EXECUTABLE = (Resolve-Path 'release/win-unpacked/Brclio.exe').Path
+          $env:BRCLIO_SMOKE_VERSION = node -p 'require("./package.json").version'
+          node desktop/smoke.cjs
       - name: Verify real silent replacement, launch ACK, preservation, and rollback
         env:
           BRCLIO_ALLOW_INSTALL_SMOKE: '1'
@@ -63,6 +72,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-nsis-update-verification
-          path: artifacts/windows-update-smoke.json
+          path: |
+            artifacts/windows-update-smoke.json
+            artifacts/windows-package.json
           if-no-files-found: ignore
           retention-days: 14
