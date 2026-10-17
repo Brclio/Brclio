@@ -38,13 +38,13 @@
         <desktop4:Extension Category="windows.fileExplorerContextMenus">
           <desktop4:FileExplorerContextMenus>
             <desktop5:ItemType Type="*">
-              <desktop5:Verb Id="Brclio.CopyPath" Clsid="CFD1E4D4-3973-45D3-8542-45A77E6C58C9" />
+              <desktop5:Verb Id="BrclioCopyPath" Clsid="CFD1E4D4-3973-45D3-8542-45A77E6C58C9" />
             </desktop5:ItemType>
             <desktop5:ItemType Type="Directory">
-              <desktop5:Verb Id="Brclio.CopyPath" Clsid="CFD1E4D4-3973-45D3-8542-45A77E6C58C9" />
+              <desktop5:Verb Id="BrclioCopyPath" Clsid="CFD1E4D4-3973-45D3-8542-45A77E6C58C9" />
             </desktop5:ItemType>
             <desktop5:ItemType Type="Directory\Background">
-              <desktop5:Verb Id="Brclio.CopyPath" Clsid="CFD1E4D4-3973-45D3-8542-45A77E6C58C9" />
+              <desktop5:Verb Id="BrclioCopyPath" Clsid="CFD1E4D4-3973-45D3-8542-45A77E6C58C9" />
             </desktop5:ItemType>
           </desktop4:FileExplorerContextMenus>
         </desktop4:Extension>

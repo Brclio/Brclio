@@ -26,6 +26,7 @@ test('manifest supports native x64 packaged COM and all three Explorer contexts'
   }
   assert.equal((manifest.match(/Clsid="CFD1E4D4-3973-45D3-8542-45A77E6C58C9"/g) || []).length, 3);
   assert.equal((manifest.match(/<desktop5:Verb/g) || []).length, 3);
+  for (const match of manifest.matchAll(/<desktop5:Verb Id="([^"]+)"/g)) assert.match(match[1], /^[A-Za-z0-9]+$/);
   assert.doesNotMatch(manifest, /__VERSION__/);
 });
 

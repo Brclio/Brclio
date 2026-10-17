@@ -95,7 +95,7 @@ function Manifest-Info($document) {
       $items = @($application.SelectNodes('f:Extensions/d4:Extension[@Category="windows.fileExplorerContextMenus"]/d4:FileExplorerContextMenus/d5:ItemType', $ns) | Where-Object { $_.GetAttribute('Type') -ceq $type })
       $valid = $valid -and $items.Count -eq 1
       if ($items.Count -eq 1) {
-        $verbs = @($items[0].SelectNodes('d5:Verb', $ns) | Where-Object { $_.GetAttribute('Id') -ceq 'Brclio.CopyPath' -and $_.GetAttribute('Clsid').Trim('{}') -ieq 'CFD1E4D4-3973-45D3-8542-45A77E6C58C9' })
+        $verbs = @($items[0].SelectNodes('d5:Verb', $ns) | Where-Object { $_.GetAttribute('Id') -ceq 'BrclioCopyPath' -and $_.GetAttribute('Clsid').Trim('{}') -ieq 'CFD1E4D4-3973-45D3-8542-45A77E6C58C9' })
         $valid = $valid -and $verbs.Count -eq 1
       }
     }

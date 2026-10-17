@@ -15,7 +15,7 @@ npm run build:win
 
 ## Windows
 
-Windows 11（build 22000 及以上）使用原生 `IExplorerCommand` COM 扩展和 sparse identity package，菜单“复制路径 · Brclio”注册在第一层。包名固定为 `Brclio.Toolbox.Shell`，COM 类固定为 `{CFD1E4D4-3973-45D3-8542-45A77E6C58C9}`，DLL、身份包、公钥证书和 manifest 位于安装目录的 `resources/windows-shell/`。支持文件、文件夹、多选及文件夹空白处；多选只启动一次 Brclio，将整个选区交给现有复制流程，保留已保存的格式设置。
+Windows 11（build 22000 及以上）使用原生 `IExplorerCommand` COM 扩展和 sparse identity package，菜单“复制路径 · Brclio”注册在第一层。包名固定为 `Brclio.Toolbox.Shell`，COM 类固定为 `{CFD1E4D4-3973-45D3-8542-45A77E6C58C9}`，身份包、公钥证书和 manifest 位于安装目录的 `resources/windows-shell/`，DLL 另放在其中的包版本子目录，避免升级时覆盖被 COM 宿主占用的旧文件。支持文件、文件夹、多选及文件夹空白处；多选只启动一次 Brclio，将整个选区交给现有复制流程，保留已保存的格式设置。
 
 构建 Windows 安装包需要 Visual Studio C++ x64 工具链和 Windows SDK；`electron-builder` 的 afterPack 钩子自动编译静态 CRT 的 DLL、生成 MSIX 并签名。默认生成专用自签名代码签名证书；私钥及临时 PFX 构建后删除，只将公钥 `BrclioShell.cer` 与已签名 MSIX 放入安装包。启用时验证包的签名证书与附带公钥一致，再向当前用户 `TrustedPeople` 导入这个叶证书，复验系统签名结果后注册包。不会导入 Root 或更改开发者模式。只记录本应用新导入的证书，已有的信任项保持原样；停用和真正卸载时清理本应用记录的未使用证书，升级保留注册和信任。
 
