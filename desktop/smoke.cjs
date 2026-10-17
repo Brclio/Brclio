@@ -49,6 +49,14 @@ async function main() {
     });
     backedUp = true;
     const readClipboard = () => observer.evaluate(({ clipboard }) => clipboard.readText());
+    const focusTestedWindow = async () => {
+      await tested.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        if (window.isMinimized()) window.restore();
+        window.show(); window.focus();
+      });
+      await expect.poll(() => tested.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isFocused())).toBe(true);
+    };
     tested = await electron.launch(launchOptions);
     const page = await tested.firstWindow();
     await page.waitForURL('file://**/web/index.html');
@@ -90,7 +98,7 @@ async function main() {
         await windowsSelection.activate('first');
         await windowsSelection.pressShortcut('Alt+P');
         await expect.poll(async () => (await readClipboard()).split('\n').sort(), { timeout: 15000 }).toEqual([...windowsSelection.paths.first].sort());
-        await windowsSelection.restoreForeground();
+        await focusTestedWindow();
       }
 
       await page.locator('[data-view="settings"]').click();
@@ -104,7 +112,7 @@ async function main() {
         await windowsSelection.activate('second');
         await windowsSelection.pressShortcut(customShortcut);
         await expect.poll(readClipboard, { timeout: 15000 }).toBe(windowsSelection.paths.second[0]);
-        await windowsSelection.restoreForeground();
+        await focusTestedWindow();
       }
       assert.equal(await tested.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Alt+P')), false);
       await page.locator('#record-shortcut').click();

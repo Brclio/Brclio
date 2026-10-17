@@ -25,6 +25,8 @@ public static class BrclioExplorerFixture {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr window);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr window, uint flags);
   [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint from, uint to, bool attach);
   public static void Activate(IntPtr window) {
@@ -42,7 +44,10 @@ $shell = New-Object -ComObject Shell.Application
 function Same-Path([string]$left, [string]$right) {
   return [string]::Equals($left.TrimEnd('\'), $right.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
 }
-function Window-Handle($window) { return [IntPtr]([Int64]$window.HWND -band [Int64]4294967295) }
+function Window-Handle($window) {
+  $raw = [IntPtr]([Int64]$window.HWND -band [Int64]4294967295)
+  return [BrclioExplorerFixture]::GetAncestor($raw, 2)
+}
 function Find-FixtureView([string]$directory) {
   $found = @(foreach ($window in $shell.Windows()) {
     try { if (Same-Path ([string]$window.Document.Folder.Self.Path) $directory) { $window } } catch {}
@@ -69,7 +74,8 @@ function Activate-View($window) {
     if ([BrclioExplorerFixture]::GetForegroundWindow() -eq $handle) { return }
     Start-Sleep -Milliseconds 100
   }
-  throw 'Windows did not allow activating the isolated Explorer fixture.'
+  $diagnostic = @{ target = $handle.ToInt64(); raw = [string]$window.HWND; targetExists = [BrclioExplorerFixture]::IsWindow($handle); targetVisible = [BrclioExplorerFixture]::IsWindowVisible($handle); foreground = [BrclioExplorerFixture]::GetForegroundWindow().ToInt64() }
+  throw ('Windows did not allow activating the isolated Explorer fixture. ' + (ConvertTo-Json -InputObject $diagnostic -Compress))
 }
 function Select-FixtureItems($window, $paths) {
   if ($paths.Count -eq 0) { return }
@@ -108,17 +114,8 @@ switch ($request.action) {
   'activate' {
     $views = Find-FixtureView $request.directory
     if ($views.Count -eq 0) {
-      $shell.Explore([string]$request.directory)
-      for ($attempt = 0; $attempt -lt 60; $attempt++) {
-        Start-Sleep -Milliseconds 100
-        $views = Find-FixtureView $request.directory
-        if ($views.Count -gt 0) { break }
-      }
-    }
-    if ($views.Count -eq 0) {
-      # Hosted Windows may start without a normal desktop shell. Start actual
-      # Explorer explicitly if Shell.Explore did not materialize a folder view.
-      # The unique generated folder is data passed to a fixed executable.
+      # /n opens an independent fixture window, including on systems whose
+      # normal folder-opening preference reuses existing Explorer tabs.
       if (-not [IO.Directory]::Exists([string]$request.directory) -or ([string]$request.directory).Contains('"')) { throw 'Invalid temporary fixture directory.' }
       Start-Process -FilePath (Join-Path $env:WINDIR 'explorer.exe') -ArgumentList ('/n,"' + [string]$request.directory + '"')
       $shell = New-Object -ComObject Shell.Application
@@ -291,11 +288,6 @@ async function main() {
     await fixture.activate('empty');
     await assert.rejects(getWindowsSelectedPaths(), /先在资源管理器中选中/);
     report.checks.push('empty selection rejects instead of copying the current folder');
-    if (fixture.metadata.originalWindow && fixture.metadata.originalProcess !== 'explorer') {
-      await fixture.restoreForeground();
-      await assert.rejects(getWindowsSelectedPaths(), /先切换到资源管理器/);
-      report.checks.push('non-Explorer foreground rejects saved background-window selection');
-    }
     if (fixture.metadata.productType === 1 && fixture.metadata.build >= 22621) {
       const tab = await fixture.createTab();
       equalPaths(await getWindowsSelectedPaths(), fixture.paths.second);
@@ -305,6 +297,11 @@ async function main() {
       report.windows11Tabs = 'passed';
     } else {
       report.windows11Tabs = 'not exercised: this runner is not client Windows 11 with Explorer tabs';
+    }
+    if (fixture.metadata.originalWindow && fixture.metadata.originalProcess !== 'explorer') {
+      await fixture.restoreForeground();
+      await assert.rejects(getWindowsSelectedPaths(), /先切换到资源管理器/);
+      report.checks.push('non-Explorer foreground rejects saved background-window selection');
     }
     report.passed = true;
   } catch (error) {
