@@ -207,13 +207,17 @@ async function createWindowsSelectionFixture() {
       return JSON.parse(stdout);
     } catch (error) {
       const stderr = String(error.stderr || '');
-      const detail = (stderr.match(/<S S="Error">([\s\S]*?)<\/S>/)?.[1] || stderr || error.message)
+      const xmlErrors = [...stderr.matchAll(/<S S="Error">([\s\S]*?)<\/S>/g)].map(match => match[1]).join('');
+      const detail = (xmlErrors || stderr || error.message)
         .replace(/_x000D__x000A_/g, '\n').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
       throw new Error(`Explorer fixture ${request.action} failed: ${detail.slice(0, 6000)}`);
     }
   };
   const metadata = await execute({ action: 'inspect' });
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'Brclio Explorer selection '));
+  // Hosted Windows TEMP can contain the RUNNER~1 short-name alias. Explorer
+  // reports long paths, so use the same physical spelling for lookup and all
+  // expected selections rather than comparing an 8.3 alias to a long path.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'Brclio Explorer selection ')));
   const directories = { first: path.join(root, 'first 中文 & literal'), second: path.join(root, 'second 独立选择'), empty: path.join(root, 'empty 未选择') };
   const selectedFolder = path.join(directories.first, '选中文件夹 folder');
   const paths = {
