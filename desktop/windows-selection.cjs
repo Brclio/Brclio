@@ -183,10 +183,9 @@ public static class BrclioSelectionWindow {
   )
   if ([BrclioSelectionWindow]::GetForegroundWindow() -ne $foreground) { exit 13 }
   if (-not [BrclioSelectionWindow]::IsForegroundView([IntPtr]$activeView.Handle, $foreground)) { exit 13 }
-  if ($focusRequired) {
-    $finalFocus = [BrclioSelectionWindow]::GetFocusedWindow($foreground)
-    if ($finalFocus -ne $focus -or -not [BrclioSelectionWindow]::ViewContainsFocus([IntPtr]$activeView.Handle, $finalFocus)) { exit 13 }
-  }
+  $finalFocus = [BrclioSelectionWindow]::GetFocusedWindow($foreground)
+  if ($finalFocus -ne $focus) { exit 13 }
+  if ($focusRequired -and -not [BrclioSelectionWindow]::ViewContainsFocus([IntPtr]$activeView.Handle, $finalFocus)) { exit 13 }
   $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $paths -Compress))
   if ($bytes.Length -gt 4194304) { exit 15 }
   $stdout = [Console]::OpenStandardOutput()
