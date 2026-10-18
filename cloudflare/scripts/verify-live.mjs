@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {officialTarget} from '../src/protocol.js';
 const args=process.argv.slice(2);
-const origin=args.find(arg=>arg.startsWith('https://'))||process.env.BRCLIO_CLIENT_SERVICE_URL||process.env.BRCLIO_UPDATE_SERVICE_URL;
+const origin=args.find(arg=>arg.startsWith('https://'))||process.env.BRCLIO_CLIENT_SERVICE_URL||process.env.BRCLIO_UPDATE_SERVICE_URL||'https://client.brclio.com';
 assert.ok(origin,'Pass the confirmed custom-domain origin or set BRCLIO_CLIENT_SERVICE_URL');
 const service=new URL(origin);
 assert.equal(service.protocol,'https:');

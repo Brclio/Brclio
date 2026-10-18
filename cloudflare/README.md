@@ -70,10 +70,11 @@ include its current Git SHA, and report a conflict instead of overwriting a
 concurrent change. Public requests cache the file for 15 seconds and parsed
 subscription nodes for 60 seconds. Administrator reads always refresh the file.
 
-The deployment uses one Worker with one confirmed custom domain from the same
-Cloudflare account. The administration shell and all APIs share that HTTPS
-origin. The public domain is selected and verified in that account's browser
-before deployment; supply that confirmed origin to the live verification script.
+The deployment uses one Worker at the confirmed custom-domain origin
+`https://client.brclio.com` in that same Cloudflare account. The administration
+shell at `https://client.brclio.com/admin` and all APIs share that HTTPS origin.
+Wrangler pins the custom-domain route and disables workers.dev. Domain binding,
+application deployment and live verification are distinct checks.
 No Pages project, gateway, service binding, or second deployment is required.
 The client uses the update-proxy module only when its session switch is enabled
 and it detects no system proxy.
@@ -179,13 +180,13 @@ through the verified TLS/VLESS relay. The manifest bytes are also checked agains
 the manifest asset's GitHub metadata digest:
 
 ```sh
-npm run smoke -- https://your-client-service.example
-npm run smoke -- https://your-client-service.example --large
+npm run smoke -- https://client.brclio.com
+npm run smoke -- https://client.brclio.com --large
 ```
 
 `--large` selects an installer larger than 100 MiB. Neither command saves or runs
-an installer. Always pass the verified custom-domain origin, or set
-`BRCLIO_CLIENT_SERVICE_URL`. On a Node runtime that supports it,
-`node --use-env-proxy scripts/verify-live.mjs https://your-client-service.example
+an installer. The default origin is `https://client.brclio.com`; an explicit
+origin or `BRCLIO_CLIENT_SERVICE_URL` can override it for verification. On a Node runtime that supports it,
+`node --use-env-proxy scripts/verify-live.mjs https://client.brclio.com
 --large` may be used
 when the test environment itself requires its configured system proxy.

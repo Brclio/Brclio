@@ -3,7 +3,11 @@ account_id = "cacceff607775c81f667b7a951d4639f"
 main = "src/worker.js"
 compatibility_date = "2026-10-18"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
-workers_dev = true
+workers_dev = false
+
+[[routes]]
+pattern = "client.brclio.com"
+custom_domain = true
 
 # All operational values and credentials are encrypted deployment secrets:
 # ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET, GITHUB_TOKEN,
