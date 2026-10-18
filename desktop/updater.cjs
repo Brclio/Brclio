@@ -78,6 +78,7 @@ function createUpdater(options) {
   async function request(url, signal) {
     const response = await fetchURL(url, { signal, redirect: 'follow', headers: { Accept: 'application/vnd.github+json', 'User-Agent': `Brclio/${currentVersion}` } });
     if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
       if (response.status === 404) throw new Error('正式版本尚未发布，请稍后检查。');
       if (response.status === 403 || response.status === 429) throw new Error('GitHub 暂时限制请求，请稍后重试。');
       throw new Error(`下载服务返回 HTTP ${response.status}，请稍后重试。`);
@@ -97,6 +98,7 @@ function createUpdater(options) {
     if (state.installerStarted) return Promise.resolve(snapshot());
     if (downloading || installing) return Promise.resolve(snapshot());
     checking = (async () => {
+      options.onOperation?.('check', true);
       change({ status: 'checking', error: null, progress: 0, downloadedBytes: 0, installerStarted: false, canInstall: false });
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), options.requestTimeout || 20000);
@@ -109,7 +111,7 @@ function createUpdater(options) {
         return change({ status: compareVersions(candidate.version, currentVersion) > 0 ? 'available' : 'up-to-date',
           version: candidate.version, notes: candidate.notes, assetName: candidate.assetName, totalBytes: candidate.size });
       } catch (error) { release = null; verified = null; return failure(error.name === 'AbortError' ? new Error('检查更新超时，请重试。') : error); }
-      finally { clearTimeout(timer); checking = null; }
+      finally { clearTimeout(timer); checking = null; options.onOperation?.('check', false); }
     })();
     return checking;
   }
@@ -122,6 +124,7 @@ function createUpdater(options) {
       if (checking) await checking;
       if (!release || compareVersions(release.version, currentVersion) <= 0) return failure(new Error('请先检查更新，确认有可用的新版本。'));
       const selected = release;
+      options.onOperation?.('download', true);
       const destination = path.join(directory, selected.assetName);
       const partial = `${destination}.part`;
       const controller = new AbortController();
@@ -170,7 +173,7 @@ function createUpdater(options) {
         controller.abort();
         await fs.rm(partial, { force: true }).catch(() => {});
         return failure(error.name === 'AbortError' ? new Error('下载超时或连接中断，请重新下载。') : error);
-      } finally { clearTimeout(totalTimer); clearTimeout(idleTimer); clearTimeout(manifestTimer); }
+      } finally { clearTimeout(totalTimer); clearTimeout(idleTimer); clearTimeout(manifestTimer); options.onOperation?.('download', false); }
     })();
     downloading = operation;
     operation.finally(() => { if (downloading === operation) downloading = null; });

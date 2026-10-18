@@ -165,6 +165,11 @@ class MainActivity : Activity() {
                 "checkForUpdates" -> updater().check { result, error -> resolve(id, result, error) }
                 "downloadUpdate" -> updater().download { result, error -> resolve(id, result, error) }
                 "installUpdate" -> updater().install { result, error -> resolve(id, result, error) }
+                "getUpdateProxyState" -> resolve(id, updater().getUpdateProxyState())
+                "setUpdateProxyEnabled" -> {
+                    require(payload.opt("enabled") is Boolean) { "更新代理开关必须是布尔值。" }
+                    resolve(id, updater().setUpdateProxyEnabled(payload.getBoolean("enabled")))
+                }
                 else -> resolve(id, error = "未知操作。")
             }
         } catch (exception: Exception) {

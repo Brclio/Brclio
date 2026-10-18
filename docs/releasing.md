@@ -1,6 +1,6 @@
 # 发布 Brclio
 
-仓库为 [Brclio/Brclio](https://github.com/Brclio/Brclio)。`main` 推送与面向 `main` 的 PR 会执行 Node 22 单元测试、真实 Chromium 界面/剪贴板测试、原生桥接契约测试、Android 单元测试和 lint，以及两种 Mac 架构的 FinderSync 编译与沙盒签名检查。浏览器测试使用 Playwright 安装的 Chromium，不依赖开发机上的 Chrome 路径。
+仓库为 [Brclio/Brclio](https://github.com/Brclio/Brclio)。`main` 推送与面向 `main` 的 PR 会执行 Node 22 单元测试、真实 Chromium 界面/剪贴板测试、原生桥接契约测试、Android 单元测试和 lint、客户端服务后端测试与 Worker dry build，以及两种 Mac 架构的 FinderSync 编译与沙盒签名检查。浏览器测试使用 Playwright 安装的 Chromium，不依赖开发机上的 Chrome 路径。
 
 ## 版本与签名
 
@@ -96,5 +96,9 @@ Windows 自动化验收包含真实资源管理器的两个文件和一个文件
 v0.1.8 本地 macOS 候选客户端已在用户允许 Finder 自动化后，由用户实际按下 `Option+P`，确认单个选中文件夹的绝对路径写入系统剪贴板。此结果仅覆盖该本地场景，未证明多选、特殊文件名、其它 Mac 架构或最终公开安装包的相同行为。
 
 软件更新功能依赖公开 Release 的固定资产名称和 `SHA256SUMS.txt`。不要在已发布版本中替换同名安装包；保持 Android 签名连续，并通过新的稳定版本发布更新。
+
+从 v0.1.9 起，还需核验 `https://tools.brclio.com` 的真实正式版本摘要和内置代理下载，确认官网与客户端读取同一版本。管理入口为 `/admin`，只有服务端环境变量和已有私有数据仓库保存维护配置。Cloudflare 服务必须使用 `aiyuechuang@gmail.com` 账号内的单一 `brclio-client-services` Worker；不要依赖本机 Wrangler 当前登录账号推断部署目标。
+
+网络验收分别覆盖系统代理优先、无系统代理时的内置代理、临时关闭、完全退出后恢复开启，以及操作期间禁用开关。真实 Electron 与 Android 进程的状态、单元模拟和代理服务下载是独立证据。TLS 校验错误、错误主机名、不受信 CA、过期或不支持的证书约束必须拒绝，不能因代理联通而放宽证书验证。
 
 参考：[Apple FinderSync](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/Finder.html)、[Apple 扩展签名、启用与分发](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/ExtensionCreation.html)、[electron-builder 26 macOS 签名](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/)、[electron-builder 26 公证环境变量](https://www.electron.build/v26/docs/mac/#notarize)、[Apple 代码签名与 Gatekeeper 检查](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html)、[GitHub runner 架构与标签](https://github.com/actions/runner-images/blob/main/README.md)、[Android SDK setup v3](https://github.com/android-actions/setup-android/tree/v3)、[Actions artifact 合并下载](https://github.com/actions/upload-artifact/blob/main/docs/MIGRATION.md)、[GitHub CLI release create](https://cli.github.com/manual/gh_release_create)、[Playwright CI](https://playwright.dev/docs/ci-intro)。

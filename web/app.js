@@ -28,6 +28,10 @@
   let shortcutPendingValue = '';
   let shortcutMessage = '';
   let shortcutFailed = false;
+  let updateProxy = { enabled: true, supported: false, route: 'direct' };
+  let proxyPending = false;
+  let proxyError = '';
+  let proxyRevision = 0;
 
   function toast(message, error = false) {
     clearTimeout(toastTimer);
@@ -255,8 +259,9 @@
     $$('.nav-item[data-view]').forEach(item => { item.classList.toggle('active', item.dataset.view === name); if (item.dataset.view === name) item.setAttribute('aria-current', 'page'); else item.removeAttribute('aria-current'); });
     $('#breadcrumb-current').textContent = viewNames[name];
     document.title = `Brclio · ${viewNames[name]}`;
+    if (name === 'settings') void refreshUpdateProxy();
   }
-  function showDialog(id) { void cancelShortcutRecording(); const dialog = $('#' + id); if (!dialog.open) dialog.showModal(); }
+  function showDialog(id) { void cancelShortcutRecording(); const dialog = $('#' + id); if (!dialog.open) dialog.showModal(); if (id === 'about-dialog') void refreshUpdateProxy(); }
   function refreshIntegration() {
     const available = integration.supported && platform.capabilities?.systemIntegration;
     if (available) {
@@ -351,20 +356,57 @@
   ['touchend', 'touchcancel'].forEach(name => $('#path-preview').addEventListener(name, () => clearTimeout(longPress), { passive: true }));
   let updateState = { status: 'idle' };
   let updatePending = false;
+  function renderUpdateProxy() {
+    const busy = proxyPending || updatePending || ['checking', 'downloading', 'preparing', 'restarting', 'installing'].includes(updateState.status);
+    const detail = proxyError || (!updateProxy.supported ? '更新代理可在客户端中使用。' : updateProxy.route === 'system'
+      ? '检测到系统代理，更新沿用系统网络。'
+      : updateProxy.enabled ? '检查和下载更新时使用内置代理。' : '内置代理已关闭，更新使用系统网络。');
+    ['update', 'about-update'].forEach(prefix => {
+      const toggle = $(`#${prefix}-proxy`);
+      toggle.checked = updateProxy.enabled;
+      toggle.disabled = busy || !updateProxy.supported;
+      toggle.setAttribute('aria-busy', String(proxyPending));
+      $(`#${prefix}-proxy-status`).textContent = detail;
+      $(`#${prefix}-proxy-status`).classList.toggle('error', Boolean(proxyError));
+    });
+  }
+  async function refreshUpdateProxy() {
+    if (!host.getUpdateProxyState || proxyPending) { renderUpdateProxy(); return; }
+    const revision = ++proxyRevision;
+    try {
+      const state = await host.getUpdateProxyState();
+      if (revision !== proxyRevision || proxyPending) return;
+      updateProxy = state; proxyError = state.error || '';
+    }
+    catch { if (revision !== proxyRevision || proxyPending) return; proxyError = '暂时无法读取代理状态，请重新打开此面板。'; }
+    renderUpdateProxy();
+  }
+  async function setUpdateProxy(enabled) {
+    if (proxyPending || updatePending || !updateProxy.supported) { renderUpdateProxy(); return; }
+    ++proxyRevision;
+    proxyPending = true; proxyError = ''; renderUpdate(updateState);
+    try {
+      updateProxy = await host.setUpdateProxyEnabled(enabled);
+      proxyError = updateProxy.error || '';
+      toast(proxyError || (updateProxy.enabled ? '内置更新代理已开启' : '本次运行已关闭内置更新代理，重启后恢复开启'), Boolean(proxyError));
+    } catch (error) { proxyError = error.message; toast(error.message, true); }
+    finally { proxyPending = false; renderUpdate(updateState); }
+  }
+  ['update', 'about-update'].forEach(prefix => $(`#${prefix}-proxy`).addEventListener('change', event => { void setUpdateProxy(event.target.checked); }));
   function renderUpdate(state) {
     updateState = state || { status: 'error', error: '未能读取更新状态。' };
     const status = updateState.status;
     const busy = updatePending || ['checking', 'downloading', 'preparing', 'restarting', 'installing'].includes(status);
-    $('#check-update').disabled = busy;
+    $('#check-update').disabled = busy || proxyPending;
     $('#check-update').textContent = status === 'checking' ? '正在检查…' : '检查更新';
     $('#download-update').hidden = status !== 'available';
-    $('#download-update').disabled = busy;
+    $('#download-update').disabled = busy || proxyPending;
     $('#install-update').hidden = status !== 'downloaded' && !(status === 'error' && updateState.canInstall);
-    $('#install-update').disabled = busy;
+    $('#install-update').disabled = busy || proxyPending;
     const percent = Math.max(0, Math.min(100, Number(updateState.progress) || 0));
     const version = updateState.version ? `v${updateState.version}` : '新版本';
     const titles = { idle: '保持顺手，也保持最新。', checking: '正在检查 GitHub 最新版本…', 'up-to-date': '已经是最新版本。', available: `${version} 已经准备好。`, downloading: `正在下载 ${version}…`, downloaded: '安装包已下载，校验通过。', preparing: '正在准备覆盖安装…', restarting: '正在更新，Brclio 即将重新打开…', installed: '更新完成，欢迎回来。', error: '这次更新未完成，可以重试。', unsupported: '请在客户端中检查和安装更新。', installing: '请在系统安装界面中继续。' };
-    const details = { idle: '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.8'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
+    const details = { idle: platform.platform === 'android' ? '检查新版本后，下载安装包并确认系统安装。完成后如未自动返回，请点击系统“打开”。' : '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.9'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
     const detail = updateState.requiresPermission ? '请在系统设置中允许 Brclio 安装应用，然后返回并再次点击安装。' : status === 'error' ? updateState.error || '网络连接失败，请检查网络后重试。' : updateState.message || details[status] || details.idle;
     // Both entry points reflect the same native update without changing views.
     ['update', 'about-update'].forEach(prefix => {
@@ -378,16 +420,17 @@
     });
     const aboutLabels = { checking: '正在检查…', 'up-to-date': '重新检查', available: '下载并安装更新', downloading: `正在下载… ${Math.round(percent)}%`, downloaded: '安装更新', preparing: '正在准备安装…', restarting: '正在重启…', installing: '正在安装…', error: updateState.canInstall ? '重试安装' : '重新检查' };
     $('#about-update').textContent = aboutLabels[status] || '检查更新';
-    $('#about-update').disabled = busy;
+    $('#about-update').disabled = busy || proxyPending;
     $('#about-update').setAttribute('aria-busy', String(busy));
     $('#about-update').classList.toggle('button-primary', status === 'available' || status === 'downloaded' || (status === 'error' && updateState.canInstall));
     $('#about-update').classList.toggle('button-outline', !$('#about-update').classList.contains('button-primary'));
     $('#about-update-status').hidden = status === 'idle';
     $('#download-update').textContent = '下载并安装更新';
     $('#install-update').textContent = status === 'error' ? '重试安装' : '安装更新';
+    renderUpdateProxy();
   }
   async function performUpdate(method) {
-    if (updatePending || ['checking', 'downloading', 'preparing', 'restarting', 'installing'].includes(updateState.status)) return;
+    if (proxyPending || updatePending || ['checking', 'downloading', 'preparing', 'restarting', 'installing'].includes(updateState.status)) return;
     updatePending = true;
     try {
       if (method === 'checkForUpdates') renderUpdate({ status: 'checking' });
@@ -407,7 +450,7 @@
       }
       else if (method === 'installUpdate') renderUpdate({ ...updateState, status: 'installing' });
     } catch (error) { renderUpdate({ ...updateState, status: 'error', error: error.message }); }
-    finally { updatePending = false; renderUpdate(updateState); }
+    finally { updatePending = false; renderUpdate(updateState); void refreshUpdateProxy(); }
   }
   $('#check-update').addEventListener('click', () => performUpdate('checkForUpdates'));
   $('#download-update').addEventListener('click', () => performUpdate('downloadUpdate'));
@@ -428,12 +471,12 @@
         catch (error) { shortcutStatus = { supported: true, accelerator: settings.copyShortcut, registered: false, error: error.message }; }
       }
       if (samples[platform.platform]) { samplePlatform = platform.platform; $$('[data-sample]').forEach(button => button.classList.toggle('active', button.dataset.sample === samplePlatform)); }
-      $$('.version').forEach(item => { item.textContent = `v${platform.version || '0.1.8'}`; });
-      $('#current-version').textContent = `v${platform.version || '0.1.8'}`;
-      $('#about-dialog .subtle-tag').textContent = `VERSION ${platform.version || '0.1.8'}`;
+      $$('.version').forEach(item => { item.textContent = `v${platform.version || '0.1.9'}`; });
+      $('#current-version').textContent = `v${platform.version || '0.1.9'}`;
+      $('#about-dialog .subtle-tag').textContent = `VERSION ${platform.version || '0.1.9'}`;
       $('#update-platform-hint').textContent = platform.platform === 'darwin' ? '下载校验后自动覆盖当前安装并重新打开。尚未公证，首次运行可能需要在系统设置中允许打开。' : platform.platform === 'android' ? '需确认系统安装；系统限制自动打开时，请点击安装器的“打开”。' : platform.platform === 'browser' ? '浏览器仅提供界面预览；在线更新在 Windows、macOS 和安卓客户端中使用。' : '下载校验后覆盖当前安装并自动打开，保留设置和右键菜单。';
       $('#platform-label').textContent = platformNames[platform.platform] || platform.platform;
-      $('#environment-detail').textContent = `${platformNames[platform.platform] || platform.platform} · v${platform.version || '0.1.8'}`;
+      $('#environment-detail').textContent = `${platformNames[platform.platform] || platform.platform} · v${platform.version || '0.1.9'}`;
       if (platform.platform === 'browser' || platform.platform === 'android' || platform.packaged === false) {
         $('#launch-at-login').disabled = true;
         $('#login-hint').textContent = platform.platform === 'android' ? '安卓端无需常驻，按需打开即可。' : platform.packaged === false ? '开机启动可在安装版客户端中设置。' : '开机启动可在桌面客户端中设置。';
@@ -441,6 +484,7 @@
       if (platform.platform === 'win32' || platform.platform === 'android') $('#search-shortcut').textContent = 'Ctrl K';
       applyControls(); refreshIntegration(); setSaveStatus('设置已保存');
       renderUpdate(update || { status: 'idle' });
+      void refreshUpdateProxy();
       await host.reportReady?.();
       document.body.dataset.initialized = 'true';
     } catch (error) { $('#platform-label').textContent = '设置读取失败'; setSaveStatus('读取失败', true); toast(error.message, true); }

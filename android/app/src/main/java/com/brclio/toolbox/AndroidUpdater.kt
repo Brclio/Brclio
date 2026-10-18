@@ -13,6 +13,7 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.Proxy
 import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.Executors
@@ -39,7 +40,8 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
 
     fun check(callback: (JSONObject?, String?) -> Unit) = run(callback) {
         publish("checking")
-        val metadata = readSmall("https://api.github.com/repos/Brclio/Brclio/releases/latest", 1024 * 1024)
+        val route = currentProxyRoute()
+        val metadata = readSmall("https://api.github.com/repos/Brclio/Brclio/releases/latest", 1024 * 1024, route)
         val release = UpdatePolicy.parseRelease(JSONObject(metadata))
         latest = release
         publish(if (UpdatePolicy.isNewer(release.version, currentVersion)) "available" else "up-to-date", release)
@@ -51,7 +53,8 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         downloaded?.delete()
         downloaded = null
         downloadedSha256 = null
-        val checksum = UpdatePolicy.expectedChecksum(readSmall(release.checksums.url, 256 * 1024), release.apk.name)
+        val route = currentProxyRoute()
+        val checksum = UpdatePolicy.expectedChecksum(readSmall(release.checksums.url, 256 * 1024, route), release.apk.name)
         val temporary = File(directory, "${release.apk.name}.part")
         val target = File(directory, release.apk.name)
         temporary.delete()
@@ -59,7 +62,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         publish("downloading", release, 0, release.apk.size)
         try {
             val deadline = System.currentTimeMillis() + 10 * 60 * 1000
-            val response = open(release.apk.url)
+            val response = open(release.apk.url, route)
             val digest = MessageDigest.getInstance("SHA-256")
             var received = 0L
             var lastProgress = 0L
@@ -176,6 +179,28 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
 
     private fun snapshot() = JSONObject(state.toString())
 
+    fun getUpdateProxyState(): JSONObject {
+        val route = currentProxyRoute()
+        return JSONObject().put("enabled", ProcessUpdateProxySession.state.enabled)
+            .put("supported", true).put("route", route.value)
+            .put("message", when (route) {
+                UpdateProxyRoute.BUILTIN -> "更新检查与下载使用内置代理；关闭后直接连接。重启软件后默认开启。"
+                UpdateProxyRoute.SYSTEM -> "已检测到系统代理或 VPN，更新检查与下载使用系统网络。"
+                UpdateProxyRoute.DIRECT -> "内置代理已关闭，更新检查与下载直接连接。重启软件后默认开启。"
+            })
+    }
+
+    fun setUpdateProxyEnabled(enabled: Boolean): JSONObject {
+        check(!installationWindowOpen) { "请先完成系统安装或授权窗口，再修改更新代理。" }
+        check(busy.compareAndSet(false, true)) { "更新操作进行中，请完成后再修改更新代理。" }
+        try {
+            ProcessUpdateProxySession.state.setEnabled(enabled)
+            return getUpdateProxyState()
+        } finally { busy.set(false) }
+    }
+
+    private fun currentProxyRoute() = ProcessUpdateProxySession.state.route(AndroidSystemProxy.isPresent(activity))
+
     fun onResume() {
         if (!installationWindowOpen) return
         installationWindowOpen = false
@@ -198,11 +223,17 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         }
     }
 
-    private fun open(address: String): HttpsURLConnection {
-        var url = address
+    private fun open(address: String, route: UpdateProxyRoute): HttpsURLConnection {
+        check(UpdateProxyPolicy.allowedSource(address)) { "更新下载地址不受信任。" }
+        val usesRelay = route == UpdateProxyRoute.BUILTIN
+        var url = if (usesRelay) UpdateProxyPolicy.relayAddress(address) else address
         repeat(6) {
-            check(UpdatePolicy.allowedDownloadHost(url)) { "更新下载地址不受信任。" }
-            val request = (URL(url).openConnection() as HttpsURLConnection).apply {
+            if (!usesRelay) check(UpdatePolicy.allowedDownloadHost(url)) { "更新下载地址不受信任。" }
+            // System routing uses Android's default ProxySelector. The relay and an
+            // explicit direct connection never receive an additional HTTP proxy.
+            val opened = if (route == UpdateProxyRoute.SYSTEM) URL(url).openConnection()
+                else URL(url).openConnection(Proxy.NO_PROXY)
+            val request = (opened as HttpsURLConnection).apply {
                 connectTimeout = 15_000
                 readTimeout = 30_000
                 instanceFollowRedirects = false
@@ -213,6 +244,10 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
             connection = request
             val code = request.responseCode
             if (code in setOf(301, 302, 303, 307, 308)) {
+                if (usesRelay) {
+                    request.disconnect()
+                    error("内置更新代理返回了不受信任的重定向，请关闭内置代理后重试。")
+                }
                 val destination = request.getHeaderField("Location") ?: error("更新服务器重定向缺少地址。")
                 url = URL(URL(url), destination).toString()
                 request.disconnect()
@@ -222,6 +257,8 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                     error(when (code) {
                         404 -> "GitHub 尚未发布正式更新。"
                         403, 429 -> "GitHub 请求受到限制，请稍后重试。"
+                        in 500..599 -> if (usesRelay) "内置更新代理暂不可用，可关闭内置代理后重试。"
+                            else "更新服务器返回 HTTP $code，请重试。"
                         else -> "更新服务器返回 HTTP $code，请重试。"
                     })
                 }
@@ -231,8 +268,8 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         error("更新服务器重定向次数过多。")
     }
 
-    private fun readSmall(address: String, limit: Int): String {
-        val request = open(address)
+    private fun readSmall(address: String, limit: Int, route: UpdateProxyRoute): String {
+        val request = open(address, route)
         val output = ByteArrayOutputStream()
         val deadline = System.currentTimeMillis() + 60_000
         try {

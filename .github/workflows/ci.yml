@@ -108,6 +108,7 @@ jobs:
           curl --fail --silent http://127.0.0.1:4173/ > /dev/null
           node scripts/verify-ui.mjs
       - run: node scripts/verify-host-contracts.mjs
+      - run: node scripts/verify-update-proxy-ui.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

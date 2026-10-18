@@ -1,9 +1,24 @@
-import { startTls } from 'subtls/index.js';
+import { startVerifiedTls } from './verified-tls.js';
 import { rootCerts } from './roots.js';
 import { ByteReader, encoder, decoder, concat, vlessHeader, readHTTPHead, httpBody } from './protocol.js';
 
 export class TunnelError extends Error {
   constructor(stage, code, cause, detail = {}) { super('代理连接失败', {cause}); this.stage = stage; this.code = code; this.detail = detail; }
+}
+function tlsFailureCode(error) {
+  const message = String(error?.message || '');
+  if (/Unsupported certificate name constraints/.test(message)) return 'unsupported_name_constraints';
+  if (/Unsupported critical certificate extension/.test(message)) return 'unsupported_critical_extension';
+  if (/CA certificate cannot sign certificates/.test(message)) return 'invalid_ca_signing_usage';
+  if (/Server certificate cannot make digital signatures/.test(message)) return 'invalid_leaf_key_usage';
+  if (/Invalid certificate|Noncanonical certificate|Duplicate certificate|Too many certificate|Invalid extension/.test(message)) return 'invalid_certificate_structure';
+  if (/Unsupported .*algorithm|Unsupported .*curve/.test(message)) return 'unsupported_algorithm';
+  if (/extKeyUsage|CA certificate does not permit TLS server authentication/.test(message)) return 'invalid_extended_key_usage';
+  if (/keyUsage does not include/.test(message)) return 'invalid_ca_key_usage';
+  if (/No matching subjectAltName/.test(message)) return 'hostname_mismatch';
+  if (/not valid now/.test(message)) return 'invalid_validity';
+  if (/without reaching a trusted root|did not end in a trusted root/.test(message)) return 'untrusted_chain';
+  return 'handshake_failed';
 }
 export function safeFailure(error) {
   if (error instanceof TunnelError) return {stage:error.stage, code:error.code, ...error.detail};
@@ -95,7 +110,7 @@ export async function tunnelRequest(target, node, {range, signal, openSocket = o
       return bytes;
     };
     stage = 'tls'; phase = 'tls_keygen';
-    const tls = await startTls(target.hostname, rootCerts, networkRead, networkWrite);
+    const tls = await startVerifiedTls(target.hostname, rootCerts, networkRead, networkWrite);
     stage = 'http';
     const headers = [
       `GET ${target.pathname}${target.search} HTTP/1.1`, `Host: ${target.hostname}`,
@@ -109,5 +124,5 @@ export async function tunnelRequest(target, node, {range, signal, openSocket = o
     const head = await readHTTPHead(reader);
     clearTimeout(timer);
     return {...head, body: httpBody(reader, head.headers, cleanup), close: cleanup};
-  } catch (error) { cleanup(); if (error instanceof TunnelError) throw error; throw new TunnelError(stage, abort.signal.aborted ? 'timeout_or_cancelled' : (stage === 'tls' ? 'handshake_failed' : 'upstream_failed'), error, {phase, sentFrames, receivedFrames:queue?.receivedFrames || 0, receivedBytes:queue?.receivedBytes || 0}); }
+  } catch (error) { cleanup(); if (error instanceof TunnelError) throw error; throw new TunnelError(stage, abort.signal.aborted ? 'timeout_or_cancelled' : (stage === 'tls' ? tlsFailureCode(error) : 'upstream_failed'), error, {phase, sentFrames, receivedFrames:queue?.receivedFrames || 0, receivedBytes:queue?.receivedBytes || 0}); }
 }

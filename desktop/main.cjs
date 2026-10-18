@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, net, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, net, session, shell } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -12,6 +12,7 @@ const { createIntegration } = require('./integration.cjs');
 const { getCopyPaths } = require('./arguments.cjs');
 const { getCopyPathsFromURL, getCopyPathsFromURLs } = require('./deep-link.cjs');
 const { createUpdater } = require('./updater.cjs');
+const { createUpdateProxy } = require('./update-proxy.cjs');
 const { createMacInstaller } = require('./mac-installer.cjs');
 const { createWindowsInstaller } = require('./windows-installer.cjs');
 const { isLocalDocument } = require('./trusted-url.cjs');
@@ -69,8 +70,13 @@ const integration = createIntegration({ launch: {
 const installerOptions = { executable: process.execPath, userData: app.getPath('userData'), parentPid: process.pid };
 const installer = process.platform === 'darwin' ? createMacInstaller(installerOptions)
   : process.platform === 'win32' ? createWindowsInstaller(installerOptions) : null;
+const updateProxy = createUpdateProxy({ whenReady: () => app.whenReady(),
+  fromPartition: (name, options) => session.fromPartition(name, options), defaultSession: () => session.defaultSession,
+  netFetch: (url, options) => net.fetch(url, options),
+});
 const updater = createUpdater({ currentVersion: app.getVersion(), directory: path.join(app.getPath('userData'), 'updates'),
-  fetch: (url, options) => net.fetch(url, options),
+  fetch: (url, options) => updateProxy.fetch(url, options),
+  onOperation: (_kind, active) => updateProxy.setBusy(active),
   installPackage: descriptor => {
     if (!app.isPackaged || !installer) throw new Error('请使用安装版 Brclio 进行在线更新。');
     return installer.start(descriptor);
@@ -213,6 +219,8 @@ function registerIPC() {
   handle('brclio:integration:get', () => integration.status());
   handle('brclio:integration:set', enabled => integration.set(enabled));
   handle('brclio:update:state', () => updater.state());
+  handle('brclio:update-proxy:state', () => updateProxy.state());
+  handle('brclio:update-proxy:set', enabled => updateProxy.setEnabled(enabled));
   handle('brclio:update:check', () => updater.check());
   handle('brclio:update:download', () => updater.download());
   handle('brclio:update:install', () => updater.install());

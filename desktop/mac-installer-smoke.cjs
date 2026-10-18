@@ -85,7 +85,7 @@ async function main() {
     await fs.writeFile(path.join(userData, 'keep-user-file.txt'), 'preserve user files exactly');
     report.checks.push('Real signed old fixture launched from a private Unicode/space/metacharacter application path; native renderer initialized.');
 
-    await application.evaluate(({ net }, fixture) => {
+    await application.evaluate(({ net, session }, fixture) => {
       const assetName = `Brclio-${fixture.version}-mac-${fixture.architecture}.dmg`;
       const prefix = `https://github.com/Brclio/Brclio/releases/download/v${fixture.version}/`;
       const release = { tag_name: `v${fixture.version}`, draft: false, prerelease: false, body: '真实 macOS 更新验收。', assets: [
@@ -94,7 +94,16 @@ async function main() {
       ] };
       globalThis.__macInstallSmokeRequests = [];
       const originalFetch = net.fetch.bind(net);
-      net.fetch = async url => {
+      // Current-source fixtures route through isolated updater sessions. Keep
+      // this native replacement test independent of the host's PAC settings and
+      // live release service, including when the built-in route is enabled.
+      const resolveProxy = async () => 'DIRECT';
+      session.defaultSession.resolveProxy = resolveProxy;
+      const systemSession = session.fromPartition('brclio-update-system', { cache: false });
+      const directSession = session.fromPartition('brclio-update-direct', { cache: false });
+      systemSession.resolveProxy = resolveProxy;
+      const fetch = async requested => {
+        const url = new URL(requested).searchParams.get('url') || requested;
         globalThis.__macInstallSmokeRequests.push(url);
         if (url === 'https://api.github.com/repos/Brclio/Brclio/releases/latest') return new Response(JSON.stringify(release));
         if (url === prefix + 'SHA256SUMS.txt') return new Response(`${fixture.expected}  ${assetName}\n`);
@@ -107,6 +116,9 @@ async function main() {
         }
         throw new Error('Unexpected update request: ' + url);
       };
+      net.fetch = fetch;
+      systemSession.fetch = fetch;
+      directSession.fetch = fetch;
     }, { version: targetVersion, architecture, fileURL: pathToFileURL(dmg).href, size, expected });
     await page.click('[data-view="settings"]');
     await page.click('#check-update');

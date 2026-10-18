@@ -46,6 +46,13 @@
     });
     return { ...value, assets };
   }
+  function includesUpdateProxy(version) {
+    const actual = version.split('.').map(Number), minimum = [0, 1, 9];
+    for (let index = 0; index < minimum.length; index++) {
+      if (actual[index] !== minimum[index]) return actual[index] > minimum[index];
+    }
+    return true;
+  }
   function proxyURL(target) { return '/api/update?url=' + encodeURIComponent(target); }
   function makeLink(text, url, className) {
     const link = document.createElement('a'); link.textContent = text; link.href = url; link.className = className; link.rel = 'noreferrer'; return link;
@@ -74,7 +81,9 @@
       const checksum = release.assets.find(item => item.checksumURL)?.checksumURL;
       if (checksum) integrity.append(makeLink('SHA-256 校验清单', proxyURL(checksum), ''), ' · ');
       integrity.append(makeLink('阅读本版发布说明', release.releaseURL, ''), '。客户端在线更新会验证安装包的 SHA-256。');
-      if (release.version !== '0.1.8') $('development-note').textContent = '内置更新代理与客户端管理服务的客户端支持情况，请以你下载版本的发布说明为准。';
+      $('development-note').textContent = includesUpdateProxy(release.version)
+        ? 'v' + release.version + ' 已包含内置更新代理：系统代理优先；没有系统代理时默认使用内置代理，可在软件内临时关闭，完全退出并重新启动后恢复默认开启。'
+        : 'v' + release.version + ' 尚未包含内置更新代理开关与后台接入。请以你下载版本的正式发布说明为准。';
       grid.hidden = false; integrity.hidden = false; $('release-fallback').hidden = true;
     } catch {
       $('release-status').textContent = '暂时无法确认最新正式版本';

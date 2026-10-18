@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('brclio', Object.freeze({
   getIntegrationStatus: () => ipcRenderer.invoke('brclio:integration:get'),
   setIntegration: enabled => ipcRenderer.invoke('brclio:integration:set', enabled),
   getUpdateState: () => ipcRenderer.invoke('brclio:update:state'),
+  getUpdateProxyState: () => ipcRenderer.invoke('brclio:update-proxy:state'),
+  setUpdateProxyEnabled: enabled => ipcRenderer.invoke('brclio:update-proxy:set', enabled),
   checkForUpdates: () => ipcRenderer.invoke('brclio:update:check'),
   downloadUpdate: () => ipcRenderer.invoke('brclio:update:download'),
   installUpdate: () => ipcRenderer.invoke('brclio:update:install'),

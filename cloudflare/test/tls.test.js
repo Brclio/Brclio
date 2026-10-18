@@ -6,7 +6,8 @@ import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import net from 'node:net';
 import tls from 'node:tls';
-import {startTls,SocketReadQueue} from 'subtls/index.js';
+import {SocketReadQueue} from 'subtls/index.js';
+import {startVerifiedTls as startTls} from '../src/verified-tls.js';
 import {rootCerts} from '../src/roots.js';
 let dir,cert,key,server,port;
 before(async()=>{

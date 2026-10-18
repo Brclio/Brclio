@@ -166,6 +166,13 @@ test('network failure is actionable and later check succeeds', async t => {
   assert.equal((await updater.check()).status, 'available');
 });
 
+test('rejected HTTP responses cancel unread streams before reporting an update error', async t => {
+  let cancelled = 0;
+  const { updater } = await setup(t, { fetch: async () => new Response(new ReadableStream({ cancel() { cancelled++; } }), { status: 403 }) });
+  assert.match((await updater.check()).error, /限制请求/);
+  assert.equal(cancelled, 1);
+});
+
 test('concurrent install requests share verification and open the installer only once', async t => {
   const opened = [];
   const { updater } = await setup(t, { options: { installPackage: async descriptor => {

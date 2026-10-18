@@ -1,7 +1,7 @@
 {
   "name": "brclio-toolbox",
   "productName": "Brclio",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Brclio 跨平台工具箱 · 从复制路径开始",
   "author": "Brclio",
   "private": true,
@@ -18,7 +18,9 @@
     "build:android": "npm run sync && cd android && ./gradlew assembleDebug",
     "test:hosts": "npm run sync && node scripts/verify-host-contracts.mjs",
     "test:desktop": "npm run sync && node desktop/smoke.cjs",
-    "test:updates": "npm run sync && node desktop/update-smoke.cjs"
+    "test:updates": "npm run sync && node desktop/update-smoke.cjs",
+    "test:proxy-ui": "npm run sync && node scripts/verify-update-proxy-ui.mjs",
+    "test:cloudflare": "npm --prefix cloudflare test"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",

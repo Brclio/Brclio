@@ -13,6 +13,7 @@ in the existing private GitHub data repository.
 - `src/admin.js`: shared administrator login, session/CSRF guards and overview.
 - `src/service.js`: general service identity and authenticated overview data.
 - `src/http.js`: shared response, JSON-body and rate-limit helpers.
+- `src/verified-tls.js`: fail-closed certificate-extension policy for the pinned TLS library.
 - `src/modules/index.js`: registry of implemented modules.
 - `src/modules/update-proxy.js`: existing public update and private proxy-config routes.
 
@@ -94,7 +95,9 @@ and it detects no system proxy.
   subscribed relay: `{version,tag,publishedAt,releaseURL,assets}`. Assets include
   `{name,size,platform,url,checksumURL}` for recognized Mac, Windows and Android
   installers. Draft/prerelease, nonofficial/mismatched URLs, missing or duplicate
-  checksum manifests, and ambiguous installers are rejected. Metadata is bounded
+  checksum manifests, and ambiguous installers are rejected. The homepage says
+  built-in proxy support is included only after validated published metadata
+  reports version 0.1.9 or later; older versions retain the unsupported notice. Metadata is bounded
   to 1 MiB and successful summaries may be cached by the browser for 60 seconds.
 - `GET /admin`: general Brclio client-services administration interface.
 - `POST /api/admin/login`: JSON `{email,password}`; returns `{ok,csrf}` and an
@@ -158,6 +161,20 @@ marked by its upstream author as not intended for production. It supports a
 limited set of certificate/signature algorithms, so a GitHub TLS/certificate
 change can make a currently working route fail. Certificates and hostnames are
 always verified; `skip-cert-verify` subscription flags never disable checks.
+The verified TLS adapter additionally rejects every received/selected-anchor
+certificate with unsupported name constraints, unrecognized critical extensions,
+duplicate/malformed extensions, a CA key usage that cannot sign certificates,
+or a CA extended key usage that does not explicitly permit TLS server authentication.
+It uses the public `Cert.create` hook of the pinned dependency; upgrades must keep
+the real certificate-chain regression tests passing. The pre-indexed Mozilla
+database parses only the selected trust anchor at connection time, so unrelated
+unused roots do not invalidate a working chain. Unsupported constraints are
+rejected instead of partially interpreted. The adapter parses KeyUsage directly from DER with the standard MSB-first bit
+order (upstream’s right-aligned mapping is incorrect) and enforces the standard
+CA `keyCertSign` permission and leaf `digitalSignature` permission when a key
+usage extension exists, replacing upstream’s incorrect demand that signing CAs
+also carry `digitalSignature`. Normal signature, hostname, validity,
+CA/path-length and TLS-transcript checks remain enabled.
 Keep the dependency/trust roots reviewed and verify deployed behavior after
 changes. See `certs/README.md` for trust-store provenance and regeneration.
 
@@ -172,7 +189,10 @@ Native observability persistence is disabled. A successful relay includes
 peek behavior, socket queue bounds, actual workerd binary-WebSocket handling,
 fixed-length streaming in the actual Worker runtime, strict target/redirect restrictions,
 segmented streaming and cancellation, login/origin/CSRF/session cookies, native
-rate-limit routing, GitHub authorization containment and SHA conflicts.
+rate-limit routing, GitHub authorization containment and SHA conflicts. Actual
+TLS handshakes additionally cover constrained intermediate CAs, unknown critical
+extensions, CA signing key usage, and permitted noncritical extensions. Homepage
+release wording is tested around the 0.1.9 feature boundary and on metadata failure.
 
 `npm run check` bundles the Worker and validates its binding configuration. An additional actual workerd runtime test validates Request
 options for GitHub and subscription requests; notably workerd rejects

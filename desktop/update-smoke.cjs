@@ -24,7 +24,7 @@ async function main() {
     assert.ok(versionParts, `Expected a stable version for update smoke; received ${currentVersion}`);
     const updateVersion = `${versionParts[1]}.${versionParts[2]}.${Number(versionParts[3]) + 1}`;
     const fixtureText = 'fixture data '.repeat(90000);
-    await application.evaluate(({ net, shell }, fixture) => {
+    await application.evaluate(({ net, shell, session }, fixture) => {
       const payload = new TextEncoder().encode(fixture.text);
       const hash = fixture.hash;
       const assetName = `Brclio-${fixture.version}-mac-${fixture.architecture}.dmg`;
@@ -33,11 +33,21 @@ async function main() {
         { name: assetName, size: payload.length, browser_download_url: prefix + assetName, digest: `sha256:${hash}` },
         { name: 'SHA256SUMS.txt', size: 100, browser_download_url: prefix + 'SHA256SUMS.txt' },
       ] };
-      globalThis.__updateSmoke = { corrupted: true, calls: [], opened: [] };
-      net.fetch = async url => {
+      globalThis.__updateSmoke = { corrupted: true, calls: [], routes: [], opened: [], gateMetadata: true, systemProxy: false };
+      const resolveProxy = async () => globalThis.__updateSmoke.systemProxy ? 'PROXY 127.0.0.1:7890; DIRECT' : 'DIRECT';
+      session.defaultSession.resolveProxy = resolveProxy;
+      const systemSession = session.fromPartition('brclio-update-system', { cache: false });
+      const directSession = session.fromPartition('brclio-update-direct', { cache: false });
+      systemSession.resolveProxy = resolveProxy;
+      const fetch = async requested => {
+        const endpoint = new URL(requested);
+        const url = endpoint.searchParams.get('url') || requested;
+        globalThis.__updateSmoke.routes.push(endpoint.pathname === '/api/update' ? 'builtin' : 'native');
         globalThis.__updateSmoke.calls.push(url);
         if (url.includes('/releases/latest')) {
-          await new Promise(resolve => setTimeout(resolve, 250));
+          if (globalThis.__updateSmoke.gateMetadata) await new Promise(resolve => {
+            globalThis.__updateSmoke.releaseMetadata = () => { globalThis.__updateSmoke.gateMetadata = false; resolve(); };
+          });
           return new Response(JSON.stringify(release));
         }
         if (url.endsWith('SHA256SUMS.txt')) return new Response(`${hash}  ${assetName}\n`);
@@ -50,16 +60,35 @@ async function main() {
         } });
         return new Response(stream);
       };
+      net.fetch = fetch;
+      systemSession.fetch = fetch;
+      directSession.fetch = fetch;
       shell.openPath = async filename => { globalThis.__updateSmoke.opened.push(filename); return ''; };
     }, { text: fixtureText, hash: crypto.createHash('sha256').update(fixtureText).digest('hex'), architecture: process.arch, version: updateVersion });
     await page.click('#about-button');
+    await expect(page.locator('#about-update-proxy')).toBeChecked();
+    await expect(page.locator('#about-update-proxy')).toBeEnabled();
+    await page.uncheck('#about-update-proxy');
+    await expect(page.locator('#about-update-proxy')).not.toBeChecked();
+    await expect(page.locator('#update-proxy')).not.toBeChecked();
+    assert.equal((await page.evaluate(() => window.brclio.getUpdateProxyState())).route, 'direct');
+    await page.check('#about-update-proxy');
+    await expect(page.locator('#about-update-proxy')).toBeEnabled();
+    assert.equal((await page.evaluate(() => window.brclio.getUpdateProxyState())).route, 'builtin');
+    await application.evaluate(() => { globalThis.__updateSmoke.systemProxy = true; });
+    assert.equal((await page.evaluate(() => window.brclio.getUpdateProxyState())).route, 'system');
+    await application.evaluate(() => { globalThis.__updateSmoke.systemProxy = false; });
     await page.click('#about-update');
     await expect(page.locator('#about-update')).toHaveText('正在检查…');
     await expect(page.locator('#about-update')).toBeDisabled();
+    await expect(page.locator('#about-update-proxy')).toBeDisabled();
     await expect(page.locator('#about-dialog')).toBeVisible();
     await expect(page.locator('#view-copy')).toBeVisible();
+    await expect.poll(() => application.evaluate(() => Boolean(globalThis.__updateSmoke.releaseMetadata))).toBe(true);
+    await application.evaluate(() => globalThis.__updateSmoke.releaseMetadata());
     await expect(page.locator('#about-update-status-title')).toHaveText(`v${updateVersion} 已经准备好。`);
     assert.equal(await application.evaluate(() => globalThis.__updateSmoke.calls.length), 1);
+    assert.deepEqual(await application.evaluate(() => globalThis.__updateSmoke.routes), ['builtin']);
     await page.click('#about-update');
     await expect(page.locator('#about-update-progress')).toBeVisible();
     await expect(page.locator('#about-update-status-title')).toHaveText('这次更新未完成，可以重试。');
@@ -88,7 +117,21 @@ async function main() {
     await page.click('[data-view="settings"]');
     await expect(page.locator('#update-status-title')).toHaveText('这次更新未完成，可以重试。');
     await expect(page.locator('#install-update')).toHaveText('重试安装');
-    console.log('PASS native update IPC/UI in the retained About dialog: metadata-only check, streamed progress, failed-hash cleanup, download-to-install continuation, safe preparation failure, cached installation retry and shared settings state. Real native replacement is tested separately.');
+    await expect(page.locator('#update-proxy')).toBeEnabled();
+    await page.uncheck('#update-proxy');
+    await expect(page.locator('#update-proxy')).not.toBeChecked();
+    assert.equal((await page.evaluate(() => window.brclio.getUpdateProxyState())).enabled, false);
+    assert.ok((await application.evaluate(() => globalThis.__updateSmoke.routes)).every(route => route === 'builtin'));
+    await application.close();
+    application = await electron.launch({ cwd: root, args: packagedExecutable ? [] : [root],
+      ...(packagedExecutable ? { executablePath: packagedExecutable } : {}),
+      env: { ...process.env, BRCLIO_USER_DATA: temporary } });
+    const restarted = await application.firstWindow();
+    await restarted.waitForFunction(() => document.body.dataset.ready === 'true');
+    assert.equal((await restarted.evaluate(() => window.brclio.getUpdateProxyState())).enabled, true);
+    await restarted.click('#about-button');
+    await expect(restarted.locator('#about-update-proxy')).toBeChecked();
+    console.log('PASS native update IPC/UI: built-in metadata/checksum/stream routing, system proxy precedence, shared session-only switches, busy locking, restart default, failed-hash cleanup, safe preparation failure and cached retry. Real native replacement is tested separately.');
   } finally {
     if (application) await application.close();
     await fs.rm(temporary, { recursive: true, force: true });
