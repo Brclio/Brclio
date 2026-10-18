@@ -76,7 +76,7 @@ const updateProxy = createUpdateProxy({ whenReady: () => app.whenReady(),
 });
 const updater = createUpdater({ currentVersion: app.getVersion(), directory: path.join(app.getPath('userData'), 'updates'),
   fetch: (url, options, context) => updateProxy.fetch(url, options, context),
-  onOperation: (_kind, active) => updateProxy.setBusy(active),
+  onOperation: (_kind, active, targets) => updateProxy.setBusy(active, targets),
   installPackage: descriptor => {
     if (!app.isPackaged || !installer) throw new Error('请使用安装版 Brclio 进行在线更新。');
     return installer.start(descriptor);
@@ -310,6 +310,6 @@ if (!gotLock) {
     } else createWindow();
   }).catch(error => { console.error(error); app.quit(); });
   app.on('activate', () => createWindow());
-  app.on('will-quit', () => shortcuts.dispose());
+  app.on('will-quit', () => { shortcuts.dispose(); void updateProxy.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

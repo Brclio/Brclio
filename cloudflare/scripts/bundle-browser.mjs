@@ -29,6 +29,8 @@ const manifest = {
   accountId: 'cacceff607775c81f667b7a951d4639f',
   displayName: 'Brclio客户端服务',
   publicOrigin: 'https://tools.brclio.com',
+  bootstrapOrigin: 'https://brclio-client-services.aiyuechuang.workers.dev',
+  bootstrapPaths: ['/api/client/update-proxy', '/api/health'],
   workersDev: false,
   routes: [{pattern: 'tools.brclio.com', customDomain: true}],
   generatedAt: new Date().toISOString(),
@@ -45,7 +47,7 @@ const manifest = {
     {name: 'LOGIN_LIMITER', namespaceId: '1001', limit: 8, period: 60},
     {name: 'LOGIN_GLOBAL_LIMITER', namespaceId: '1002', limit: 30, period: 60},
     {name: 'UPDATE_LIMITER', namespaceId: '1003', limit: 120, period: 60},
-    {name: 'UPDATE_CHUNK_LIMITER', namespaceId: '1004', limit: 1800, period: 60}
+    {name: 'CLIENT_CONFIG_LIMITER', namespaceId: '1005', limit: 30, period: 60}
   ]
 };
 await writeFile(new URL('manifest.json', output), JSON.stringify(manifest, null, 2) + '\n');

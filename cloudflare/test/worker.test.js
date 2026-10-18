@@ -28,7 +28,7 @@ test('admin login and mutations enforce origin, cookie, CSRF and stale-SHA confl
 test('public relay rejects arbitrary target before loading private config, sanitizes upstream failure',async()=>{
   let calls=0;
   const bad=await handle(request('/api/update?url='+encodeURIComponent('https://evil.example/any')) ,env,{getNodes:async()=>{calls++;}});assert.equal(bad.status,400);assert.equal(calls,0);
-  const result=await handle(request('/api/update?url='+encodeURIComponent('https://api.github.com/repos/Brclio/Brclio/releases/latest')),env,{getNodes:async()=>{throw new Error('secret-subscription-token');}});
+  const result=await handle(request('/api/update?url='+encodeURIComponent('https://api.github.com/repos/Brclio/Brclio/releases/latest')),env,{getOfficialRelease:async()=>{throw new Error('secret-subscription-token');}});
   assert.equal(result.status,502);assert.ok(!(await result.text()).includes('secret-subscription-token'));
 });
 test('deployed login limiter is used and returns Retry-After',async()=>{
@@ -64,37 +64,27 @@ test('public homepage is distinct from the protected administration shell',async
   const script=await handle(request('/home.js'),env);assert.equal(script.status,200);assert.match(script.headers.get('content-type'),/javascript/);assert.match(await script.text(),/\/api\/releases\/latest/);
   const missing=await handle(request('/unregistered-page'),env);assert.equal(missing.status,404);
 });
-test('public latest-release endpoint uses the subscribed relay and returns a validated limited schema',async()=>{
-  let target;const base='https://github.com/Brclio/Brclio';
-  const release={tag_name:'v0.1.8',draft:false,prerelease:false,published_at:'2026-10-17T00:00:00Z',html_url:base+'/releases/tag/v0.1.8',body:'unrecognized-private-field',assets:[{name:'SHA256SUMS.txt',size:100,browser_download_url:base+'/releases/download/v0.1.8/SHA256SUMS.txt'},{name:'Brclio-0.1.8-android.apk',size:4096,browser_download_url:base+'/releases/download/v0.1.8/Brclio-0.1.8-android.apk'}]};
-  const dependencies={getNodes:async()=>['subscribed-node'],relayUpdate:async(url,nodes)=>{target=url;assert.deepEqual(nodes,['subscribed-node']);return Response.json(release);}};
-  const response=await handle(request('/api/releases/latest'),env,dependencies);assert.equal(response.status,200);assert.equal(target,'https://api.github.com/repos/Brclio/Brclio/releases/latest');assert.equal(response.headers.get('x-brclio-route'),'subscription-vless');
-  const summary=await response.json();assert.equal(summary.version,'0.1.8');assert.equal(summary.assets[0].platform,'android');assert.ok(!JSON.stringify(summary).includes('unrecognized-private-field'));
-  release.prerelease=true;const invalid=await handle(request('/api/releases/latest'),env,dependencies);assert.equal(invalid.status,502);assert.ok(!(await invalid.text()).includes('unrecognized-private-field'));
+test('public release metadata uses only the fixed native HTTPS loader and never loads proxy nodes',async()=>{
+  let calls=0;const summary={version:'0.1.8',assets:[{platform:'android'}]};
+  const dependencies={getNodes:async()=>assert.fail('metadata must not load subscription'),getOfficialRelease:async()=>{calls++;return{summary,metadata:{tag_name:'v0.1.8'}};}};
+  const response=await handle(request('/api/releases/latest'),env,dependencies);assert.equal(response.status,200);assert.equal(response.headers.get('x-brclio-route'),'github-metadata');assert.deepEqual(await response.json(),summary);
+  const legacy=await handle(request('/api/update?url='+encodeURIComponent('https://api.github.com/repos/Brclio/Brclio/releases/latest')),env,dependencies);assert.equal(legacy.status,200);assert.deepEqual(await legacy.json(),{tag_name:'v0.1.8'});assert.equal(calls,2);
   const limited=await handle(request('/api/releases/latest'),{...env,UPDATE_LIMITER:{limit:async()=>({success:false})}},dependencies);assert.equal(limited.status,429);
-  const unavailable=await handle(request('/api/releases/latest'),env,{getNodes:async()=>{throw new Error('private-node-credential');}});assert.equal(unavailable.status,502);assert.ok(!(await unavailable.text()).includes('private-node-credential'));
+  const unavailable=await handle(request('/api/releases/latest'),env,{getOfficialRelease:async()=>{throw new Error('private-credential');}});assert.equal(unavailable.status,502);assert.ok(!(await unavailable.text()).includes('private-credential'));
 });
-test('slow setup consumes the existing overall metadata deadline instead of extending it',async t=>{
-  t.mock.timers.enable({apis:['Date'],now:Date.now()});
-  let remaining;
-  try{
-    const result=await handle(request('/api/update?url='+encodeURIComponent('https://api.github.com/repos/Brclio/Brclio/releases/latest')),env,{
-      getNodes:async()=>{t.mock.timers.tick(15000);return['node'];},
-      relayUpdate:async(_target,_nodes,options)=>{remaining=options.headerDeadlineMs;return Response.json({tag_name:'v0.1.8'});}
-    });
-    assert.equal(result.status,200);assert.equal(remaining,3000);
-  }finally{t.mock.timers.reset();}
-});
-test('single installer segments use a separate limiter and preserve range protocol',async()=>{
-  const target='https://github.com/Brclio/Brclio/releases/download/v0.1.9/Brclio-0.1.9-android.apk';let chunkLimits=0,legacyLimits=0,loads=0,called=0;
-  const bindings={...env,UPDATE_CHUNK_LIMITER:{limit:async()=>{chunkLimits++;return{success:true};}},UPDATE_LIMITER:{limit:async()=>{legacyLimits++;return{success:false};}}};
-  const dependencies={getNodes:async()=>{loads++;return['node'];},relayChunk:async(url,nodes,options)=>{called++;assert.equal(url,target);assert.deepEqual(nodes,['node']);assert.deepEqual(options.range,{start:1,end:2,ifRange:'"same"'});return new Response(new Uint8Array([1,2]),{status:206,headers:{'content-range':'bytes 1-2/3','content-length':'2',etag:'"same"'}});}};
-  const response=await handle(request('/api/update?url='+encodeURIComponent(target),{headers:{range:'bytes=1-2','if-range':'"same"'}}),bindings,dependencies);
-  assert.equal(response.status,206);assert.equal(called,1);assert.equal(chunkLimits,1);assert.equal(legacyLimits,0);
-  for(const [url,range]of[[target,'bytes=0-131072'],[target,'bytes=0-1,3-4'],[target.replace(/Brclio-0\.1\.9-android.apk$/,'SHA256SUMS.txt'),'bytes=0-1'],['https://api.github.com/repos/Brclio/Brclio/releases/latest','bytes=0-1']]){
-    const invalid=await handle(request('/api/update?url='+encodeURIComponent(url),{headers:{range}}),bindings,dependencies);assert.equal(invalid.status,416);
+test('every legacy installer and checksum request returns410 before private config or transfer',async()=>{
+  const base='https://github.com/Brclio/Brclio/releases/download/v0.1.9/';let loads=0;
+  const dependencies={getNodes:async()=>{loads++;assert.fail('must not load nodes');},relayChunk:async()=>assert.fail('must not transfer installer'),relayUpdate:async()=>assert.fail('must not relay'),getOfficialRelease:async()=>assert.fail('must not read metadata')};
+  for(const filename of ['Brclio-0.1.9-android.apk','Brclio-0.1.9-windows-x64.exe','SHA256SUMS.txt','unknown.bin'])for(const headers of [{},{range:'bytes=0-131071'},{range:'bytes=0-1,4-5'}]){
+    const response=await handle(request('/api/update?url='+encodeURIComponent(base+filename),{headers}),env,dependencies);assert.equal(response.status,410);assert.equal((await response.json()).code,'client_upgrade_required');
   }
-  assert.equal(loads,1);assert.equal(called,1);
-  const noRange=await handle(request('/api/update?url='+encodeURIComponent(target)),{...env,UPDATE_LIMITER:{limit:async()=>({success:true})}},dependencies);assert.equal(noRange.status,416);assert.equal(loads,1);assert.equal(called,1);assert.match((await noRange.json()).error,/128 KiB/);
-  const limited=await handle(request('/api/update?url='+encodeURIComponent(target),{headers:{range:'bytes=0-0'}}),{...env,UPDATE_CHUNK_LIMITER:{limit:async()=>({success:false})}},dependencies);assert.equal(limited.status,429);assert.equal(limited.headers.get('retry-after'),'60');
+  const metadataRange=await handle(request('/api/update?url='+encodeURIComponent('https://api.github.com/repos/Brclio/Brclio/releases/latest'),{headers:{range:'bytes=0-1'}}),env,dependencies);assert.equal(metadataRange.status,416);assert.equal(loads,0);
+});
+test('workers.dev bootstrap alias serves only GET configuration and health',async()=>{
+  const alias='https://brclio-client-services.aiyuechuang.workers.dev',nodes=[{uuid:'00112233-4455-6677-8899-aabbccddeeff',host:'vpn.example.com',port:443,path:'/tunnel',dialAddress:'104.17.1.1'}];let calls=0;
+  const dependencies={getNodes:async()=>{calls++;return nodes;}};
+  assert.equal((await handle(new Request(alias+'/api/health'),env,dependencies)).status,200);
+  const configuration=await handle(new Request(alias+'/api/client/update-proxy'),env,dependencies);assert.equal(configuration.status,200);assert.equal((await configuration.json()).nodes.length,1);
+  for(const path of ['/','/admin','/admin.js','/home.js','/api/admin/login','/api/admin/config','/api/releases/latest','/api/update'])assert.equal((await handle(new Request(alias+path),env,dependencies)).status,404);
+  assert.equal((await handle(new Request(alias+'/api/client/update-proxy',{method:'POST'}),env,dependencies)).status,404);assert.equal(calls,1);
 });

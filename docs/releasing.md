@@ -101,8 +101,12 @@ v0.1.8 本地 macOS 候选客户端已在用户允许 Finder 自动化后，由�
 
 网络验收分别覆盖系统代理优先、无系统代理时的内置代理、临时关闭、完全退出后恢复开启，以及操作期间禁用开关。真实 Electron 与 Android 进程的状态、单元模拟和代理服务下载是独立证据。TLS 校验错误、错误主机名、不受信 CA、过期或不支持的证书约束必须拒绝，不能因代理联通而放宽证书验证。
 
-内置代理安装包必须按客户端实际使用的 128 KiB Range 协议验收，包含完整大包的 SHA-256、范围错位、截断、ETag 变化、`200` 回退及取消后的清理。还须检查生产 CPU 用量，不能依赖免费 Workers 偶发允许超额的余量。一次 Worker 调用循环代理完整大包的成功模拟不能替代该项；生产曾出现 `ExceededCpu`，日志与客户端传输证据须分别记录。官网主下载链接应指向已验证的官方安装包，不使用旧的整包代理链路。
+内置代理在客户端运行，只有检查与下载更新时才刷新配置并测延。系统代理优先；无系统代理且开关开启时，对全部候选节点做有界并行的真实 HTTPS 探测，选择成功节点中最低延迟者。节点的原始拨号 IP 与用于 TLS 证书、SNI、Host 的 DNS 名称分别验证，不能因使用优选 IP 而关闭证书或主机名校验。每次下载操作固定一条线路，覆盖校验清单、官方跳转和完整安装包；结束与取消后关闭本地监听器和连接。
 
-发布工作流的 `Verify production segmented downloads` 会经正式域名读取上一公开版本，完整验证普通与大体积安装包的分段下载和 SHA-256；公开步骤依赖该任务成功。它验证生产网络，客户端原生下载及最终发布资产另行验收。
+安装包与 SHA256SUMS.txt 只发布在 GitHub Releases，官网也直链到这些官方文件。Cloudflare 保持免费、单一 Worker，仅提供主页、管理后台、版本摘要与按需配置；旧安装包和清单中转接口返回 410，不能建立代理传输或存储文件。同一 Worker 的备用域名仅开放配置和健康接口，主页与管理入口继续使用 tools.brclio.com。
+
+发布工作流的生产下载门禁从已公开的上一版本读取 GitHub 元数据，分别在检查与下载开始前刷新生产配置并测延，通过客户端共用的本地 CONNECT/VLESS WSS 桥及 Node 原生 TLS，完整下载普通与大体积 GitHub 安装包并核对大小、SHA 和清单；公开步骤依赖该任务成功。此门禁不将任何安装包字节传入 Cloudflare。三种桌面构建另运行真实 Electron 的离线双 TLS 下载、节点选择与取消检查；Android 单测、模拟器和最终签名 APK 的升级验证分别记录。
+
+历史的 Worker 分段与 CPU 失败证据保留作诊断记录，不能用来描述新版客户端的连续下载协议。正式网络验证、最终公开资产校验、覆盖安装及重新启动仍是独立验收阶段。
 
 参考：[Apple FinderSync](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/Finder.html)、[Apple 扩展签名、启用与分发](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/ExtensionCreation.html)、[electron-builder 26 macOS 签名](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/)、[electron-builder 26 公证环境变量](https://www.electron.build/v26/docs/mac/#notarize)、[Apple 代码签名与 Gatekeeper 检查](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html)、[GitHub runner 架构与标签](https://github.com/actions/runner-images/blob/main/README.md)、[Android SDK setup v3](https://github.com/android-actions/setup-android/tree/v3)、[Actions artifact 合并下载](https://github.com/actions/upload-artifact/blob/main/docs/MIGRATION.md)、[GitHub CLI release create](https://cli.github.com/manual/gh_release_create)、[Playwright CI](https://playwright.dev/docs/ci-intro)。

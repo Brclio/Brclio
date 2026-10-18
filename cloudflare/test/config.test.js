@@ -16,7 +16,7 @@ test('optimistic SHA conflict does not overwrite newer private config or fetch s
 test('saved config contains subscription only, checks compatible nodes, writes exact current SHA',async()=>{
   clearConfigCache();let put;
   const result=await writeConfig(env,{subscriptionUrl:'https://subscription.example/new',sha:'old'},async(url,init)=>{
-    if(String(url).includes('subscription.example')){assert.equal(init.headers['User-Agent'],'clash.meta');assert.equal(init.headers.Authorization,undefined);return new Response(subscription);}
+    if(String(url).includes('subscription.example')){assert.equal(init.headers['User-Agent'],'clash.meta');assert.equal(init.headers['Cache-Control'],'no-cache, no-store');assert.equal(init.headers.Pragma,'no-cache');assert.equal(init.headers.Authorization,undefined);return new Response(subscription);}
     if(init.method==='PUT'){put=JSON.parse(init.body);return Response.json({content:{sha:'new-sha'}});}
     return Response.json(file('old','https://subscription.example/old'));
   });
@@ -50,4 +50,10 @@ test('successful administrator save clears even a fresh same-URL node cache',asy
   await getNodes(env,fetchImpl);assert.equal(subscriptions,1);
   const result=await writeConfig(env,{subscriptionUrl:url,sha:'before'},fetchImpl);assert.equal(result.sha,'after');assert.equal(subscriptions,2);
   await getNodes(env,fetchImpl);assert.equal(subscriptions,3);clearConfigCache();
+});
+test('native operation refresh bypasses both the private-file and subscription caches',async()=>{
+  clearConfigCache();let privateReads=0,subscriptions=0;
+  const fetchImpl=async target=>{if(String(target).includes('subscription.example')){subscriptions++;return new Response(subscription);}privateReads++;return Response.json(file('sha',env.PROXY_SUBSCRIPTION_URL));};
+  const first=await getNodes(env,fetchImpl);assert.equal(await getNodes(env,fetchImpl),first);
+  const refreshed=await getNodes(env,fetchImpl,{fresh:true});assert.notEqual(refreshed,first);assert.equal(privateReads,2);assert.equal(subscriptions,2);clearConfigCache();
 });

@@ -103,30 +103,26 @@ async function main() {
       const directSession = session.fromPartition('brclio-update-direct', { cache: false });
       systemSession.resolveProxy = resolveProxy;
       const fetch = async (requested, init = {}) => {
-        const url = new URL(requested).searchParams.get('url') || requested;
+        const url = requested;
+        if (new URL(url).pathname === '/api/client/update-proxy') return new Response(JSON.stringify({version:1,ttlSeconds:600,nodes:[{uuid:'12345678-1234-1234-1234-123456789abc',host:'relay.example.com',dialAddress:'1.1.1.1',port:443,path:'/tunnel',servername:'relay.example.com',wsHost:'relay.example.com'}]}));
+        if (init.method === 'HEAD') return new Response(null,{status:200});
         globalThis.__macInstallSmokeRequests.push(url);
         if (url === 'https://api.github.com/repos/Brclio/Brclio/releases/latest') return new Response(JSON.stringify(release));
         if (url === prefix + 'SHA256SUMS.txt') return new Response(`${fixture.expected}  ${assetName}\n`);
         if (url === prefix + assetName) {
           // Electron's real net stack supports file: URLs; no Node require is
           // available inside Playwright's main-process evaluation context.
-          const range = new Headers(init.headers).get('range');
-          const source = await originalFetch(fixture.fileURL, range ? { headers: { Range: range } } : {});
+          const source = await originalFetch(fixture.fileURL);
           if (!source.ok) throw new Error('Cannot stream the real local DMG.');
-          if (!range) return new Response(source.body);
-          const match = /^bytes=(\d+)-(\d+)$/.exec(range);
-          if (!match) throw new Error('Unexpected fixture range.');
-          const start = Number(match[1]), end = Number(match[2]);
-          // Electron file: applies Range to the body but reports HTTP200 with
-          // no range headers. Supply the service's verified range contract.
-          return new Response(source.body, { status: 206, headers: { 'content-range': `bytes ${start}-${end}/${fixture.size}`,
-            'content-length': String(end - start + 1), etag: `"${fixture.expected}"` } });
+          return new Response(source.body);
         }
         throw new Error('Unexpected update request: ' + url);
       };
       net.fetch = fetch;
       systemSession.fetch = fetch;
       directSession.fetch = fetch;
+      const originalPartition = session.fromPartition.bind(session);
+      session.fromPartition = (name, options) => { const partition = originalPartition(name, options); if (name.startsWith('brclio-update-builtin-')) partition.fetch = fetch; return partition; };
     }, { version: targetVersion, architecture, fileURL: pathToFileURL(dmg).href, size, expected });
     await page.click('[data-view="settings"]');
     await page.click('#check-update');

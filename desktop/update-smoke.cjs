@@ -6,7 +6,6 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { _electron: electron, expect } = require('@playwright/test');
-const { CHUNK_BYTES } = require('./update-proxy.cjs');
 
 async function main() {
   const root = path.join(__dirname, '..');
@@ -34,16 +33,17 @@ async function main() {
         { name: assetName, size: payload.length, browser_download_url: prefix + assetName, digest: `sha256:${hash}` },
         { name: 'SHA256SUMS.txt', size: 100, browser_download_url: prefix + 'SHA256SUMS.txt' },
       ] };
-      globalThis.__updateSmoke = { corrupted: true, injected503: false, calls: [], routes: [], ranges: [], opened: [], gateMetadata: true, systemProxy: false };
+      globalThis.__updateSmoke = { corrupted: true, calls: [], routes: [], ranges: [], opened: [], gateMetadata: true, systemProxy: false };
       const resolveProxy = async () => globalThis.__updateSmoke.systemProxy ? 'PROXY 127.0.0.1:7890; DIRECT' : 'DIRECT';
       session.defaultSession.resolveProxy = resolveProxy;
       const systemSession = session.fromPartition('brclio-update-system', { cache: false });
       const directSession = session.fromPartition('brclio-update-direct', { cache: false });
       systemSession.resolveProxy = resolveProxy;
       const fetch = async (requested, init = {}) => {
-        const endpoint = new URL(requested);
-        const url = endpoint.searchParams.get('url') || requested;
-        globalThis.__updateSmoke.routes.push(endpoint.pathname === '/api/update' ? 'builtin' : 'native');
+        const url = requested;
+        if (new URL(url).pathname === '/api/client/update-proxy') return new Response(JSON.stringify({version:1,ttlSeconds:600,nodes:[{uuid:'12345678-1234-1234-1234-123456789abc',host:'relay.example.com',dialAddress:'1.1.1.1',port:443,path:'/tunnel',servername:'relay.example.com',wsHost:'relay.example.com'}]}));
+        if (init.method === 'HEAD') return new Response(null, {status:200});
+        globalThis.__updateSmoke.routes.push(globalThis.__updateSmoke.systemProxy ? 'native' : 'builtin');
         globalThis.__updateSmoke.calls.push(url);
         const range = new Headers(init.headers).get('range');
         globalThis.__updateSmoke.ranges.push(range);
@@ -55,25 +55,22 @@ async function main() {
         }
         if (url.endsWith('SHA256SUMS.txt')) return new Response(`${hash}  ${assetName}\n`);
         const body = globalThis.__updateSmoke.corrupted ? new Uint8Array(payload.length).fill(120) : payload;
-        const match = range && /^bytes=(\d+)-(\d+)$/.exec(range);
-        const start = match ? Number(match[1]) : 0, end = match ? Number(match[2]) : body.length - 1;
-        if (match && start === fixture.chunkBytes && !globalThis.__updateSmoke.corrupted && !globalThis.__updateSmoke.injected503) {
-          globalThis.__updateSmoke.injected503 = true;
-          return new Response('Temporary platform unavailability', { status: 503 });
-        }
+        const start = 0, end = body.length - 1;
         let offset = start;
         const stream = new ReadableStream({ async pull(controller) {
           await new Promise(resolve => setTimeout(resolve, 30));
           if (offset > end) { controller.close(); return; }
           controller.enqueue(body.subarray(offset, Math.min(end + 1, offset + 64 * 1024))); offset += 64 * 1024;
         } });
-        return new Response(stream, match ? { status: 206, headers: { 'content-range': `bytes ${start}-${end}/${body.length}`, 'content-length': String(end - start + 1), etag: '"fixture"' } } : {});
+        return new Response(stream, {headers:{'content-length':String(body.length)}});
       };
       net.fetch = fetch;
       systemSession.fetch = fetch;
       directSession.fetch = fetch;
+      const originalPartition = session.fromPartition.bind(session);
+      session.fromPartition = (name, options) => { const partition = originalPartition(name, options); if (name.startsWith('brclio-update-builtin-')) partition.fetch = fetch; return partition; };
       shell.openPath = async filename => { globalThis.__updateSmoke.opened.push(filename); return ''; };
-    }, { text: fixtureText, hash: crypto.createHash('sha256').update(fixtureText).digest('hex'), architecture: process.arch, version: updateVersion, chunkBytes: CHUNK_BYTES });
+    }, { text: fixtureText, hash: crypto.createHash('sha256').update(fixtureText).digest('hex'), architecture: process.arch, version: updateVersion });
     await page.click('#about-button');
     await expect(page.locator('#about-update-proxy')).toBeChecked();
     await expect(page.locator('#about-update-proxy')).toBeEnabled();
@@ -131,12 +128,7 @@ async function main() {
     await expect(page.locator('#update-proxy')).not.toBeChecked();
     assert.equal((await page.evaluate(() => window.brclio.getUpdateProxyState())).enabled, false);
     assert.ok((await application.evaluate(() => globalThis.__updateSmoke.routes)).every(route => route === 'builtin'));
-    const ranges = await application.evaluate(() => globalThis.__updateSmoke.ranges.filter(Boolean));
-    const fixtureBytes = Buffer.byteLength(fixtureText);
-    const expectedRanges = Array.from({ length: Math.ceil(fixtureBytes / CHUNK_BYTES) }, (_, index) =>
-      `bytes=${index * CHUNK_BYTES}-${Math.min(fixtureBytes - 1, (index + 1) * CHUNK_BYTES - 1)}`);
-    assert.deepEqual(ranges, [...expectedRanges, ...expectedRanges.slice(0, 2), expectedRanges[1], ...expectedRanges.slice(2)]);
-    assert.equal(await application.evaluate(() => globalThis.__updateSmoke.injected503), true);
+    assert.deepEqual(await application.evaluate(() => globalThis.__updateSmoke.ranges.filter(Boolean)), []);
     await application.close();
     application = await electron.launch({ cwd: root, args: packagedExecutable ? [] : [root],
       ...(packagedExecutable ? { executablePath: packagedExecutable } : {}),
@@ -146,7 +138,7 @@ async function main() {
     assert.equal((await restarted.evaluate(() => window.brclio.getUpdateProxyState())).enabled, true);
     await restarted.click('#about-button');
     await expect(restarted.locator('#about-update-proxy')).toBeChecked();
-    console.log('PASS native update IPC/UI: built-in metadata/checksum and validated 128KiB segments with one bounded 503 recovery, system proxy precedence, shared session-only switches, busy locking, restart default, failed-hash cleanup, safe preparation failure and cached retry. Real native replacement is tested separately.');
+    console.log('PASS native update IPC/UI: fresh built-in config/probes and continuous official metadata/checksum/installer requests, system proxy precedence, shared session-only switches, busy locking, restart default, failed-hash cleanup, safe preparation failure and cached retry. Real native replacement is tested separately.');
   } finally {
     if (application) await application.close();
     await fs.rm(temporary, { recursive: true, force: true });

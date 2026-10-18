@@ -15,9 +15,12 @@ test('asset redirects are only accepted from official GitHub to signed asset sto
   for(const host of ['https://evil.example/a','https://github.com/attacker/app/releases/download/v1/a.exe','https://release-assets.githubusercontent.com/arbitrary'])assert.throws(()=>redirectTarget(host,previous));
   assert.throws(()=>redirectTarget('https://release-assets.githubusercontent.com/github-production-release-asset/1/id','https://api.github.com/repos/Brclio/Brclio/releases/latest'));
 });
-test('subscription preserves VLESS data, deduplicates route IP hints, and rejects incompatible transport',()=>{
+test('subscription preserves distinct public dial IP routes and rejects incompatible transport',()=>{
   const nodes=parseSubscription(JSON.stringify({proxies:[node,{...node,server:'104.17.2.2'},{...node,port:2087},{...node,type:'trojan'},{...node,tls:false},{...node,flow:'xtls-rprx-vision'}]}));
-  assert.deepEqual(nodes,[{uuid,host:'vpn.example.com',port:443,path:'/tunnel?ed=2048'},{uuid,host:'vpn.example.com',port:2087,path:'/tunnel?ed=2048'}]);
+  assert.deepEqual(nodes,[{uuid,host:'vpn.example.com',port:443,path:'/tunnel?ed=2048',dialAddress:'104.17.1.1'},{uuid,host:'vpn.example.com',port:443,path:'/tunnel?ed=2048',dialAddress:'104.17.2.2'},{uuid,host:'vpn.example.com',port:2087,path:'/tunnel?ed=2048',dialAddress:'104.17.1.1'}]);
+  assert.equal(parseSubscription(JSON.stringify({proxies:Array.from({length:16},(_,i)=>({...node,server:`104.17.1.${i+1}`}))})).length,16);
+  assert.equal(parseSubscription(JSON.stringify({proxies:[node,node]})).length,1);
+  assert.throws(()=>parseSubscription(JSON.stringify({proxies:[{...node,server:'127.0.0.1'}]})));
   assert.throws(()=>parseSubscription(JSON.stringify({proxies:[{...node,servername:'other.example.com'}]})));
   assert.throws(()=>parseSubscription('x'.repeat(1024*1024+1)));
   assert.throws(()=>parseSubscription('proxies: []'));

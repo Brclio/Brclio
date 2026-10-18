@@ -36,6 +36,53 @@ export function redirectTarget(value, previous) {
   throw new Error('下载重定向异常');
 }
 
+const proxyPorts = new Set([443, 2053, 2083, 2087, 2096, 8443]);
+const insecureFlags = ['skip-cert-verify', 'skipCertVerify', 'insecure', 'allowInsecure', 'allow-insecure', 'tls-insecure'];
+function requestsInsecureTLS(value) {
+  return insecureFlags.some(key => value[key] !== undefined && value[key] !== false) ||
+    value.rejectUnauthorized === false || value['tls-opts']?.verify === false || value['tls-opts']?.['skip-cert-verify'] === true;
+}
+
+export function validatePublicDNS(host) {
+  if (typeof host !== 'string' || host.length > 253 || host !== host.toLowerCase() || !host.includes('.') ||
+      !/\.[a-z]{2,63}$/.test(host) || /(?:^|\.)(?:local|localhost|internal|invalid|test|example|onion|lan|home)$/.test(host) ||
+      /(?:^|\.)home\.arpa$/.test(host) ||
+      !host.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) throw new Error('invalid_node');
+  return host;
+}
+
+export function validateDialAddress(address) {
+  if (typeof address !== 'string') throw new Error('invalid_node');
+  if (/^[0-9.]+$/.test(address)) {
+    const fields = address.split('.');
+    if (fields.length !== 4 || fields.some(field => !/^(?:0|[1-9][0-9]{0,2})$/.test(field) || Number(field) > 255)) throw new Error('invalid_node');
+    const [a,b,c] = fields.map(Number);
+    if (a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) ||
+        (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+        (a === 192 && ((b === 0 && (c === 0 || c === 2)) || (b === 88 && c === 99) || b === 168)) ||
+        (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
+        (a === 203 && b === 0 && c === 113)) throw new Error('invalid_node');
+    return address;
+  }
+  return validatePublicDNS(address);
+}
+
+// TLS certificate/SNI and HTTP Host use one DNS name; the separately validated
+// dial address preserves each subscription's preferred public connection path.
+// Never translate a subscription's insecure flag into a native-client option.
+export function validateProxyNode(value) {
+  if (!value || requestsInsecureTLS(value) || typeof value.uuid !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.uuid)) throw new Error('invalid_node');
+  const {host, port, path} = value;
+  validatePublicDNS(host);
+  const dialAddress = validateDialAddress(value.dialAddress);
+  if (!proxyPorts.has(port)) throw new Error('invalid_node');
+  if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//') || encoder.encode(path).length > 2048 ||
+      /[^\x21-\x7e]|[#\\]/.test(path) || /%(?![0-9a-f]{2})/i.test(path)) throw new Error('invalid_node');
+  for (const key of ['servername', 'wsHost']) if (value[key] !== undefined && value[key] !== host) throw new Error('invalid_node');
+  return {uuid: value.uuid.toLowerCase(), host, port, path, dialAddress};
+}
+
 export function parseSubscription(text) {
   if (encoder.encode(text).length > 1024 * 1024) throw new Error('订阅文件过大');
   let proxies;
@@ -43,25 +90,26 @@ export function parseSubscription(text) {
     const raw = text.trim().startsWith('vless://') ? text : atob(text.trim());
     proxies = raw.split(/\r?\n/).filter(s => s.startsWith('vless://')).map(s => {
       const u = new URL(s), q = u.searchParams;
-      return { type: 'vless', server: u.hostname, port: Number(u.port || 443), uuid: u.username, tls: q.get('security') === 'tls', network: q.get('type'), servername: q.get('sni'), flow: q.get('flow'), 'ws-opts': {path: q.get('path') || '/', headers: {Host: q.get('host') || q.get('sni') || u.hostname}} };
+      const insecure = insecureFlags.some(key => q.has(key) && !['0', 'false'].includes(q.get(key).toLowerCase()));
+      return { type: 'vless', server: u.hostname, port: Number(u.port || 443), uuid: u.username, tls: q.get('security') === 'tls', network: q.get('type'), servername: q.get('sni'), flow: q.get('flow'), insecure, 'ws-opts': {path: q.get('path') || '/', headers: {Host: q.get('host') || q.get('sni') || u.hostname}} };
     });
   } else {
     proxies = parse(text, {maxAliasCount: 0})?.proxies;
   }
   const nodes = [];
   const seen = new Set();
+  if (Array.isArray(proxies) && proxies.length > 128) throw new Error('订阅节点数量超过支持上限');
   for (const p of (Array.isArray(proxies) ? proxies : []).slice(0, 128)) {
-    if (p.type !== 'vless' || p.tls !== true || p.network !== 'ws' || p.flow || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.uuid || '')) continue;
+    if (!p || p.type !== 'vless' || p.tls !== true || p.network !== 'ws' || p.flow || requestsInsecureTLS(p)) continue;
     const host = p['ws-opts']?.headers?.Host || p.servername || p.server;
     const sni = p.servername || host;
-    // The Workers WebSocket API authenticates the URL hostname. Never disable TLS verification,
-    // and never dial an IP with an unrelated certificate or pretend Host changes TLS SNI.
-    if (host !== sni || !/^[a-z0-9.-]+$/i.test(host) || !host.includes('.')) continue;
+    // Native clients may dial a preferred public IP while authenticating this DNS name.
+    // A different HTTP Host/SNI or disabled certificate validation is unsupported.
+    if (host !== sni) continue;
     const port = Number(p.port || 443);
-    if (![443, 2053, 2083, 2087, 2096, 8443].includes(port)) continue;
     const path = p['ws-opts']?.path || '/';
-    if (typeof path !== 'string' || !path.startsWith('/') || /[\r\n]/.test(path)) continue;
-    const node = {uuid: p.uuid, host, port, path};
+    let node;
+    try { node = validateProxyNode({uuid: p.uuid, host, port, path, dialAddress: p.server || host}); } catch { continue; }
     const key = JSON.stringify(node);
     if (!seen.has(key)) { seen.add(key); nodes.push(node); }
   }

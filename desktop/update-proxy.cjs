@@ -1,14 +1,17 @@
 'use strict';
 
 const { API_URL, requestBlockMessage } = require('./updater.cjs');
+const { createConnectBridge, parseProxyConfiguration } = require('./update-connect-bridge.cjs');
 
 const SERVICE_ORIGIN = 'https://tools.brclio.com';
+const PROBE_URL = 'https://github.com/robots.txt';
+const CONFIG_URL = `${SERVICE_ORIGIN}/api/client/update-proxy`;
+const CONFIG_FALLBACK_URL = 'https://brclio-client-services.aiyuechuang.workers.dev/api/client/update-proxy';
+const BUILTIN_PARTITION = 'brclio-update-builtin';
 const SYSTEM_PARTITION = 'brclio-update-system';
 const DIRECT_PARTITION = 'brclio-update-direct';
 const OFFICIAL_HOSTS = new Set(['github.com', 'api.github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com']);
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
-const CHUNK_BYTES = 128 * 1024;
-const MAX_INSTALLER_BYTES = 1536 * 1024 * 1024;
 
 function routingError(message) { const error = new Error(message); error.code = 'BRCLIO_UPDATE_ROUTE'; return error; }
 
@@ -32,19 +35,21 @@ function usesProxy(value) {
   throw routingError('无法读取当前系统代理设置，请稍后重试。');
 }
 
-// Electron's fetch Response.url is not reliable. Expose the validated target we
-// actually requested while retaining the native response's streaming body.
-function responseAt(response, url, route, signal) {
+// Keep only the validated official URL while retaining native TLS/body handling.
+function responseAt(response, url, route, signal, finish = async () => {}) {
   const reader = response.body?.getReader();
+  let finished = false;
+  const done = async () => { if (!finished) { finished = true; await finish(); } };
   const body = reader ? new ReadableStream({
     async pull(controller) {
       try {
-        const { done, value } = await reader.read();
-        if (done) controller.close(); else controller.enqueue(value);
-      } catch { controller.error(connectionError(route, signal)); }
+        const item = await reader.read();
+        if (item.done) { await done(); controller.close(); } else controller.enqueue(item.value);
+      } catch { await done(); controller.error(connectionError(route, signal)); }
     },
-    cancel(reason) { return reader.cancel(reason); },
-  }) : null;
+    async cancel(reason) { try { await reader.cancel(reason); } finally { await done(); } },
+  }, { highWaterMark: 0 }) : null;
+  if (!body) void done();
   const result = new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
   Object.defineProperty(result, 'url', { value: url });
   return result;
@@ -52,6 +57,10 @@ function responseAt(response, url, route, signal) {
 
 async function cancel(response) {
   try { await response.body?.cancel(); } catch { /* Preserve the validation error. */ }
+}
+
+async function closeSession(value) {
+  try { await value?.closeAllConnections?.(); } catch { /* Cleanup never exposes native transport errors. */ }
 }
 
 function connectionError(route, signal) {
@@ -74,22 +83,29 @@ function abortable(promise, signal) {
   });
 }
 
-function recoveryDelay(signal) {
-  return new Promise((resolve, reject) => {
-    const abort = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(connectionError('builtin', signal)); };
-    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, 400);
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) abort();
-  });
+async function configurationBody(response) {
+  const reader = response.body?.getReader();
+  if (!reader) throw routingError('内置更新代理配置无效，请稍后重试。');
+  const chunks = []; let size = 0;
+  try {
+    while (true) {
+      const item = await reader.read(); if (item.done) break;
+      size += item.value.length;
+      if (size > 32768) throw routingError('内置更新代理配置无效，请稍后重试。');
+      chunks.push(item.value);
+    }
+    const bytes = new Uint8Array(size); let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } finally { await reader.cancel().catch(() => {}); }
 }
 
 function createUpdateProxy(options) {
-  let enabled = true;
-  let busy = false;
-  let route = 'builtin';
-  let error = null;
-  let sessionsPromise;
+  let enabled = true, busy = false, route = 'builtin', error = null;
+  let sessionsPromise, operation;
+  const scopes = new Set();
   const publish = options.onState || (() => {});
+  const bridgeFactory = options.createBridge || createConnectBridge;
   function snapshot() { return { enabled, supported: true, route, busy, error }; }
   function change(next) {
     if ('enabled' in next) enabled = next.enabled;
@@ -97,193 +113,167 @@ function createUpdateProxy(options) {
     if ('error' in next) error = next.error;
     const state = snapshot(); publish(state); return state;
   }
-
   function sessions() {
-    if (!sessionsPromise) {
-      sessionsPromise = (async () => {
-        await options.whenReady();
-        const system = options.fromPartition(SYSTEM_PARTITION, { cache: false });
-        const direct = options.fromPartition(DIRECT_PARTITION, { cache: false });
-        await Promise.all([system.setProxy({ mode: 'system' }), direct.setProxy({ mode: 'direct' })]);
-        return { system, direct, native: options.defaultSession() };
-      })().catch(failure => { sessionsPromise = null; throw failure; });
-    }
+    if (!sessionsPromise) sessionsPromise = (async () => {
+      await options.whenReady();
+      const system = options.fromPartition(SYSTEM_PARTITION, { cache: false });
+      const direct = options.fromPartition(DIRECT_PARTITION, { cache: false });
+      await Promise.all([system.setProxy({ mode: 'system' }), direct.setProxy({ mode: 'direct' })]);
+      return { system, direct, native: options.defaultSession() };
+    })().catch(failure => { sessionsPromise = null; throw failure; });
     return sessionsPromise;
   }
-
-  async function select(url, signal) {
+  async function select(targets, signal) {
     const available = await abortable(sessions(), signal);
-    const [nativeProxy, systemProxy] = await abortable(Promise.all([available.native.resolveProxy(url), available.system.resolveProxy(url)]), signal);
-    if (usesProxy(nativeProxy)) return { route: 'system', fetch: options.netFetch };
-    if (usesProxy(systemProxy)) return { route: 'system', fetch: (target, init) => available.system.fetch(target, init) };
-    return enabled ? { route: 'builtin', fetch: (target, init) => available.direct.fetch(target, init) }
-      : { route: 'direct', fetch: options.netFetch };
+    const resolutions = await abortable(Promise.all(targets.map(async url => ({
+      native: usesProxy(await available.native.resolveProxy(url)), system: usesProxy(await available.system.resolveProxy(url)),
+    }))), signal);
+    if (resolutions.some(value => value.native)) return { route: 'system', fetch: options.netFetch };
+    if (resolutions.some(value => value.system)) return { route: 'system', fetch: (url, init) => available.system.fetch(url, init) };
+    return enabled ? { route: 'builtin', available } : { route: 'direct', fetch: options.netFetch };
   }
-
   async function state() {
     if (busy) return snapshot();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
-    try { const selected = await select(API_URL, controller.signal); return change({ route: selected.route, error: null }); }
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 5000);
+    try { return change({ route: (await select([API_URL], controller.signal)).route, error: null }); }
     catch { return change({ error: '无法读取当前系统代理设置，请稍后重试。' }); }
     finally { clearTimeout(timer); }
   }
-
   async function setEnabled(value) {
     if (typeof value !== 'boolean') throw new TypeError('内置代理开关必须为开启或关闭。');
     if (busy) throw new Error('正在检查或下载更新，请完成后再切换内置代理。');
     change({ enabled: value, route: value ? 'builtin' : 'direct', error: null });
     return state();
   }
-
-  function setBusy(value) { busy = value === true; publish(snapshot()); }
-
-  async function builtinRequest(selected, target, init, recoverUnavailable = false) {
-    const endpoint = new URL('/api/update', SERVICE_ORIGIN);
-    endpoint.searchParams.set('url', target);
-    for (let attempt = 0; ; attempt++) {
-      if (init.signal?.aborted) throw connectionError('builtin', init.signal);
-      const response = await selected.fetch(endpoint.href, { ...init, redirect: 'manual', credentials: 'omit' });
-      if (REDIRECTS.has(response.status) || response.redirected || (response.url && response.url !== endpoint.href)) {
-        await cancel(response);
-        throw routingError('内置更新代理返回异常重定向，已停止。');
+  function dispose(scope) {
+    if (!scope) return Promise.resolve();
+    if (scope.disposing) return scope.disposing;
+    scope.closed = true;
+    scope.probeStop?.();
+    scope.disposing = (async () => {
+      await scope.initializing?.catch(() => {});
+      await Promise.all([
+        closeSession(scope.builtin),
+        Promise.resolve(scope.bridge?.close()).catch(() => {}),
+      ]);
+      scopes.delete(scope);
+    })();
+    return scope.disposing;
+  }
+  function setBusy(value, targets = []) {
+    busy = value === true;
+    if (busy) operation = { targets: targets.map(url => officialURL(url, true)) };
+    else { const completed = operation; operation = null; publish(snapshot()); return dispose(completed); }
+    publish(snapshot());
+  }
+  async function initializeBuiltin(scope, selected, init) {
+    if (!scope.initializing) scope.initializing = (async () => {
+      let response;
+      for (const endpoint of [CONFIG_URL, CONFIG_FALLBACK_URL]) {
+        try {
+          response = await selected.available.direct.fetch(endpoint, { signal: init.signal, redirect: 'manual', credentials: 'omit', cache: 'no-store', headers: {
+            Accept: 'application/json', 'Cache-Control': 'no-store, no-cache', 'User-Agent': new Headers(init.headers).get('user-agent') || 'Brclio-Updater/1.0',
+          } });
+        } catch (failure) {
+          if (init.signal?.aborted || endpoint === CONFIG_FALLBACK_URL) throw failure;
+          continue;
+        }
+        if (response.redirected || REDIRECTS.has(response.status) || (response.url && response.url !== endpoint)) {
+          await cancel(response); throw routingError('内置更新代理配置返回异常重定向，已停止。');
+        }
+        if (endpoint === CONFIG_URL && response.status === 403 && response.headers.get('cf-mitigated')?.trim().toLowerCase() === 'challenge') {
+          await cancel(response); continue;
+        }
+        break;
       }
       const blocked = requestBlockMessage(response, true);
-      if (blocked) {
-        await cancel(response);
-        throw routingError(blocked);
-      }
-      // A platform-level 503 can terminate an invocation before the Worker's
-      // own bounded upstream retries run. Recover once, only for installers.
-      if (response.status === 503 && recoverUnavailable && attempt === 0) {
-        await cancel(response);
-        await recoveryDelay(init.signal);
-        continue;
-      }
-      if (response.status >= 500) {
-        await cancel(response);
-        throw connectionError('builtin', init.signal);
-      }
-      return response;
-    }
-  }
-
-  async function installerResponse(selected, target, init, expectedSize) {
-    if (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > MAX_INSTALLER_BYTES) {
-      throw routingError('安装包大小无效，已停止分段下载。');
-    }
-    // A fresh service invocation per segment bounds Worker CPU use. Keep the
-    // original route and expose bytes only after the whole segment is verified.
-    const abort = new AbortController();
-    let reader; let offset = 0; let etag; let closed = false;
-    const stop = () => { abort.abort(); return reader?.cancel().catch(() => {}); };
-    init.signal?.addEventListener('abort', stop, { once: true });
-    if (init.signal?.aborted) stop();
-    const finish = () => { closed = true; init.signal?.removeEventListener('abort', stop); };
-    const active = () => { if (abort.signal.aborted || closed) throw connectionError('builtin', { aborted: true }); };
-    async function next() {
-      active();
-      const end = Math.min(expectedSize - 1, offset + CHUNK_BYTES - 1);
-      const headers = new Headers(init.headers);
-      headers.set('Range', `bytes=${offset}-${end}`);
-      headers.delete('If-Range');
-      if (etag) headers.set('If-Range', etag);
-      const response = await builtinRequest(selected, target, { ...init, headers, signal: abort.signal }, true);
-      if (abort.signal.aborted) await cancel(response);
-      active();
-      if (offset === 0 && !response.ok) return response;
-      const range = /^bytes (0|[1-9]\d*)-(0|[1-9]\d*)\/(0|[1-9]\d*)$/.exec(response.headers.get('content-range') || '');
-      const currentETag = response.headers.get('etag');
-      if (response.status !== 206 || !range || Number(range[1]) !== offset || Number(range[2]) !== end
-          || Number(range[3]) !== expectedSize || response.headers.get('content-length') !== String(end - offset + 1)
-          || !/^"[\x21\x23-\x7e]{1,256}"$/.test(currentETag || '') || (etag && currentETag !== etag)
-          || (response.headers.has('content-encoding') && response.headers.get('content-encoding').toLowerCase() !== 'identity') || !response.body) {
-        await cancel(response);
-        throw routingError('安装包分段信息不一致，已停止下载。');
-      }
-      etag = currentETag;
-      reader = response.body.getReader();
-      return response;
-    }
-    let first;
-    try { first = await next(); } catch (failure) { stop(); finish(); throw failure; }
-    if (!first.ok) { finish(); return responseAt(first, target, 'builtin', init.signal); }
-    const headers = new Headers(first.headers);
-    headers.delete('content-range'); headers.delete('accept-ranges');
-    headers.set('content-length', String(expectedSize));
-    const body = new ReadableStream({
-      async pull(controller) {
+      if (blocked) { await cancel(response); throw routingError(blocked); }
+      if (response.status !== 200) { await cancel(response); throw connectionError('builtin', init.signal); }
+      const configuration = parseProxyConfiguration(await configurationBody(response));
+      const controller = new AbortController();
+      const stop = () => controller.abort();
+      scope.probeStop = stop;
+      init.signal?.addEventListener('abort', stop, { once: true });
+      if (init.signal?.aborted || scope.closed) stop();
+      const totalTimer = setTimeout(stop, 8000);
+      const successful = []; let next = 0;
+      async function probe(node, index) {
+        let bridge, builtin, retained = false;
+        const candidate = new AbortController();
+        const abort = () => candidate.abort();
+        controller.signal.addEventListener('abort', abort, { once: true });
+        if (controller.signal.aborted) abort();
+        const timer = setTimeout(abort, 4000);
         try {
-          active();
-          if (!reader) await next();
-          const expected = Math.min(CHUNK_BYTES, expectedSize - offset);
-          const chunks = []; let length = 0;
-          while (true) {
-            const item = await reader.read(); active();
-            if (item.done) break;
-            length += item.value.length;
-            if (length > expected) throw routingError('安装包分段长度异常，已停止下载。');
-            chunks.push(item.value);
-          }
-          reader.releaseLock(); reader = undefined;
-          if (length !== expected) throw routingError('安装包分段未完成，请重新下载。');
-          const bytes = new Uint8Array(length); let written = 0;
-          for (const chunk of chunks) { bytes.set(chunk, written); written += chunk.length; }
-          offset += length; controller.enqueue(bytes);
-          if (offset === expectedSize) { finish(); controller.close(); }
-        } catch (failure) {
-          const safe = failure?.code === 'BRCLIO_UPDATE_ROUTE' ? failure : connectionError('builtin', abort.signal);
-          await stop(); finish();
-          change({ error: safe.message }); controller.error(safe);
+          if (candidate.signal.aborted) return;
+          bridge = await bridgeFactory({ nodes: [node] });
+          builtin = options.fromPartition(`${BUILTIN_PARTITION}-${index + 1}`, { cache: false });
+          await closeSession(builtin);
+          await builtin.setProxy({ mode: 'fixed_servers', proxyRules: bridge.proxyRules, proxyBypassRules: '<-loopback>' });
+          const close = () => { void bridge.close(); void closeSession(builtin); };
+          candidate.signal.addEventListener('abort', close, { once: true });
+          if (candidate.signal.aborted) { close(); return; }
+          const started = performance.now();
+          try {
+            const checked = await builtin.fetch(PROBE_URL, { method: 'HEAD', signal: candidate.signal, redirect: 'manual', credentials: 'omit', cache: 'no-store',
+              headers: { Accept: 'application/vnd.github+json', 'User-Agent': new Headers(init.headers).get('user-agent') || 'Brclio-Updater/1.0' } });
+            const elapsed = performance.now() - started;
+            const valid = checked.status === 200 && !checked.redirected && (!checked.url || checked.url === PROBE_URL) && !requestBlockMessage(checked);
+            await cancel(checked);
+            if (valid && !candidate.signal.aborted && !scope.closed) { successful.push({ bridge, builtin, elapsed }); retained = true; }
+          } finally { candidate.signal.removeEventListener('abort', close); }
+        } catch { /* Candidate names, credentials, URLs and remote bodies never leave this scope. */ }
+        finally {
+          clearTimeout(timer); controller.signal.removeEventListener('abort', abort);
+          if (!retained) { await closeSession(builtin); await bridge?.close().catch(() => {}); }
         }
-      },
-      cancel() { const stopped = stop(); finish(); return stopped; },
-    }, { highWaterMark: 0 });
-    const response = new Response(body, { status: 200, headers });
-    Object.defineProperty(response, 'url', { value: target });
-    return response;
+      }
+      async function worker() {
+        while (!controller.signal.aborted && next < configuration.nodes.length) { const index = next++; await probe(configuration.nodes[index], index); }
+      }
+      try {
+        await Promise.all(Array.from({ length: Math.min(16, configuration.nodes.length) }, () => worker()));
+        successful.sort((left, right) => left.elapsed - right.elapsed);
+        const chosen = successful.shift();
+        await Promise.all(successful.map(async value => { await closeSession(value.builtin); await value.bridge.close(); }));
+        if (!chosen) throw connectionError('builtin', init.signal);
+        if (scope.closed || init.signal?.aborted) { await chosen.bridge.close(); await closeSession(chosen.builtin); throw connectionError('builtin', { aborted: true }); }
+        scope.bridge = chosen.bridge; scope.builtin = chosen.builtin;
+      } finally { clearTimeout(totalTimer); init.signal?.removeEventListener('abort', stop); }
+    })();
+    await abortable(scope.initializing, init.signal);
+    return (url, options) => scope.builtin.fetch(url, options);
   }
-
-  async function fetch(url, init = {}, context = {}) {
+  async function fetch(url, init = {}) {
+    const scope = operation || { targets: [url] };
+    const standalone = !operation;
+    scopes.add(scope);
     let selected;
     try {
       let target = officialURL(url, true);
-      selected = await select(target, init.signal);
+      if (!scope.selection) scope.selection = select(scope.targets.length ? scope.targets : [target], init.signal);
+      selected = await abortable(scope.selection, init.signal);
       change({ route: selected.route, error: null });
-      if (selected.route === 'builtin') {
-        if (/\.(?:dmg|exe)$/.test(new URL(target).pathname)) return await installerResponse(selected, target, init, context.expectedSize);
-        const response = await builtinRequest(selected, target, init);
-        return responseAt(response, target, selected.route, init.signal);
-      }
+      const request = selected.route === 'builtin' ? await initializeBuiltin(scope, selected, init) : selected.fetch;
       for (let redirects = 0; ; redirects++) {
-        // PAC decisions are made for the actual URL, including every CDN hop.
-        if (redirects) selected = await select(target, init.signal);
-        if (selected.route === 'builtin') {
-          // A system PAC may send the release through its proxy and a CDN
-          // directly. Continue that chain natively without adding a second
-          // proxy mid-request; the next independent request resolves anew.
-          selected = { route: 'direct', fetch: options.netFetch };
-        }
-        change({ route: selected.route, error: null });
-        const response = await selected.fetch(target, { ...init, redirect: 'manual', credentials: 'omit' });
-        if (response.redirected) {
-          await cancel(response);
-          throw routingError('下载重定向至非官方地址，已停止。');
-        }
-        if (!REDIRECTS.has(response.status)) return responseAt(response, target, selected.route, init.signal);
-        const location = response.headers.get('location');
-        await cancel(response);
+        if (scope.closed || init.signal?.aborted) throw connectionError(selected.route, { aborted: true });
+        const response = await request(target, { ...init, redirect: 'manual', credentials: 'omit' });
+        if (response.redirected) { await cancel(response); throw routingError('下载重定向至非官方地址，已停止。'); }
+        const blocked = requestBlockMessage(response);
+        if (blocked) { await cancel(response); throw routingError(blocked); }
+        if (!REDIRECTS.has(response.status)) return responseAt(response, target, selected.route, init.signal, standalone ? () => dispose(scope) : undefined);
+        const location = response.headers.get('location'); await cancel(response);
         if (!location || redirects >= 5) throw routingError('更新重定向次数过多或地址无效，已停止。');
         target = officialURL(new URL(location, target).href);
       }
     } catch (failure) {
+      if (standalone) await dispose(scope);
       const safe = failure?.code === 'BRCLIO_UPDATE_ROUTE' ? failure : connectionError(selected?.route, init.signal);
-      change({ error: safe.message });
-      throw safe;
+      change({ error: safe.message }); throw safe;
     }
   }
-
-  return { fetch, state, setEnabled, setBusy };
+  async function close() { operation = null; await Promise.all([...scopes].map(dispose)); }
+  return { fetch, state, setEnabled, setBusy, close };
 }
 
-module.exports = { createUpdateProxy, officialURL, usesProxy, SERVICE_ORIGIN, SYSTEM_PARTITION, DIRECT_PARTITION, CHUNK_BYTES };
+module.exports = { createUpdateProxy, officialURL, usesProxy, SERVICE_ORIGIN, PROBE_URL, CONFIG_URL, CONFIG_FALLBACK_URL, SYSTEM_PARTITION, DIRECT_PARTITION, BUILTIN_PARTITION };

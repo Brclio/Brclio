@@ -1,0 +1,1 @@
+These deliberately public test-only server keys and CA certificates support offline TLS verification. The CA private key was discarded. Never use these credentials or trust roots in production. This directory is excluded from packaged application files.

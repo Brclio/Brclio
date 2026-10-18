@@ -38,14 +38,14 @@ test('macOS native replacement fixture intercepts isolated proxy sessions withou
   const metadataURL = 'https://api.github.com/repos/Brclio/Brclio/releases/latest';
   const assetURL = 'https://github.com/Brclio/Brclio/releases/download/v0.2.0/Brclio-0.2.0-mac-arm64.dmg';
   assert.equal((await (await net.fetch(metadataURL)).json()).tag_name, 'v0.2.0');
-  const builtin = session.fromPartition('brclio-update-direct');
-  const proxyURL = url => 'https://tools.brclio.com/api/update?url=' + encodeURIComponent(url);
-  assert.equal((await (await builtin.fetch(proxyURL(metadataURL))).json()).tag_name, 'v0.2.0');
-  assert.deepEqual(Buffer.from(await (await builtin.fetch(proxyURL(assetURL))).arrayBuffer()), bytes);
-  const ranged = await builtin.fetch(proxyURL(assetURL), { headers: { Range: 'bytes=3-8' } });
-  assert.equal(ranged.status, 206); assert.equal(ranged.headers.get('content-range'), `bytes 3-8/${bytes.length}`);
-  assert.equal(ranged.headers.get('etag'), '"' + 'a'.repeat(64) + '"');
-  assert.deepEqual(Buffer.from(await ranged.arrayBuffer()), bytes.subarray(3, 9));
-  assert.deepEqual(nativeCalls, [{ url: fileURL, range: null }, { url: fileURL, range: 'bytes=3-8' }]);
-  await assert.rejects(builtin.fetch(proxyURL('https://unrecognized.example/')), /Unexpected update request/);
+  const direct = session.fromPartition('brclio-update-direct');
+  const config = await (await direct.fetch('https://tools.brclio.com/api/client/update-proxy')).json();
+  assert.equal(config.version, 1); assert.equal(config.nodes.length, 1);
+  const builtin = session.fromPartition('brclio-update-builtin-1');
+  assert.equal((await builtin.fetch('https://github.com/robots.txt', {method:'HEAD'})).status, 200);
+  assert.equal((await (await builtin.fetch(metadataURL)).json()).tag_name, 'v0.2.0');
+  assert.deepEqual(Buffer.from(await (await builtin.fetch(assetURL)).arrayBuffer()), bytes);
+  assert.deepEqual(nativeCalls, [{ url: fileURL, range: null }]);
+  await assert.rejects(builtin.fetch('https://unrecognized.example/'), /Unexpected update request/);
+
 });

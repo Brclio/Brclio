@@ -53,7 +53,6 @@
     }
     return true;
   }
-  function proxyURL(target) { return '/api/update?url=' + encodeURIComponent(target); }
   function makeLink(text, url, className) {
     const link = document.createElement('a'); link.textContent = text; link.href = url; link.className = className; link.rel = 'noreferrer'; return link;
   }
@@ -79,7 +78,7 @@
       $('release-status').textContent = '正式版 · 发布于 ' + new Date(release.publishedAt).toLocaleDateString('zh-CN');
       const integrity = $('download-integrity'); integrity.replaceChildren();
       const checksum = release.assets.find(item => item.checksumURL)?.checksumURL;
-      if (checksum) integrity.append(makeLink('SHA-256 校验清单', proxyURL(checksum), ''), ' · ');
+      if (checksum) integrity.append(makeLink('SHA-256 校验清单', checksum, ''), ' · ');
       integrity.append(makeLink('阅读本版发布说明', release.releaseURL, ''), '。客户端在线更新会验证安装包的 SHA-256。');
       $('development-note').textContent = includesUpdateProxy(release.version)
         ? 'v' + release.version + ' 已包含内置更新代理：系统代理优先；没有系统代理时默认使用内置代理，可在软件内临时关闭，完全退出并重新启动后恢复默认开启。'

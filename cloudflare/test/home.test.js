@@ -21,5 +21,5 @@ test('homepage installers link to validated official assets and separate release
  assert.equal(links[0].href,fixture('0.1.9').assets[0].url);assert.equal(links[0].dataset.downloadPlatform,'android');
  assert.equal(links[1].href,fixture('0.1.9').releaseURL);assert.equal(links[1].textContent,'发布说明 ↗');
  assert.ok(!links.some(link=>link.href.includes('/api/update')));
- assert.match(elements.get('download-integrity').children[0].href,/^\/api\/update\?url=/);
+ assert.equal(elements.get('download-integrity').children[0].href,fixture('0.1.9').assets[0].checksumURL);
 });

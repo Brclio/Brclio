@@ -28,6 +28,9 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
     private val currentVersion = BuildConfig.VERSION_NAME.removeSuffix("-debug")
     @Volatile private var state = JSONObject().put("status", "up-to-date").put("currentVersion", currentVersion)
     @Volatile private var connection: HttpsURLConnection? = null
+    @Volatile private var bootstrap: UpdateProxyBootstrap? = null
+    @Volatile private var nodeSelector: UpdateNodeSelector? = null
+    @Volatile private var nativeProxy: NativeUpdateProxy? = null
     @Volatile private var closed = false
     @Volatile private var installationWindowOpen = false
     private var latest: UpdateRelease? = null
@@ -41,7 +44,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
 
     fun check(callback: (JSONObject?, String?) -> Unit) = run(callback) {
         publish("checking")
-        val route = currentProxyRoute()
+        val route = prepareNetwork(60_000)
         val metadata = readSmall("https://api.github.com/repos/Brclio/Brclio/releases/latest", 1024 * 1024, route)
         val release = UpdatePolicy.parseRelease(JSONObject(metadata))
         latest = release
@@ -54,7 +57,8 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         downloaded?.delete()
         downloaded = null
         downloadedSha256 = null
-        val route = currentProxyRoute()
+        val deadline = System.currentTimeMillis() + 10 * 60 * 1000
+        val route = prepareNetwork(10 * 60 * 1000, deadline)
         val checksum = UpdatePolicy.expectedChecksum(readSmall(release.checksums.url, 256 * 1024, route), release.apk.name)
         val temporary = File(directory, "${release.apk.name}.part")
         val target = File(directory, release.apk.name)
@@ -62,7 +66,6 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         target.delete()
         publish("downloading", release, 0, release.apk.size)
         try {
-            val deadline = System.currentTimeMillis() + 10 * 60 * 1000
             val digest = MessageDigest.getInstance("SHA-256")
             var received = 0L
             var lastProgress = 0L
@@ -79,29 +82,17 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 }
             }
             DigestOutputStream(temporary.outputStream(), digest).use { output ->
-                if (route == UpdateProxyRoute.BUILTIN) {
-                    received = UpdateRangeDownloader.copy(release.apk.size, output, { segment, etag ->
-                        val response = open(release.apk.url, route, segment, etag)
-                        object : UpdateRangeDownloader.Response {
-                            override val status: Int get() = response.responseCode
-                            override fun header(name: String): String? = response.getHeaderField(name)
-                            override val body get() = response.inputStream
-                            override fun close() { response.disconnect(); connection = null }
-                        }
-                    }, ::checkActive, ::progress)
-                } else {
-                    val response = open(release.apk.url, route)
-                    response.inputStream.use { input ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            checkActive()
-                            val count = input.read(buffer)
-                            if (count < 0) break
-                            checkActive()
-                            check(received + count <= release.apk.size) { "安装包大小超过发布记录。" }
-                            output.write(buffer, 0, count)
-                            progress(received + count)
-                        }
+                val response = open(release.apk.url, route)
+                response.inputStream.use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        checkActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        checkActive()
+                        check(received + count <= release.apk.size) { "安装包大小超过发布记录。" }
+                        output.write(buffer, 0, count)
+                        progress(received + count)
                     }
                 }
             }
@@ -173,12 +164,15 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 val result = action()
                 if (result != null) onMain { callback(result, null) }
             } catch (exception: Exception) {
-                val message = exception.message?.take(500) ?: "更新操作失败，请重试。"
+                val message = if (exception is java.io.IOException) "更新网络连接中断，请检查网络或关闭内置代理后重试。"
+                    else exception.message?.take(500) ?: "更新操作失败，请重试。"
                 publish("error", latest, error = message)
                 onMain { callback(null, message) }
             } finally {
                 connection?.disconnect()
                 connection = null
+                nativeProxy?.close()
+                nativeProxy = null
                 busy.set(false)
             }
         }
@@ -243,55 +237,67 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         }
     }
 
-    private fun open(address: String, route: UpdateProxyRoute,
-        segment: UpdateRangeDownloader.Segment? = null, etag: String? = null): HttpsURLConnection {
+    /** One operation owns one route and bridge; no configuration is persisted. */
+    private fun prepareNetwork(duration: Long, deadline: Long = System.currentTimeMillis() + duration): UpdateProxyRoute {
+        val route = currentProxyRoute()
+        if (route != UpdateProxyRoute.BUILTIN) return route
+        val loader = UpdateProxyBootstrap(deadline, { closed })
+        bootstrap = loader
+        val nodes = try { loader.fetch() } finally { loader.close(); bootstrap = null }
+        val selector = UpdateNodeSelector()
+        nodeSelector = selector
+        val selected = try { selector.select(nodes, deadline) } finally { selector.close(); nodeSelector = null }
+        nativeProxy = NativeUpdateProxy(listOf(selected), deadline)
+        check(!closed && !Thread.currentThread().isInterrupted) { "下载已停止。" }
+        return route
+    }
+
+    private fun open(address: String, route: UpdateProxyRoute): HttpsURLConnection {
         check(UpdateProxyPolicy.allowedSource(address)) { "更新下载地址不受信任。" }
-        val usesRelay = route == UpdateProxyRoute.BUILTIN
-        check(segment == null || (usesRelay && address.endsWith("-android.apk"))) { "更新分段下载地址无效。" }
-        var url = if (usesRelay) UpdateProxyPolicy.relayAddress(address) else address
+        var url = address
         repeat(6) {
             check(!closed && !Thread.currentThread().isInterrupted) { "下载已停止。" }
-            if (!usesRelay) check(UpdatePolicy.allowedDownloadHost(url)) { "更新下载地址不受信任。" }
-            // System routing uses Android's default ProxySelector. The relay and an
-            // explicit direct connection never receive an additional HTTP proxy.
-            val opened = if (route == UpdateProxyRoute.SYSTEM) URL(url).openConnection()
-                else URL(url).openConnection(Proxy.NO_PROXY)
+            check(UpdatePolicy.allowedDownloadHost(url)) { "更新下载地址不受信任。" }
+            // The URL, SNI, certificate and hostname checks all remain the original
+            // GitHub/CDN values. Only the explicitly supplied transport proxy changes.
+            val opened = when (route) {
+                UpdateProxyRoute.SYSTEM -> URL(url).openConnection()
+                UpdateProxyRoute.DIRECT -> URL(url).openConnection(Proxy.NO_PROXY)
+                UpdateProxyRoute.BUILTIN -> URL(url).openConnection(nativeProxy?.proxy ?: error("内置更新代理已停止。"))
+            }
             val request = (opened as HttpsURLConnection).apply {
                 connectTimeout = 15_000
                 readTimeout = 30_000
                 instanceFollowRedirects = false
+                useCaches = false
+                setRequestProperty("Connection", "close")
+                setRequestProperty("Accept-Encoding", "identity")
                 setRequestProperty("User-Agent", "Brclio-Android/$currentVersion")
                 setRequestProperty("Accept", "application/vnd.github+json")
                 setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-                if (segment != null) {
-                    setRequestProperty("Range", segment.header)
-                    setRequestProperty("Accept-Encoding", "identity")
-                    if (etag != null) setRequestProperty("If-Range", etag)
-                }
             }
             connection = request
             if (closed || Thread.currentThread().isInterrupted) { request.disconnect(); error("下载已停止。") }
-            val code = request.responseCode
+            val code = try { request.responseCode } catch (_: java.io.IOException) {
+                request.disconnect()
+                error(if (route == UpdateProxyRoute.BUILTIN) "内置更新代理连接失败，可关闭内置代理后重试。" else "无法连接更新服务器，请检查网络后重试。")
+            }
             val mitigated = request.getHeaderField("cf-mitigated")
             if (UpdateProxyPolicy.isCloudflareChallenge(mitigated)) {
                 request.disconnect()
-                error(UpdateProxyPolicy.responseError(code, route, mitigated))
+                error(UpdateProxyPolicy.responseError(code, UpdateProxyRoute.DIRECT, mitigated))
             }
             if (code in setOf(301, 302, 303, 307, 308)) {
-                if (usesRelay) {
-                    request.disconnect()
-                    error("内置更新代理返回了不受信任的重定向，请关闭内置代理后重试。")
-                }
-                val destination = request.getHeaderField("Location") ?: error("更新服务器重定向缺少地址。")
-                url = URL(URL(url), destination).toString()
+                val destination = request.getHeaderField("Location")
                 request.disconnect()
+                check(destination != null) { "更新服务器重定向缺少地址。" }
+                url = try { URL(URL(url), destination).toString() } catch (_: Exception) { error("更新下载地址不受信任。") }
             } else {
-                // Only builtin APK segments may pass a platform 503 to the
-                // bounded recovery policy. Other statuses never gain retries.
-                if (segment != null && code == HttpURLConnection.HTTP_UNAVAILABLE) return request
-                if (code != if (segment == null) HttpURLConnection.HTTP_OK else HttpURLConnection.HTTP_PARTIAL) {
+                if (code != HttpURLConnection.HTTP_OK) {
                     request.disconnect()
-                    error(UpdateProxyPolicy.responseError(code, route))
+                    // These are now original GitHub responses; service errors are
+                    // classified separately while loading the bootstrap configuration.
+                    error(UpdateProxyPolicy.responseError(code, UpdateProxyRoute.DIRECT))
                 }
                 return request
             }
@@ -340,7 +346,11 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
 
     fun close() {
         closed = true
+        bootstrap?.close()
+        nodeSelector?.close()
+        nativeProxy?.close()
         connection?.disconnect()
+        nativeProxy = null
         worker.shutdownNow()
         directory.listFiles()?.filter { it.name.endsWith(".part") }?.forEach(File::delete)
     }

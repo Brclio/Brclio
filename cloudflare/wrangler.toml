@@ -37,9 +37,9 @@ namespace_id = "1003"
 simple = { limit = 120, period = 60 }
 
 [[ratelimits]]
-name = "UPDATE_CHUNK_LIMITER"
-namespace_id = "1004"
-simple = { limit = 1800, period = 60 }
+name = "CLIENT_CONFIG_LIMITER"
+namespace_id = "1005"
+simple = { limit = 30, period = 60 }
 
 [observability]
 enabled = false

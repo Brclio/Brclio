@@ -1,14 +1,12 @@
-import {readConfig, writeConfig, getNodes} from '../config.js';
+import {readConfig, writeConfig} from '../config.js';
 import {officialTarget} from '../protocol.js';
-import {relayUpdate} from '../relay.js';
-import {isInstallerTarget, parseChunkRequest, relayChunk} from '../chunk-relay.js';
 import {json, readJSON, rateLimit} from '../http.js';
-import {latestReleaseURL, readReleaseResponse} from '../releases.js';
+import {latestReleaseURL, getOfficialRelease} from '../releases.js';
 
 export const metadata = Object.freeze({
   id: 'update-proxy',
   name: '更新与网络',
-  description: '为客户端提供版本检查、安装包下载与内置代理配置。',
+  description: '为客户端提供内置代理配置与官方版本摘要，安装包由客户端从 GitHub 下载。',
   status: 'implemented',
   configPath: '/api/admin/config'
 });
@@ -31,37 +29,24 @@ export async function overview(env, dependencies = {}) {
   };
 }
 
-export async function handlePublic(request, env, dependencies = {}, ctx) {
+export async function handlePublic(request, env, dependencies = {}) {
   const url = new URL(request.url);
   const summary = url.pathname === '/api/releases/latest';
-  if ((!summary && url.pathname !== '/api/update') || request.method !== 'GET') return null;
+  if (!summary && url.pathname !== '/api/update') return null;
+  if (request.method !== 'GET') return json({error: '只支持 GET 请求'}, 405, {Allow: 'GET'});
   const ip = request.headers.get('CF-Connecting-IP') || 'development';
-  const chunked = !summary && request.headers.has('range');
-  if (!await rateLimit(env, chunked ? 'UPDATE_CHUNK_LIMITER' : 'UPDATE_LIMITER', ip, chunked ? 1800 : 120)) return json({error: '请求过于频繁，请稍后重试'}, 429, {'Retry-After': '60'});
-  if ((summary && request.headers.has('range')) || (!chunked && request.headers.has('if-range'))) return json({error: '该请求不支持下载范围'}, 416);
+  if (!await rateLimit(env, 'UPDATE_LIMITER', ip, 120)) return json({error: '请求过于频繁，请稍后重试'}, 429, {'Retry-After': '60'});
   let target;
   try {
     target = officialTarget(summary ? latestReleaseURL : url.searchParams.get('url'));
   } catch {
     return json({error: '只允许 Brclio 官方更新地址'}, 400);
   }
-  if (!chunked && isInstallerTarget(target.href)) return json({error: '安装包必须使用不超过 128 KiB 的显式单段 Range 请求'}, 416);
-  let range;
-  if (chunked) {
-    try { range = parseChunkRequest(target.href, request.headers.get('range'), request.headers.get('if-range')); }
-    catch { return json({error: '只支持官方安装包不超过 128 KiB 的显式单段范围'}, 416); }
-  }
-  const started = Date.now();
+  if (target.href !== latestReleaseURL) return json({error: '安装包与校验清单不再经服务器中转，请升级客户端后直接从 GitHub 下载', code: 'client_upgrade_required'}, 410);
+  if (request.headers.has('range') || request.headers.has('if-range')) return json({error: '版本元数据不支持下载范围'}, 416);
   try {
-    const nodes = await (dependencies.getNodes || getNodes)(env);
-    const response = await (chunked ? dependencies.relayChunk || relayChunk : dependencies.relayUpdate || relayUpdate)(target.href, nodes, {
-      ...(range ? {range} : {}),
-      signal: request.signal,
-      headerDeadlineMs: Math.max(1, 18000 - (Date.now() - started)),
-      waitUntil: ctx ? promise => ctx.waitUntil(promise) : undefined
-    });
-    if (summary) return json(await readReleaseResponse(response), 200, {'Cache-Control': 'public, max-age=60', 'X-Brclio-Route': 'subscription-vless'});
-    return response;
+    const release = await (dependencies.getOfficialRelease || getOfficialRelease)(env);
+    return json(summary ? release.summary : release.metadata, 200, {'Cache-Control': 'public, max-age=60', 'X-Brclio-Route': 'github-metadata'});
   } catch {
     return json({error: summary ? '暂时无法获取官方正式版本，请稍后重试或前往 GitHub 发布页' : '内置代理暂不可用，请关闭内置代理或稍后重试'}, 502);
   }

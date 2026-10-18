@@ -84,8 +84,8 @@ function createUpdater(options) {
   function change(patch) { state = { ...state, ...patch }; publish(snapshot()); return snapshot(); }
   function failure(error) { return change({ status: 'error', error: error.message || '操作失败，请重试。' }); }
 
-  async function request(url, signal, expectedSize) {
-    const response = await fetchURL(url, { signal, redirect: 'follow', headers: { Accept: 'application/vnd.github+json', 'User-Agent': `Brclio/${currentVersion}` } }, expectedSize === undefined ? undefined : { expectedSize });
+  async function request(url, signal) {
+    const response = await fetchURL(url, { signal, redirect: 'follow', headers: { Accept: 'application/vnd.github+json', 'User-Agent': `Brclio/${currentVersion}` } });
     const blocked = requestBlockMessage(response);
     if (blocked) {
       await response.body?.cancel().catch(() => {});
@@ -112,7 +112,7 @@ function createUpdater(options) {
     if (state.installerStarted) return Promise.resolve(snapshot());
     if (downloading || installing) return Promise.resolve(snapshot());
     checking = (async () => {
-      options.onOperation?.('check', true);
+      await options.onOperation?.('check', true, [API_URL]);
       change({ status: 'checking', error: null, progress: 0, downloadedBytes: 0, installerStarted: false, canInstall: false });
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), options.requestTimeout || 20000);
@@ -125,7 +125,7 @@ function createUpdater(options) {
         return change({ status: compareVersions(candidate.version, currentVersion) > 0 ? 'available' : 'up-to-date',
           version: candidate.version, notes: candidate.notes, assetName: candidate.assetName, totalBytes: candidate.size });
       } catch (error) { release = null; verified = null; return failure(error.name === 'AbortError' ? new Error('检查更新超时，请重试。') : error); }
-      finally { clearTimeout(timer); checking = null; options.onOperation?.('check', false); }
+      finally { clearTimeout(timer); await options.onOperation?.('check', false); checking = null; }
     })();
     return checking;
   }
@@ -138,7 +138,7 @@ function createUpdater(options) {
       if (checking) await checking;
       if (!release || compareVersions(release.version, currentVersion) <= 0) return failure(new Error('请先检查更新，确认有可用的新版本。'));
       const selected = release;
-      options.onOperation?.('download', true);
+      await options.onOperation?.('download', true, [selected.checksumURL, selected.downloadURL]);
       const destination = path.join(directory, selected.assetName);
       const partial = `${destination}.part`;
       const controller = new AbortController();
@@ -161,7 +161,7 @@ function createUpdater(options) {
           verified = { filename: destination, expected, size: selected.size };
           return change({ status: 'downloaded', progress: 100, downloadedBytes: selected.size, canInstall: true });
         }
-        const response = await request(selected.downloadURL, controller.signal, selected.size);
+        const response = await request(selected.downloadURL, controller.signal);
         if (!response.body) throw new Error('安装包下载内容为空。');
         const hash = crypto.createHash('sha256');
         const output = await fs.open(partial, 'wx', 0o600);
@@ -187,7 +187,7 @@ function createUpdater(options) {
         controller.abort();
         await fs.rm(partial, { force: true }).catch(() => {});
         return failure(error.name === 'AbortError' ? new Error('下载超时或连接中断，请重新下载。') : error);
-      } finally { clearTimeout(totalTimer); clearTimeout(idleTimer); clearTimeout(manifestTimer); options.onOperation?.('download', false); }
+      } finally { clearTimeout(totalTimer); clearTimeout(idleTimer); clearTimeout(manifestTimer); await options.onOperation?.('download', false); }
     })();
     downloading = operation;
     operation.finally(() => { if (downloading === operation) downloading = null; });

@@ -57,7 +57,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   production-service:
-    name: Verify production segmented downloads
+    name: Verify production native proxy downloads
     needs: metadata
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -70,7 +70,11 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: cloudflare/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            cloudflare/package-lock.json
+      - name: Install the native proxy bridge production dependency
+        run: npm ci --omit=dev --prefix ..
       - run: npm ci
       - name: Verify published metadata, manifest, and complete small and large installers through production
         run: |
@@ -116,6 +120,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run sync
+      - name: Verify the real Electron native TLS proxy bridge and continuous downloads
+        run: npm run test:native-proxy
       - name: Check the full Xcode toolchain for FinderSync
         if: matrix.platform == 'mac'
         run: |

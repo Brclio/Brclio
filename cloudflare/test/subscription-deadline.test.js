@@ -1,6 +1,6 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {readSubscription} from '../src/config.js';
-const subscription='proxies:\n  - type: vless\n    uuid: 00000000-0000-4000-8000-000000000001\n    server: route.example\n    servername: route.example\n    port: 443\n    tls: true\n    network: ws\n';
+const subscription='proxies:\n  - type: vless\n    uuid: 00000000-0000-4000-8000-000000000001\n    server: route.example.com\n    servername: route.example.com\n    port: 443\n    tls: true\n    network: ws\n';
 function delayedResponse(delay) {
  return async(_url,{signal})=>new Promise((resolve,reject)=>{
   const canceled=()=>{clearTimeout(timer);reject(signal.reason);};

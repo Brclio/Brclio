@@ -47,7 +47,7 @@ export async function readConfig(env, {fresh = false, fetchImpl = fetch} = {}) {
 export async function readSubscription(url, fetchImpl = fetch) {
   publicHTTPS(url);
   let response;
-  try { response = await fetchImpl(url, {headers: {'User-Agent': 'clash.meta', Accept: 'text/yaml, text/plain, */*'}, redirect: 'manual', signal: AbortSignal.timeout(10000)}); } catch { diagnostic('subscription','fetch_failed'); throw new Error('无法读取代理订阅'); }
+  try { response = await fetchImpl(url, {headers: {'User-Agent': 'clash.meta', Accept: 'text/yaml, text/plain, */*', 'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache'}, redirect: 'manual', signal: AbortSignal.timeout(10000)}); } catch { diagnostic('subscription','fetch_failed'); throw new Error('无法读取代理订阅'); }
   if (!response.ok || Number(response.headers.get('content-length')) > 1024 * 1024) { diagnostic('subscription','http_response',response.status); await response.body?.cancel(); throw new Error('无法读取代理订阅'); }
   const reader = response.body.getReader(); const chunks = []; let length = 0;
   try {
@@ -56,10 +56,10 @@ export async function readSubscription(url, fetchImpl = fetch) {
   const bytes = new Uint8Array(length); let offset = 0; for (const b of chunks) {bytes.set(b, offset); offset += b.length;}
   try { return parseSubscription(decoder.decode(bytes)); } catch { diagnostic('subscription','unsupported_document'); throw new Error('订阅没有兼容节点'); }
 }
-export async function getNodes(env, fetchImpl = fetch) {
+export async function getNodes(env, fetchImpl = fetch, {fresh = false} = {}) {
   let config;
-  try {config = await readConfig(env, {fetchImpl});} catch {diagnostic('config','read_failed'); throw new Error('读取私有配置失败');}
-  if (nodesCache?.url === config.subscriptionUrl && nodesCache.expires > Date.now()) return nodesCache.nodes;
+  try {config = await readConfig(env, {fetchImpl, fresh});} catch {diagnostic('config','read_failed'); throw new Error('读取私有配置失败');}
+  if (!fresh && nodesCache?.url === config.subscriptionUrl && nodesCache.expires > Date.now()) return nodesCache.nodes;
   const nodes = await readSubscription(config.subscriptionUrl, fetchImpl);
   nodesCache = {url: config.subscriptionUrl, nodes, expires: Date.now() + NODES_CACHE_TTL_MS};
   return nodes;

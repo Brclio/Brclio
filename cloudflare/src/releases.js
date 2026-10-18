@@ -38,7 +38,7 @@ export function releaseSummary(release) {
   return {version, tag, publishedAt: published.toISOString(), releaseURL, assets};
 }
 
-export async function readReleaseResponse(response) {
+export async function readReleaseDocument(response) {
   if (response.status !== 200 || !response.body) {
     await response.body?.cancel().catch(() => {});
     throw new Error('release_unavailable');
@@ -54,8 +54,26 @@ export async function readReleaseResponse(response) {
       if (bytes > 1024 * 1024) throw new Error('release_too_large');
       text += decoder.decode(item.value, {stream: true});
     }
-    return releaseSummary(JSON.parse(text + decoder.decode()));
+    const metadata = JSON.parse(text + decoder.decode());
+    return {metadata, summary: releaseSummary(metadata)};
   } finally {
     await reader.cancel().catch(() => {});
   }
+}
+
+export async function readReleaseResponse(response) {
+  return (await readReleaseDocument(response)).summary;
+}
+
+let releaseCache;
+export function clearReleaseCache() { releaseCache = undefined; }
+export async function getOfficialRelease(env, fetchImpl = fetch) {
+  if (releaseCache?.expires > Date.now()) return releaseCache.value;
+  const response = await fetchImpl(latestReleaseURL, {redirect: 'manual', signal: AbortSignal.timeout(5000), headers: {
+    Accept: 'application/vnd.github+json', 'User-Agent': 'Brclio-Client-Services', 'X-GitHub-Api-Version': '2022-11-28',
+    ...(env.GITHUB_TOKEN ? {Authorization: `Bearer ${env.GITHUB_TOKEN}`} : {})
+  }});
+  const value = await readReleaseDocument(response);
+  releaseCache = {expires: Date.now() + 60000, value};
+  return value;
 }

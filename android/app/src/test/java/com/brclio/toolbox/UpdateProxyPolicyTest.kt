@@ -5,8 +5,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.net.URI
-import java.net.URLDecoder
 
 class UpdateProxyPolicyTest {
     private val metadata = "https://api.github.com/repos/Brclio/Brclio/releases/latest"
@@ -44,15 +42,11 @@ class UpdateProxyPolicyTest {
         assertEquals(UpdateProxyRoute.BUILTIN, session.route(false))
     }
 
-    @Test fun relaysTheUnmodifiedOfficialMetadataChecksumAndApkUrls() {
+    @Test fun acceptsOnlyOriginalOfficialMetadataChecksumAndApkUrls() {
         for (source in listOf(metadata, apk, checksum,
             apk.replace("/v0.1.8/", "/0.1.8/"), checksum.replace("/v0.1.8/", "/0.1.8/"))) {
             assertTrue(source, UpdateProxyPolicy.allowedSource(source))
-            val wrapped = URI(UpdateProxyPolicy.relayAddress(source))
-            assertEquals("https", wrapped.scheme)
-            assertEquals("tools.brclio.com", wrapped.host)
-            assertEquals("/api/update", wrapped.path)
-            assertEquals(source, URLDecoder.decode(wrapped.rawQuery.removePrefix("url="), "UTF-8"))
+
         }
     }
 
@@ -69,11 +63,10 @@ class UpdateProxyPolicyTest {
             apk.replace("/v0.1.8/", "/v0.1.8/../"),
             apk.replace("/v0.1.8/", "/v0.1.8/%2e%2e/"),
             "https://release-assets.githubusercontent.com/redirect-destination",
-            UpdateProxyPolicy.relayAddress(metadata),
+            UpdateProxyConfig.ADDRESS,
             "file:///tmp/update.apk",
         )) {
             assertFalse(source, UpdateProxyPolicy.allowedSource(source))
-            assertTrue(source, runCatching { UpdateProxyPolicy.relayAddress(source) }.isFailure)
         }
     }
 
