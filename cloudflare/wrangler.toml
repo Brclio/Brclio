@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 workers_dev = false
 
 [[routes]]
-pattern = "client.brclio.com"
+pattern = "tools.brclio.com"
 custom_domain = true
 
 # All operational values and credentials are encrypted deployment secrets:

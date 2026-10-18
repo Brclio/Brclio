@@ -4,7 +4,7 @@
 
 ## 部署边界
 
-部署为单一 Cloudflare Worker，项目名 `brclio-client-services`，账号固定为 `cacceff607775c81f667b7a951d4639f`。已确认的自定义域名为 `https://client.brclio.com`，管理后台为 `https://client.brclio.com/admin`；后台和 API 同源，不需要 Pages 或第二个服务。Wrangler 固定该自定义域名路由，并关闭 workers.dev 入口。
+部署为单一 Cloudflare Worker，项目名 `brclio-client-services`，账号固定为 `cacceff607775c81f667b7a951d4639f`。已确认的自定义域名为 `https://tools.brclio.com`，管理后台为 `https://tools.brclio.com/admin`；后台和 API 同源，不需要 Pages 或第二个服务。Wrangler 固定该自定义域名路由，并关闭 workers.dev 入口。
 
 仓库分支可通过正确账号的 Worker Settings → Builds 连接；构建根目录选择 `cloudflare/`，构建命令使用 `npm ci && npm test`，部署命令由该账号的 Builds 执行 `npx wrangler deploy`。Wrangler 配置固定了账号和项目名。当前域名是否已绑定、是否完成部署，应以该账号实际状态与在线验证为准。
 
@@ -32,7 +32,7 @@ npm --prefix cloudflare run bundle:browser
 在线验证需传入已确认的服务域名：
 
 ```sh
-npm --prefix cloudflare run smoke -- https://client.brclio.com --large
+npm --prefix cloudflare run smoke -- https://tools.brclio.com --large
 ```
 
 验证脚本通过真实 VLESS + TLS + WebSocket 代理获取发布元数据、SHA256SUMS 清单与完整安装包，再核对大小和 SHA-256；不会保存或执行安装包。

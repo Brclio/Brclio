@@ -71,8 +71,8 @@ concurrent change. Public requests cache the file for 15 seconds and parsed
 subscription nodes for 60 seconds. Administrator reads always refresh the file.
 
 The deployment uses one Worker at the confirmed custom-domain origin
-`https://client.brclio.com` in that same Cloudflare account. The administration
-shell at `https://client.brclio.com/admin` and all APIs share that HTTPS origin.
+`https://tools.brclio.com` in that same Cloudflare account. The administration
+shell at `https://tools.brclio.com/admin` and all APIs share that HTTPS origin.
 Wrangler pins the custom-domain route and disables workers.dev. Domain binding,
 application deployment and live verification are distinct checks.
 No Pages project, gateway, service binding, or second deployment is required.
@@ -180,13 +180,13 @@ through the verified TLS/VLESS relay. The manifest bytes are also checked agains
 the manifest asset's GitHub metadata digest:
 
 ```sh
-npm run smoke -- https://client.brclio.com
-npm run smoke -- https://client.brclio.com --large
+npm run smoke -- https://tools.brclio.com
+npm run smoke -- https://tools.brclio.com --large
 ```
 
 `--large` selects an installer larger than 100 MiB. Neither command saves or runs
-an installer. The default origin is `https://client.brclio.com`; an explicit
+an installer. The default origin is `https://tools.brclio.com`; an explicit
 origin or `BRCLIO_CLIENT_SERVICE_URL` can override it for verification. On a Node runtime that supports it,
-`node --use-env-proxy scripts/verify-live.mjs https://client.brclio.com
+`node --use-env-proxy scripts/verify-live.mjs https://tools.brclio.com
 --large` may be used
 when the test environment itself requires its configured system proxy.
