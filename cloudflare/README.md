@@ -149,6 +149,11 @@ segment aborts the download; the client must start a fresh download. Incoming
 custom Range requests are rejected. An upstream that ignores Range can serve
 only a small response up to 4 MiB.
 
+Private configuration reads retain a 5-second timeout. Subscription reads have
+a 10-second timeout so a cold subscription response taking more than 5 seconds
+can complete. The overall 18-second initial-response deadline includes both
+setup reads and is passed to the relay as only the remaining time.
+
 Each tunnel has a 4.5-second header/handshake deadline and a 15-second read-idle
 deadline. An 18-second overall initial-response deadline includes private config
 and subscription reads, keeping version checks inside the clients’ 20-second

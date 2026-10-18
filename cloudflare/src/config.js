@@ -46,7 +46,7 @@ export async function readConfig(env, {fresh = false, fetchImpl = fetch} = {}) {
 export async function readSubscription(url, fetchImpl = fetch) {
   publicHTTPS(url);
   let response;
-  try { response = await fetchImpl(url, {headers: {'User-Agent': 'clash.meta', Accept: 'text/yaml, text/plain, */*'}, redirect: 'manual', signal: AbortSignal.timeout(5000)}); } catch { diagnostic('subscription','fetch_failed'); throw new Error('无法读取代理订阅'); }
+  try { response = await fetchImpl(url, {headers: {'User-Agent': 'clash.meta', Accept: 'text/yaml, text/plain, */*'}, redirect: 'manual', signal: AbortSignal.timeout(10000)}); } catch { diagnostic('subscription','fetch_failed'); throw new Error('无法读取代理订阅'); }
   if (!response.ok || Number(response.headers.get('content-length')) > 1024 * 1024) { diagnostic('subscription','http_response',response.status); await response.body?.cancel(); throw new Error('无法读取代理订阅'); }
   const reader = response.body.getReader(); const chunks = []; let length = 0;
   try {

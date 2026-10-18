@@ -74,3 +74,14 @@ test('public latest-release endpoint uses the subscribed relay and returns a val
   const limited=await handle(request('/api/releases/latest'),{...env,UPDATE_LIMITER:{limit:async()=>({success:false})}},dependencies);assert.equal(limited.status,429);
   const unavailable=await handle(request('/api/releases/latest'),env,{getNodes:async()=>{throw new Error('private-node-credential');}});assert.equal(unavailable.status,502);assert.ok(!(await unavailable.text()).includes('private-node-credential'));
 });
+test('slow setup consumes the existing overall metadata deadline instead of extending it',async t=>{
+  t.mock.timers.enable({apis:['Date'],now:Date.now()});
+  let remaining;
+  try{
+    const result=await handle(request('/api/update?url='+encodeURIComponent('https://api.github.com/repos/Brclio/Brclio/releases/latest')),env,{
+      getNodes:async()=>{t.mock.timers.tick(15000);return['node'];},
+      relayUpdate:async(_target,_nodes,options)=>{remaining=options.headerDeadlineMs;return Response.json({tag_name:'v0.1.8'});}
+    });
+    assert.equal(result.status,200);assert.equal(remaining,3000);
+  }finally{t.mock.timers.reset();}
+});
