@@ -17,3 +17,11 @@ web/path-engine.js
 native/macos/build/
 native/windows/build/
 *.pfx
+
+# Cloudflare local state and secrets
+.wrangler/
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+!.env.example

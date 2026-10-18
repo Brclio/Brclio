@@ -1,0 +1,111 @@
+const $ = id => document.getElementById(id);
+let csrf = '', sha = null, activeModule = 'overview', generation = 0, configLoaded = false;
+// Register implemented panels here as client services grow. The backend decides
+// which modules are available to this account.
+const moduleDefinitions = [
+  {id: 'overview', name: '概览', panel: 'overview-section'},
+  {id: 'update-proxy', name: '更新与网络', panel: 'config-section', load: loadConfig},
+];
+let availableModules = [moduleDefinitions[0]];
+function status(message, error = false) { $('status').textContent = message; $('status').dataset.error = String(error); }
+function loggedIn(value) {
+  $('login-section').hidden = value; $('workspace').hidden = !value;
+  $('logout').hidden = !value; $('account-email').hidden = !value;
+  if (!value) {
+    generation++; csrf = ''; sha = null; configLoaded = false; activeModule = 'overview';
+    $('subscription').value = ''; $('account-email').textContent = ''; $('overview-account').textContent = '—';
+  }
+}
+async function api(path, method = 'GET', body) {
+  const response = await fetch('/api/admin/' + path, {method, credentials: 'same-origin', headers: {'Content-Type':'application/json', ...(csrf ? {'X-CSRF-Token':csrf} : {})}, ...(body ? {body:JSON.stringify(body)} : {})});
+  const result = await response.json();
+  if (!response.ok) { if (response.status === 401) loggedIn(false); throw new Error(result.error || '操作失败，请稍后重试'); }
+  return result;
+}
+function dateLabel(value) {
+  const date = value && new Date(value);
+  return date && !Number.isNaN(date.getTime()) ? date.toLocaleString('zh-CN') : '尚无保存记录';
+}
+function activateModule(id, focus = false) {
+  const selected = availableModules.find(item => item.id === id) || availableModules[0];
+  activeModule = selected.id;
+  moduleDefinitions.forEach(item => { $(item.panel).hidden = item.id !== selected.id; });
+  for (const tab of $('workspace-nav').querySelectorAll('[role=tab]')) {
+    const active = tab.dataset.module === selected.id;
+    tab.classList.toggle('active', active); tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1;
+    if (active && focus) tab.focus();
+  }
+  if (selected.load) void selected.load().catch(error => status(error.message, true));
+}
+function renderNavigation(modules) {
+  const enabled = new Set(modules.filter(item => item.status === 'implemented').map(item => item.id));
+  availableModules = moduleDefinitions.filter(item => item.id === 'overview' || enabled.has(item.id));
+  $('workspace-nav').replaceChildren();
+  availableModules.forEach(item => {
+    const tab = document.createElement('button'); tab.type = 'button'; tab.className = 'tab';
+    tab.id = 'tab-' + item.id; tab.dataset.module = item.id; tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-controls', item.panel); tab.textContent = item.name;
+    tab.addEventListener('click', () => activateModule(item.id)); $('workspace-nav').append(tab);
+  });
+  $('overview-modules').replaceChildren();
+  modules.filter(item => enabled.has(item.id) && availableModules.some(definition => definition.id === item.id)).forEach(item => {
+    const row = document.createElement('div'); row.className = 'module-row';
+    const copy = document.createElement('div'), title = document.createElement('h4'), detail = document.createElement('p');
+    title.textContent = item.name; detail.textContent = item.description; copy.append(title, detail);
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'primary'; button.textContent = '进入管理';
+    button.setAttribute('aria-label', '管理' + item.name); button.addEventListener('click', () => activateModule(item.id, true));
+    row.append(copy, button); $('overview-modules').append(row);
+  });
+  activateModule(activeModule);
+}
+async function loadOverview() {
+  const revision = generation, result = await api('overview'); if (revision !== generation) return false;
+  csrf = result.csrf;
+  const email = result.account?.email || '当前管理员', updates = result.updates || {};
+  $('account-email').textContent = email; $('overview-account').textContent = email;
+  $('overview-repository').textContent = updates.repository || '暂不可用';
+  $('overview-network').textContent = updates.transport === 'vless-tls-websocket' ? 'VLESS · TLS · WebSocket' : '暂不可用';
+  $('overview-updated').textContent = updates.configurationStatus === 'unavailable' ? '暂不可用' : dateLabel(updates.updatedAt);
+  const configured = updates.configurationStatus === 'configured' && updates.configured && updates.subscriptionConfigured;
+  $('overview-state').textContent = configured ? '更新配置已就绪' : '更新配置暂不可用';
+  $('overview-detail').textContent = configured ? '已读取当前配置，可进入「更新与网络」查看与维护。' : '暂时无法读取更新配置，请检查服务设置后刷新概览。';
+  renderNavigation(Array.isArray(result.modules) ? result.modules : []); loggedIn(true); return true;
+}
+async function loadConfig(force = false) {
+  if (configLoaded && !force) return;
+  const revision = generation, result = await api('config'); if (revision !== generation) return;
+  csrf = result.csrf; sha = result.sha; configLoaded = true; $('subscription').value = result.subscriptionUrl;
+  $('updated').textContent = result.updatedAt ? '上次保存：' + dateLabel(result.updatedAt) : '当前使用部署中的默认订阅';
+}
+$('workspace-nav').addEventListener('keydown', event => {
+  const tabs = Array.from($('workspace-nav').querySelectorAll('[role=tab]')), index = tabs.indexOf(document.activeElement);
+  if (index < 0 || !['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+  event.preventDefault();
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  activateModule(tabs[next].dataset.module, true);
+});
+$('login-form').addEventListener('submit', async event => {
+  event.preventDefault(); const button = event.submitter; button.disabled = true; status('正在登录…');
+  try {
+    const result = await api('login', 'POST', {email:$('email').value, password:$('password').value}); csrf = result.csrf; $('password').value = '';
+    if (await loadOverview()) { activateModule('overview'); $('overview-title').focus(); status('已登录客户端服务台'); }
+  } catch (error) { status(error.message, true); } finally { button.disabled = false; }
+});
+$('refresh-overview').addEventListener('click', async () => {
+  const button = $('refresh-overview'); button.disabled = true; status('正在刷新概览…');
+  try { if (await loadOverview()) status('概览已更新'); } catch (error) { status(error.message, true); } finally { button.disabled = false; }
+});
+$('config-form').addEventListener('submit', async event => {
+  event.preventDefault(); const button = event.submitter; button.disabled = true; const revision = generation; status('正在检查订阅并保存…');
+  try {
+    const result = await api('config', 'PUT', {subscriptionUrl:$('subscription').value, sha}); if (revision !== generation) return;
+    await loadConfig(true); await loadOverview();
+    if (revision === generation) status('已保存，识别到 ' + result.compatibleNodes + ' 个兼容节点。配置将在一分钟内生效。');
+  } catch (error) { status(error.message, true); } finally { button.disabled = false; }
+});
+$('logout').addEventListener('click', async () => {
+  const button = $('logout'); button.disabled = true;
+  try { await api('logout', 'POST'); loggedIn(false); $('email').focus(); status('已退出登录'); }
+  catch (error) { status(error.message, true); } finally { button.disabled = false; }
+});
+loadOverview().catch(error => { loggedIn(false); if (error.message !== '请重新登录') status(error.message, true); });

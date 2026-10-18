@@ -168,3 +168,21 @@ jobs:
         run: |
           BUILD_VERSION="$(node -p 'require("./package.json").version')"
           node scripts/build-mac-finder-extension.mjs --arch "$BUILD_ARCH" --version "$BUILD_VERSION" --output "$RUNNER_TEMP/BrclioFinderSync.appex"
+
+  cloudflare:
+    name: Brclio client services
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cloudflare/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npx wrangler deploy --dry-run

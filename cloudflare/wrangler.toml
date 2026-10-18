@@ -1,0 +1,34 @@
+name = "brclio-client-services"
+account_id = "cacceff607775c81f667b7a951d4639f"
+main = "src/worker.js"
+compatibility_date = "2026-10-18"
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
+workers_dev = true
+
+# All operational values and credentials are encrypted deployment secrets:
+# ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET, GITHUB_TOKEN,
+# GITHUB_DATA_REPOSITORY, PROXY_SUBSCRIPTION_URL.
+# No KV, Durable Objects, D1, R2, or paid storage resources are used.
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html", "**/*.txt"]
+fallthrough = true
+
+[[ratelimits]]
+name = "LOGIN_LIMITER"
+namespace_id = "1001"
+simple = { limit = 8, period = 60 }
+
+[[ratelimits]]
+name = "LOGIN_GLOBAL_LIMITER"
+namespace_id = "1002"
+simple = { limit = 30, period = 60 }
+
+[[ratelimits]]
+name = "UPDATE_LIMITER"
+namespace_id = "1003"
+simple = { limit = 120, period = 60 }
+
+[observability]
+enabled = false
