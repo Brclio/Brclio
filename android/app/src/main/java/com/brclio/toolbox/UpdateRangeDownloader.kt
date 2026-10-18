@@ -28,7 +28,10 @@ internal object UpdateRangeDownloader {
     }
 
     private fun validate(response: Response, segment: Segment, total: Long, etag: String?): String {
-        check(response.status == 206) { "内置更新代理未返回分段安装包，可关闭内置代理后重试。" }
+        check(response.status == 206) {
+            if (response.status == 503) "内置更新代理暂不可用，可关闭内置代理后重试。"
+            else "内置更新代理未返回分段安装包，可关闭内置代理后重试。"
+        }
         val range = contentRange.matchEntire(response.header("Content-Range").orEmpty())
         check(range != null && range.groupValues[1].toLongOrNull() == segment.start &&
             range.groupValues[2].toLongOrNull() == segment.end && range.groupValues[3].toLongOrNull() == total) {
@@ -43,12 +46,42 @@ internal object UpdateRangeDownloader {
         return actualEtag
     }
 
+    private fun pauseBefore503Recovery(checkActive: () -> Unit) {
+        val deadline = System.nanoTime() + 400_000_000L
+        while (true) {
+            checkActive()
+            val remaining = deadline - System.nanoTime()
+            if (remaining <= 0) return
+            Thread.sleep(minOf(25L, maxOf(1L, remaining / 1_000_000L)))
+        }
+    }
+
+    private fun openWith503Recovery(
+        part: Segment, etag: String?, open: (Segment, String?) -> Response,
+        checkActive: () -> Unit, pause: (() -> Unit) -> Unit,
+    ): Response {
+        val first = open(part, etag)
+        val unavailable = try { first.status == 503 } catch (exception: Exception) {
+            first.close()
+            throw exception
+        }
+        if (!unavailable) return first
+        // A transient platform 503 may happen before the Worker runs. Recover
+        // only this status, once, without consuming or retaining its body.
+        first.close()
+        checkActive()
+        pause(checkActive)
+        checkActive()
+        return open(part, etag)
+    }
+
     fun copy(
         total: Long,
         output: OutputStream,
         open: (Segment, String?) -> Response,
         checkActive: () -> Unit,
         progress: (Long) -> Unit,
+        pauseBeforeRecovery: (() -> Unit) -> Unit = ::pauseBefore503Recovery,
     ): Long {
         // Validate even before the first network request.
         segment(0, total)
@@ -58,7 +91,7 @@ internal object UpdateRangeDownloader {
         while (received < total) {
             checkActive()
             val part = segment(received, total)
-            open(part, etag).use { response ->
+            openWith503Recovery(part, etag, open, checkActive, pauseBeforeRecovery).use { response ->
                 etag = validate(response, part, total, etag)
                 var partReceived = 0L
                 val verifiedPart = ByteArray(part.length.toInt())

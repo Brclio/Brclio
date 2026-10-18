@@ -380,3 +380,68 @@ test('updater retains whole-package SHA verification and removes partial files a
     assert.match((await updater.install()).error, /先下载并校验/);
   }
 });
+
+test('installer-only 503 recovery repeats the same uncommitted segment once and still requires whole-package SHA', async t => {
+  const bytes = crypto.randomBytes(CHUNK_BYTES + 29);
+  const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+  const assetName = 'Brclio-0.2.0-mac-arm64.dmg';
+  for (const exhausted of [false, true]) {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-503-recovery-'));
+    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    let attempts = 0, cancelled = 0;
+    const { router, calls } = fixture({ fetch: async (_kind, url, init) => {
+      const target = new URL(url).searchParams.get('url');
+      if (target === API_URL) return new Response(JSON.stringify({ tag_name: 'v0.2.0', assets: [
+        { name: assetName, size: bytes.length, browser_download_url: downloadURL, digest: `sha256:${digest}` },
+        { name: 'SHA256SUMS.txt', browser_download_url: checksumURL },
+      ] }));
+      if (target === checksumURL) return new Response(`${digest}  ${assetName}`);
+      if (new Headers(init.headers).get('range').startsWith(`bytes=${CHUNK_BYTES}-`)) {
+        attempts++;
+        if (exhausted || attempts === 1) return new Response(new ReadableStream({ cancel() { cancelled++; } }), { status: 503 });
+      }
+      return segment(bytes, init);
+    } });
+    const updater = createUpdater({ currentVersion: '0.1.0', directory, platform: 'darwin', architecture: 'arm64', fetch: router.fetch,
+      onOperation: (_kind, active) => router.setBusy(active) });
+    await updater.check(); const state = await updater.download();
+    assert.equal(attempts, 2); assert.equal(cancelled, exhausted ? 2 : 1);
+    assert.equal(state.status, exhausted ? 'error' : 'downloaded');
+    if (exhausted) { assert.match(state.error, /内置更新代理连接失败/); assert.deepEqual(await fs.readdir(directory), []); }
+    else assert.deepEqual(await fs.readFile(path.join(directory, assetName)), bytes);
+    assert.equal((await router.state()).busy, false);
+    const segmentCalls = calls.filter(([, , init]) => new Headers(init.headers).has('range'));
+    assert.equal(segmentCalls.length, 3);
+    assert.deepEqual([...new Headers(segmentCalls[1][2].headers)], [...new Headers(segmentCalls[2][2].headers)]);
+  }
+});
+
+test('503 recovery never applies to metadata, checksum, 502, 429 or transport failures', async () => {
+  for (const target of [API_URL, checksumURL]) {
+    const { router, calls } = fixture({ fetch: async () => new Response('unavailable', { status: 503 }) });
+    await assert.rejects(router.fetch(target), /内置更新代理连接失败/); assert.equal(calls.length, 1);
+  }
+  for (const status of [502, 429]) {
+    const { router, calls } = fixture({ fetch: async () => new Response('unavailable', { status }) });
+    const request = router.fetch(downloadURL, {}, { expectedSize: 1 });
+    if (status === 429) { const response = await request; assert.equal(response.status, 429); await response.body.cancel(); }
+    else await assert.rejects(request, /内置更新代理连接失败/);
+    assert.equal(calls.length, 1);
+  }
+  const { router, calls } = fixture({ fetch: async () => { throw new Error('TLS connection failed'); } });
+  await assert.rejects(router.fetch(downloadURL, {}, { expectedSize: 1 }), /内置更新代理连接失败/); assert.equal(calls.length, 1);
+});
+
+test('abort during the 503 recovery delay stops promptly without a second request', async () => {
+  let cancelled = 0;
+  const { router, calls } = fixture({ fetch: async () => new Response(new ReadableStream({ cancel() { cancelled++; } }), { status: 503 }) });
+  const controller = new AbortController();
+  const pending = router.fetch(downloadURL, { signal: controller.signal }, { expectedSize: 1 });
+  while (!cancelled) await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const start = Date.now(); controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.ok(Date.now() - start < 300);
+  await new Promise(resolve => setTimeout(resolve, 450));
+  assert.equal(calls.length, 1); assert.equal(cancelled, 1);
+});

@@ -281,6 +281,9 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 url = URL(URL(url), destination).toString()
                 request.disconnect()
             } else {
+                // Only builtin APK segments may pass a platform 503 to the
+                // bounded recovery policy. Other statuses never gain retries.
+                if (segment != null && code == HttpURLConnection.HTTP_UNAVAILABLE) return request
                 if (code != if (segment == null) HttpURLConnection.HTTP_OK else HttpURLConnection.HTTP_PARTIAL) {
                     request.disconnect()
                     error(when (code) {

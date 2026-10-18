@@ -74,6 +74,15 @@ function abortable(promise, signal) {
   });
 }
 
+function recoveryDelay(signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(connectionError('builtin', signal)); };
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, 400);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+  });
+}
+
 function createUpdateProxy(options) {
   let enabled = true;
   let busy = false;
@@ -129,19 +138,29 @@ function createUpdateProxy(options) {
 
   function setBusy(value) { busy = value === true; publish(snapshot()); }
 
-  async function builtinRequest(selected, target, init) {
+  async function builtinRequest(selected, target, init, recoverUnavailable = false) {
     const endpoint = new URL('/api/update', SERVICE_ORIGIN);
     endpoint.searchParams.set('url', target);
-    const response = await selected.fetch(endpoint.href, { ...init, redirect: 'manual', credentials: 'omit' });
-    if (REDIRECTS.has(response.status) || response.redirected || (response.url && response.url !== endpoint.href)) {
-      await cancel(response);
-      throw routingError('内置更新代理返回异常重定向，已停止。');
+    for (let attempt = 0; ; attempt++) {
+      if (init.signal?.aborted) throw connectionError('builtin', init.signal);
+      const response = await selected.fetch(endpoint.href, { ...init, redirect: 'manual', credentials: 'omit' });
+      if (REDIRECTS.has(response.status) || response.redirected || (response.url && response.url !== endpoint.href)) {
+        await cancel(response);
+        throw routingError('内置更新代理返回异常重定向，已停止。');
+      }
+      // A platform-level 503 can terminate an invocation before the Worker's
+      // own bounded upstream retries run. Recover once, only for installers.
+      if (response.status === 503 && recoverUnavailable && attempt === 0) {
+        await cancel(response);
+        await recoveryDelay(init.signal);
+        continue;
+      }
+      if (response.status >= 500) {
+        await cancel(response);
+        throw connectionError('builtin', init.signal);
+      }
+      return response;
     }
-    if (response.status >= 500) {
-      await cancel(response);
-      throw connectionError('builtin', init.signal);
-    }
-    return response;
   }
 
   async function installerResponse(selected, target, init, expectedSize) {
@@ -164,7 +183,7 @@ function createUpdateProxy(options) {
       headers.set('Range', `bytes=${offset}-${end}`);
       headers.delete('If-Range');
       if (etag) headers.set('If-Range', etag);
-      const response = await builtinRequest(selected, target, { ...init, headers, signal: abort.signal });
+      const response = await builtinRequest(selected, target, { ...init, headers, signal: abort.signal }, true);
       if (abort.signal.aborted) await cancel(response);
       active();
       if (offset === 0 && !response.ok) return response;

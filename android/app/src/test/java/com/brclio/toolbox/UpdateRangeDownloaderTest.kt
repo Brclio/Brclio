@@ -11,6 +11,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.security.DigestOutputStream
 import java.security.MessageDigest
+import javax.net.ssl.SSLException
 
 class UpdateRangeDownloaderTest {
     private val etag = "\"stable-release-etag\""
@@ -211,5 +212,119 @@ class UpdateRangeDownloaderTest {
             assertTrue(runCatching { UpdateRangeDownloader.copy(23, output, { _, _ -> actual }, {}, {}) }.isFailure)
             assertTrue(actual.closed)
         }
+    }
+
+    @Test fun recoversFromOne503WithoutConsumingItsBody() {
+        val part = UpdateRangeDownloader.segment(0, 23)
+        val unavailable = FixtureResponse(503, mutableMapOf(), object : InputStream() {
+            override fun read(): Int = error("503 body must never be consumed")
+        })
+        val valid = response(part, 23)
+        var calls = 0
+        var pauses = 0
+        val output = ByteArrayOutputStream()
+        assertEquals(23L, UpdateRangeDownloader.copy(23, output, { segment, ifRange ->
+            assertEquals(part, segment)
+            assertEquals(null, ifRange)
+            calls++
+            if (calls == 1) unavailable else { assertTrue(unavailable.closed); valid }
+        }, {}, {}, { active -> pauses++; assertTrue(unavailable.closed); active() }))
+        assertEquals(2, calls)
+        assertEquals(1, pauses)
+        assertEquals(23, output.size())
+        assertTrue(valid.closed)
+    }
+
+    @Test fun recoveryKeepsTheSameLaterSegmentAndIfRangeWithoutDuplicatingBytes() {
+        val original = ByteArray((mib + 23).toInt()) { (it % 251).toByte() }
+        val requests = mutableListOf<Pair<String, String?>>()
+        val opened = mutableListOf<FixtureResponse>()
+        val output = ByteArrayOutputStream()
+        val digest = MessageDigest.getInstance("SHA-256")
+        UpdateRangeDownloader.copy(original.size.toLong(), DigestOutputStream(output, digest), { part, ifRange ->
+            assertTrue(opened.all { it.closed })
+            requests += part.header to ifRange
+            (if (requests.size == 2) FixtureResponse(503, mutableMapOf(), ByteArrayInputStream(byteArrayOf()))
+            else response(part, original.size.toLong(), original.copyOfRange(part.start.toInt(), part.end.toInt() + 1)))
+                .also(opened::add)
+        }, {}, {}, { active -> active() })
+        assertEquals(3, requests.size)
+        assertEquals(requests[1], requests[2])
+        assertEquals(etag, requests[2].second)
+        assertArrayEquals(original, output.toByteArray())
+        assertArrayEquals(MessageDigest.getInstance("SHA-256").digest(original), digest.digest())
+    }
+
+    @Test fun repeated503StopsAfterTwoAttemptsAndClosesBoth() {
+        val opened = mutableListOf<FixtureResponse>()
+        var pauses = 0
+        val output = ByteArrayOutputStream()
+        assertTrue(runCatching {
+            UpdateRangeDownloader.copy(23, output, { _, _ ->
+                FixtureResponse(503, mutableMapOf(), ByteArrayInputStream(byteArrayOf())).also(opened::add)
+            }, {}, {}, { active -> pauses++; active() })
+        }.isFailure)
+        assertEquals(2, opened.size)
+        assertEquals(1, pauses)
+        assertTrue(opened.all { it.closed })
+        assertEquals(0, output.size())
+    }
+
+    @Test fun doesNotRecoverOtherStatusesOrInvalid206Headers() {
+        for (status in listOf(200, 429, 500, 502, 504, 206)) {
+            val fixture = FixtureResponse(status, mutableMapOf(), ByteArrayInputStream(byteArrayOf()))
+            var calls = 0
+            var pauses = 0
+            assertTrue(runCatching {
+                UpdateRangeDownloader.copy(23, ByteArrayOutputStream(), { _, _ -> calls++; fixture }, {}, {}, { pauses++ })
+            }.isFailure)
+            assertEquals(1, calls)
+            assertEquals(0, pauses)
+            assertTrue(fixture.closed)
+        }
+    }
+
+    @Test fun doesNotRecoverTransportOrTlsFailures() {
+        for (failure in listOf(IOException("network failure"), SSLException("TLS failure"))) {
+            var calls = 0
+            var pauses = 0
+            assertTrue(runCatching {
+                UpdateRangeDownloader.copy(23, ByteArrayOutputStream(), { _, _ -> calls++; throw failure }, {}, {}, { pauses++ })
+            }.exceptionOrNull() === failure)
+            assertEquals(1, calls)
+            assertEquals(0, pauses)
+        }
+    }
+
+    @Test fun cancellationDuring503PauseDoesNotOpenRecoveryRequest() {
+        val fixture = FixtureResponse(503, mutableMapOf(), ByteArrayInputStream(byteArrayOf()))
+        var cancelled = false
+        var calls = 0
+        val output = ByteArrayOutputStream()
+        assertTrue(runCatching {
+            UpdateRangeDownloader.copy(23, output, { _, _ -> calls++; fixture },
+                { if (cancelled) throw IOException("cancelled") }, {}, { active ->
+                    assertTrue(fixture.closed)
+                    cancelled = true
+                    active()
+                })
+        }.isFailure)
+        assertEquals(1, calls)
+        assertTrue(fixture.closed)
+        assertEquals(0, output.size())
+    }
+
+    @Test fun default503PauseChecksCancellationAndDoesNotOpenRecoveryRequest() {
+        val fixture = FixtureResponse(503, mutableMapOf(), ByteArrayInputStream(byteArrayOf()))
+        var calls = 0
+        var closedChecks = 0
+        assertTrue(runCatching {
+            UpdateRangeDownloader.copy(23, ByteArrayOutputStream(), { _, _ -> calls++; fixture }, {
+                if (fixture.closed && ++closedChecks >= 3) throw IOException("cancelled during wait")
+            }, {})
+        }.isFailure)
+        assertEquals(1, calls)
+        assertTrue(fixture.closed)
+        assertEquals(3, closedChecks)
     }
 }

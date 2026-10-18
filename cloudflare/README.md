@@ -164,8 +164,10 @@ body may retry once on another subscribed node, with failed nodes excluded from
 that request's retry. Successful nodes are reused per public target host in a
 WeakMap keyed by the parsed subscription array; a refreshed or changed array has
 no old preferences, and unused arrays can be garbage collected. No socket or other
-request I/O object is reused. Validation failures never retry. Clients
-do not add another retry layer. This bounds both memory and per-invocation TLS
+request I/O object is reused. Validation failures never retry. A client or the
+verification script may repeat a still-unemitted segment once after 300–500 ms (the script uses 500 ms) only
+when the public HTTP response is 503, within its existing deadline; persistent
+503, other statuses and validation failures stop the download. This bounds both memory and per-invocation TLS
 CPU instead of decrypting an entire large installer in one request.
 
 The ordinary response route remains for metadata and small checksum manifests.

@@ -33,7 +33,7 @@ async function main() {
         { name: assetName, size: payload.length, browser_download_url: prefix + assetName, digest: `sha256:${hash}` },
         { name: 'SHA256SUMS.txt', size: 100, browser_download_url: prefix + 'SHA256SUMS.txt' },
       ] };
-      globalThis.__updateSmoke = { corrupted: true, calls: [], routes: [], ranges: [], opened: [], gateMetadata: true, systemProxy: false };
+      globalThis.__updateSmoke = { corrupted: true, injected503: false, calls: [], routes: [], ranges: [], opened: [], gateMetadata: true, systemProxy: false };
       const resolveProxy = async () => globalThis.__updateSmoke.systemProxy ? 'PROXY 127.0.0.1:7890; DIRECT' : 'DIRECT';
       session.defaultSession.resolveProxy = resolveProxy;
       const systemSession = session.fromPartition('brclio-update-system', { cache: false });
@@ -56,6 +56,10 @@ async function main() {
         const body = globalThis.__updateSmoke.corrupted ? new Uint8Array(payload.length).fill(120) : payload;
         const match = range && /^bytes=(\d+)-(\d+)$/.exec(range);
         const start = match ? Number(match[1]) : 0, end = match ? Number(match[2]) : body.length - 1;
+        if (match && start === 1048576 && !globalThis.__updateSmoke.corrupted && !globalThis.__updateSmoke.injected503) {
+          globalThis.__updateSmoke.injected503 = true;
+          return new Response('Temporary platform unavailability', { status: 503 });
+        }
         let offset = start;
         const stream = new ReadableStream({ async pull(controller) {
           await new Promise(resolve => setTimeout(resolve, 30));
@@ -127,7 +131,8 @@ async function main() {
     assert.equal((await page.evaluate(() => window.brclio.getUpdateProxyState())).enabled, false);
     assert.ok((await application.evaluate(() => globalThis.__updateSmoke.routes)).every(route => route === 'builtin'));
     const ranges = await application.evaluate(() => globalThis.__updateSmoke.ranges.filter(Boolean));
-    assert.deepEqual(ranges, [`bytes=0-1048575`, `bytes=1048576-${Buffer.byteLength(fixtureText) - 1}`, `bytes=0-1048575`, `bytes=1048576-${Buffer.byteLength(fixtureText) - 1}`]);
+    assert.deepEqual(ranges, [`bytes=0-1048575`, `bytes=1048576-${Buffer.byteLength(fixtureText) - 1}`, `bytes=0-1048575`, `bytes=1048576-${Buffer.byteLength(fixtureText) - 1}`, `bytes=1048576-${Buffer.byteLength(fixtureText) - 1}`]);
+    assert.equal(await application.evaluate(() => globalThis.__updateSmoke.injected503), true);
     await application.close();
     application = await electron.launch({ cwd: root, args: packagedExecutable ? [] : [root],
       ...(packagedExecutable ? { executablePath: packagedExecutable } : {}),
@@ -137,7 +142,7 @@ async function main() {
     assert.equal((await restarted.evaluate(() => window.brclio.getUpdateProxyState())).enabled, true);
     await restarted.click('#about-button');
     await expect(restarted.locator('#about-update-proxy')).toBeChecked();
-    console.log('PASS native update IPC/UI: built-in metadata/checksum and validated 1MiB segments, system proxy precedence, shared session-only switches, busy locking, restart default, failed-hash cleanup, safe preparation failure and cached retry. Real native replacement is tested separately.');
+    console.log('PASS native update IPC/UI: built-in metadata/checksum and validated 1MiB segments with one bounded 503 recovery, system proxy precedence, shared session-only switches, busy locking, restart default, failed-hash cleanup, safe preparation failure and cached retry. Real native replacement is tested separately.');
   } finally {
     if (application) await application.close();
     await fs.rm(temporary, { recursive: true, force: true });
