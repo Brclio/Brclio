@@ -3,12 +3,13 @@ import {createHash} from 'node:crypto';
 import {officialTarget} from '../src/protocol.js';
 import {smokeSegment} from './smoke-segment.mjs';
 const args=process.argv.slice(2);
+const requestHeaders={'User-Agent':'Brclio-Updater/1.0'};
 const origin=args.find(arg=>arg.startsWith('https://'))||process.env.BRCLIO_CLIENT_SERVICE_URL||process.env.BRCLIO_UPDATE_SERVICE_URL||'https://tools.brclio.com';
 assert.ok(origin,'Pass the confirmed custom-domain origin or set BRCLIO_CLIENT_SERVICE_URL');
 const service=new URL(origin);
 assert.equal(service.protocol,'https:');
 const through=target=>{officialTarget(target);const url=new URL('/api/update',service);url.searchParams.set('url',target);return url;};
-async function proxied(target){const response=await fetch(through(target),{signal:AbortSignal.timeout(20000)});assert.equal(response.status,200,`Proxy request failed with HTTP ${response.status}`);assert.equal(response.headers.get('x-brclio-route'),'subscription-vless');return response;}
+async function proxied(target){const response=await fetch(through(target),{signal:AbortSignal.timeout(20000),headers:requestHeaders});assert.equal(response.status,200,`Proxy request failed with HTTP ${response.status}`);assert.equal(response.headers.get('x-brclio-route'),'subscription-vless');return response;}
 async function boundedBytes(response,limit){
   const reader=response.body.getReader();const chunks=[];let size=0;
   try{while(true){const next=await reader.read();if(next.done)break;size+=next.value.length;assert.ok(size<=limit,'Checksum manifest exceeds allowed size');chunks.push(next.value);}}finally{await reader.cancel().catch(()=>{});}
@@ -33,7 +34,7 @@ assert.equal('sha256:'+selected[0].hash,asset.digest,'Installer metadata and che
 const hash=createHash('sha256');let bytes=0,segments=0,etag,maxSegmentMs=0,retryCount=0;const chunkBytes=128*1024,http503Diagnostics=[],redirectCacheCounts={hit:0,miss:0,refreshed:0,unknown:0};
 try{while(bytes<asset.size){
   const start=bytes,end=Math.min(asset.size-1,start+chunkBytes-1),segmentStarted=Date.now();
-  const fetched=await smokeSegment(through(asset.browser_download_url),{signal:AbortSignal.timeout(20000),headers:{Range:`bytes=${start}-${end}`,...(etag?{'If-Range':etag}:{})}});
+  const fetched=await smokeSegment(through(asset.browser_download_url),{signal:AbortSignal.timeout(20000),headers:{...requestHeaders,Range:`bytes=${start}-${end}`,...(etag?{'If-Range':etag}:{})}});
   const response=fetched.response;retryCount+=fetched.retryCount;http503Diagnostics.push(...fetched.diagnostics.map(item=>({...item,start,end})));
   assert.equal(response.status,206,`Installer segment failed with HTTP ${response.status}`);assert.equal(response.headers.get('x-brclio-route'),'subscription-vless');
   const cache=response.headers.get('x-brclio-redirect-cache');redirectCacheCounts[Object.hasOwn(redirectCacheCounts,cache)?cache:'unknown']++;

@@ -50,12 +50,17 @@ async function main() {
     backedUp = true;
     const readClipboard = () => observer.evaluate(({ clipboard }) => clipboard.readText());
     const focusTestedWindow = async () => {
-      await tested.evaluate(({ BrowserWindow }) => {
+      await tested.evaluate(({ app, BrowserWindow }) => {
         const window = BrowserWindow.getAllWindows()[0];
         if (window.isMinimized()) window.restore();
-        window.show(); window.focus();
+        window.show();
+        // CDP calls do not activate the app on macOS. Request actual OS focus
+        // before exercising the same foreground guard used by real recording.
+        if (process.platform === 'darwin') app.focus({ steal: true });
+        window.focus();
       });
-      await expect.poll(() => tested.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isFocused())).toBe(true);
+      await expect.poll(() => tested.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isFocused()),
+        { timeout: 10000, message: 'The native Brclio window must have OS focus before shortcut recording.' }).toBe(true);
     };
     tested = await electron.launch(launchOptions);
     const page = await tested.firstWindow();
@@ -76,6 +81,7 @@ async function main() {
         supported: true, accelerator: 'Alt+P', registered: true, error: null,
       });
       assert.equal(await tested.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Alt+P')), true);
+      await focusTestedWindow();
       assert.equal((await page.evaluate(() => window.brclio.suspendShortcut())).registered, false);
       assert.equal(await tested.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Alt+P')), false);
       assert.equal((await page.evaluate(() => window.brclio.resumeShortcut())).registered, true);
@@ -102,6 +108,7 @@ async function main() {
       }
 
       await page.locator('[data-view="settings"]').click();
+      await focusTestedWindow();
       await page.locator('#record-shortcut').click();
       await expect(page.locator('#launch-shortcut')).toHaveValue('请按下快捷键…');
       await page.keyboard.press('Control+Alt+Shift+P');
@@ -118,6 +125,7 @@ async function main() {
       // Receiving selected paths opens the copy page, so return to settings
       // before exercising capture cleanup after the native shortcut.
       await page.locator('[data-view="settings"]').click();
+      await focusTestedWindow();
       await page.locator('#record-shortcut').click();
       await expect(page.locator('#launch-shortcut')).toHaveValue('请按下快捷键…');
       await page.reload();
