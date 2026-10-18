@@ -103,4 +103,6 @@ v0.1.8 本地 macOS 候选客户端已在用户允许 Finder 自动化后，由�
 
 内置代理安装包必须按客户端实际使用的 1 MiB Range 协议验收，包含完整大包的 SHA-256、范围错位、截断、ETag 变化、`200` 回退及取消后的清理。一次 Worker 调用循环代理完整大包的成功模拟不能替代该项；生产曾出现 `ExceededCpu`，日志与客户端传输证据须分别记录。官网主下载链接应指向已验证的官方安装包，不使用旧的整包代理链路。
 
+发布工作流的 `Verify production segmented downloads` 会经正式域名读取上一公开版本，完整验证普通与大体积安装包的分段下载和 SHA-256；公开步骤依赖该任务成功。它验证生产网络，客户端原生下载及最终发布资产另行验收。
+
 参考：[Apple FinderSync](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/Finder.html)、[Apple 扩展签名、启用与分发](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/ExtensionCreation.html)、[electron-builder 26 macOS 签名](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/)、[electron-builder 26 公证环境变量](https://www.electron.build/v26/docs/mac/#notarize)、[Apple 代码签名与 Gatekeeper 检查](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html)、[GitHub runner 架构与标签](https://github.com/actions/runner-images/blob/main/README.md)、[Android SDK setup v3](https://github.com/android-actions/setup-android/tree/v3)、[Actions artifact 合并下载](https://github.com/actions/upload-artifact/blob/main/docs/MIGRATION.md)、[GitHub CLI release create](https://cli.github.com/manual/gh_release_create)、[Playwright CI](https://playwright.dev/docs/ci-intro)。

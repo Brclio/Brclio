@@ -56,6 +56,36 @@ jobs:
     needs: metadata
     uses: ./.github/workflows/ci.yml
 
+  production-service:
+    name: Verify production segmented downloads
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cloudflare/package-lock.json
+      - run: npm ci
+      - name: Verify published metadata, manifest, and complete small and large installers through production
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          node scripts/verify-live.mjs > "$GITHUB_WORKSPACE/artifacts/production-update-standard.json"
+          node scripts/verify-live.mjs --large > "$GITHUB_WORKSPACE/artifacts/production-update-large.json"
+      - name: Save production download verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-update-verification
+          path: artifacts/production-update-*.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   desktop:
     name: ${{ matrix.name }}
     needs: [metadata, tests]
@@ -250,7 +280,7 @@ jobs:
 
   publish:
     name: Publish only the complete verified release
-    needs: [metadata, tests, desktop, android]
+    needs: [metadata, tests, production-service, desktop, android]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
