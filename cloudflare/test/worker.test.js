@@ -56,3 +56,21 @@ test('overview keeps the general admin shell available when private configuratio
   assert.equal(overview.updates.configurationStatus,'unavailable');assert.equal(overview.updates.configured,false);assert.equal(overview.updates.subscriptionConfigured,false);assert.equal(overview.updates.updatedAt,null);
   assert.ok(!JSON.stringify(overview).includes('private-token-must-not-escape'));
 });
+
+test('public homepage is distinct from the protected administration shell',async()=>{
+  const home=await handle(request('/'),env);assert.equal(home.status,200);assert.match(home.headers.get('content-security-policy'),/img-src 'self' data:/);assert.match(home.headers.get('content-type'),/text\/html/);const html=await home.text();
+  assert.match(html,/src=["']\/home\.js["']/);assert.ok(!html.includes('autocomplete="current-password"'));assert.ok(!html.includes(env.ADMIN_PASSWORD));assert.ok(!html.includes(env.ADMIN_EMAIL));
+  const admin=await handle(request('/admin'),env);assert.match(await admin.text(),/autocomplete="current-password"/);
+  const script=await handle(request('/home.js'),env);assert.equal(script.status,200);assert.match(script.headers.get('content-type'),/javascript/);assert.match(await script.text(),/\/api\/releases\/latest/);
+  const missing=await handle(request('/unregistered-page'),env);assert.equal(missing.status,404);
+});
+test('public latest-release endpoint uses the subscribed relay and returns a validated limited schema',async()=>{
+  let target;const base='https://github.com/Brclio/Brclio';
+  const release={tag_name:'v0.1.8',draft:false,prerelease:false,published_at:'2026-10-17T00:00:00Z',html_url:base+'/releases/tag/v0.1.8',body:'unrecognized-private-field',assets:[{name:'SHA256SUMS.txt',size:100,browser_download_url:base+'/releases/download/v0.1.8/SHA256SUMS.txt'},{name:'Brclio-0.1.8-android.apk',size:4096,browser_download_url:base+'/releases/download/v0.1.8/Brclio-0.1.8-android.apk'}]};
+  const dependencies={getNodes:async()=>['subscribed-node'],relayUpdate:async(url,nodes)=>{target=url;assert.deepEqual(nodes,['subscribed-node']);return Response.json(release);}};
+  const response=await handle(request('/api/releases/latest'),env,dependencies);assert.equal(response.status,200);assert.equal(target,'https://api.github.com/repos/Brclio/Brclio/releases/latest');assert.equal(response.headers.get('x-brclio-route'),'subscription-vless');
+  const summary=await response.json();assert.equal(summary.version,'0.1.8');assert.equal(summary.assets[0].platform,'android');assert.ok(!JSON.stringify(summary).includes('unrecognized-private-field'));
+  release.prerelease=true;const invalid=await handle(request('/api/releases/latest'),env,dependencies);assert.equal(invalid.status,502);assert.ok(!(await invalid.text()).includes('unrecognized-private-field'));
+  const limited=await handle(request('/api/releases/latest'),{...env,UPDATE_LIMITER:{limit:async()=>({success:false})}},dependencies);assert.equal(limited.status,429);
+  const unavailable=await handle(request('/api/releases/latest'),env,{getNodes:async()=>{throw new Error('private-node-credential');}});assert.equal(unavailable.status,502);assert.ok(!(await unavailable.text()).includes('private-node-credential'));
+});

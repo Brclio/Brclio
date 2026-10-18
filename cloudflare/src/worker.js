@@ -1,5 +1,7 @@
 import adminHTML from './admin.html';
 import adminJS from './admin-client.txt';
+import homeHTML from './home.html';
+import homeJS from './home-client.txt';
 import {handleAdmin} from './admin.js';
 import {json, securityHeaders} from './http.js';
 import {modules} from './modules/index.js';
@@ -13,12 +15,13 @@ export async function handle(request, env, dependencies = {}, ctx) {
     return json({ok: true, service: service.id, proxyProtocol: 'vless-tls-websocket'});
   }
   if ((path === '/' || path === '/admin') && request.method === 'GET') {
-    return new Response(adminHTML, {headers: {
+    return new Response(path === '/' ? homeHTML : adminHTML, {headers: {
       ...securityHeaders,
       'Content-Type': 'text/html; charset=utf-8',
-      'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+      'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; " + (path === '/' ? "img-src 'self' data:; " : '') + "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
     }});
   }
+  if (path === '/home.js' && request.method === 'GET') return new Response(homeJS, {headers: {...securityHeaders, 'Content-Type': 'text/javascript; charset=utf-8'}});
   if (path === '/admin.js' && request.method === 'GET') return new Response(adminJS, {headers: {...securityHeaders, 'Content-Type': 'text/javascript; charset=utf-8'}});
   for (const module of modules) {
     const response = await module.handlePublic(request, env, dependencies, ctx);

@@ -2,6 +2,7 @@ import {readConfig, writeConfig, getNodes} from '../config.js';
 import {officialTarget} from '../protocol.js';
 import {relayUpdate} from '../relay.js';
 import {json, readJSON, rateLimit} from '../http.js';
+import {latestReleaseURL, readReleaseResponse} from '../releases.js';
 
 export const metadata = Object.freeze({
   id: 'update-proxy',
@@ -31,26 +32,29 @@ export async function overview(env, dependencies = {}) {
 
 export async function handlePublic(request, env, dependencies = {}, ctx) {
   const url = new URL(request.url);
-  if (url.pathname !== '/api/update' || request.method !== 'GET') return null;
+  const summary = url.pathname === '/api/releases/latest';
+  if ((!summary && url.pathname !== '/api/update') || request.method !== 'GET') return null;
   const ip = request.headers.get('CF-Connecting-IP') || 'development';
   if (!await rateLimit(env, 'UPDATE_LIMITER', ip, 120)) return json({error: '请求过于频繁，请稍后重试'}, 429, {'Retry-After': '60'});
   if (request.headers.has('range')) return json({error: '请使用完整下载请求'}, 416);
   let target;
   try {
-    target = officialTarget(url.searchParams.get('url'));
+    target = officialTarget(summary ? latestReleaseURL : url.searchParams.get('url'));
   } catch {
     return json({error: '只允许 Brclio 官方更新地址'}, 400);
   }
   const started = Date.now();
   try {
     const nodes = await (dependencies.getNodes || getNodes)(env);
-    return await (dependencies.relayUpdate || relayUpdate)(target.href, nodes, {
+    const response = await (dependencies.relayUpdate || relayUpdate)(target.href, nodes, {
       signal: request.signal,
       headerDeadlineMs: Math.max(1, 18000 - (Date.now() - started)),
       waitUntil: ctx ? promise => ctx.waitUntil(promise) : undefined
     });
+    if (summary) return json(await readReleaseResponse(response), 200, {'Cache-Control': 'public, max-age=60', 'X-Brclio-Route': 'subscription-vless'});
+    return response;
   } catch {
-    return json({error: '内置代理暂不可用，请关闭内置代理或稍后重试'}, 502);
+    return json({error: summary ? '暂时无法获取官方正式版本，请稍后重试或前往 GitHub 发布页' : '内置代理暂不可用，请关闭内置代理或稍后重试'}, 502);
   }
 }
 

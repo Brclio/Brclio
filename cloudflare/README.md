@@ -9,7 +9,7 @@ in the existing private GitHub data repository.
 
 ## Service and module layout
 
-- `src/worker.js`: common HTTP entry, health route and admin shell assets.
+- `src/worker.js`: common HTTP entry, public homepage, health route and admin shell assets.
 - `src/admin.js`: shared administrator login, session/CSRF guards and overview.
 - `src/service.js`: general service identity and authenticated overview data.
 - `src/http.js`: shared response, JSON-body and rate-limit helpers.
@@ -23,7 +23,7 @@ the service does not require another account/session system.
 ## Local checks and browser deployment
 
 The Worker project is `brclio-client-services` in Cloudflare account
-`cacceff607775c81f667b7a951d4639f`. Both Wrangler configurations pin that account;
+`cacceff607775c81f667b7a951d4639f`. The Wrangler configuration pins that account;
 an authenticated CLI session for another account must not select a deployment
 target implicitly. The current deployment is performed through the verified
 account in the browser.
@@ -38,7 +38,7 @@ npm run bundle:browser
 ```
 
 The browser bundle is a standalone ES module at
-`dist/browser/brclio-client-services.mjs`. It embeds the admin HTML and JavaScript;
+`dist/browser/brclio-client-services.mjs`. It embeds the public homepage and administration HTML/JavaScript;
 no auxiliary assets need uploading. `dist/browser/manifest.json` records its
 SHA-256, intended account/project, compatibility settings, environment-variable names and native
 rate-limit bindings. Rebuild it after any source or UI changes. In the correct
@@ -89,6 +89,13 @@ and it detects no system proxy.
 - `GET /api/update?url=...`: latest metadata or release file from
   `Brclio/Brclio` only. Arbitrary targets, arbitrary GitHub repositories, direct
   signed asset URLs, HTTP, and custom ports are rejected.
+- `GET /`: Brclio introduction and downloads for actual published clients.
+- `GET /api/releases/latest`: validated stable-release summary from the same
+  subscribed relay: `{version,tag,publishedAt,releaseURL,assets}`. Assets include
+  `{name,size,platform,url,checksumURL}` for recognized Mac, Windows and Android
+  installers. Draft/prerelease, nonofficial/mismatched URLs, missing or duplicate
+  checksum manifests, and ambiguous installers are rejected. Metadata is bounded
+  to 1 MiB and successful summaries may be cached by the browser for 60 seconds.
 - `GET /admin`: general Brclio client-services administration interface.
 - `POST /api/admin/login`: JSON `{email,password}`; returns `{ok,csrf}` and an
   eight-hour signed `__Host-` HttpOnly, Secure, SameSite=Strict cookie.

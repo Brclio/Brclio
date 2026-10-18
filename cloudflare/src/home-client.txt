@@ -1,0 +1,86 @@
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const examples = {
+    mac: '/Users/brclio/Documents/项目说明.md',
+    windows: 'C:\\Users\\Brclio\\Documents\\项目说明.md',
+    android: '/storage/emulated/0/Documents/项目说明.md',
+  };
+  for (const button of document.querySelectorAll('[data-platform]')) {
+    button.addEventListener('click', () => {
+      for (const item of document.querySelectorAll('[data-platform]')) item.setAttribute('aria-pressed', String(item === button));
+      $('sample-path').textContent = examples[button.dataset.platform];
+      $('sample-status').textContent = '这里只展示示例，不会读取你的文件。';
+    });
+  }
+  $('copy-sample').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('sample-path').textContent); $('sample-status').textContent = '已复制这条示例路径。'; }
+    catch { $('sample-status').textContent = '暂时无法写入剪贴板，可以选中上方示例手动复制。'; }
+  });
+
+  const platforms = {
+    'mac-arm64': { title: 'macOS · Apple Silicon', suffix: 'mac-arm64.dmg', detail: 'M 系列芯片 · DMG 安装包', button: '下载 macOS 版本' },
+    'mac-x64': { title: 'macOS · Intel', suffix: 'mac-x64.dmg', detail: 'Intel 芯片 · DMG 安装包', button: '下载 Intel 版本' },
+    'windows-x64': { title: 'Windows', suffix: 'windows-x64.exe', detail: 'x64 · EXE 安装向导', button: '下载 Windows 版本' },
+    android: { title: 'Android', suffix: 'android.apk', detail: 'Android 8.0+ · APK 安装包', button: '下载 Android 版本' },
+  };
+  const officialRelease = 'https://github.com/Brclio/Brclio/releases/';
+  function officialAsset(value, tag, name) {
+    const expected = officialRelease + 'download/' + encodeURIComponent(tag) + '/' + encodeURIComponent(name);
+    let url; try { url = new URL(value); } catch { throw new Error('invalid official asset'); }
+    if (url.href !== expected || url.protocol !== 'https:' || url.hostname !== 'github.com' || url.username || url.password || url.search || url.hash) throw new Error('invalid official asset');
+    return url.href;
+  }
+  function validateRelease(value) {
+    if (!value || !/^\d+\.\d+\.\d+$/.test(value.version) || !new RegExp('^v?' + value.version.replaceAll('.', '\\.') + '$').test(value.tag)
+        || value.releaseURL !== officialRelease + 'tag/' + encodeURIComponent(value.tag) || !Array.isArray(value.assets)
+        || !value.assets.length || value.assets.length > 4 || Number.isNaN(Date.parse(value.publishedAt))) throw new Error('invalid stable release');
+    const seen = new Set();
+    const assets = value.assets.map(asset => {
+      const platform = Object.hasOwn(platforms, asset.platform) ? platforms[asset.platform] : null;
+      if (!platform || seen.has(asset.platform) || asset.name !== 'Brclio-' + value.version + '-' + platform.suffix
+          || !Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > 1536 * 1024 * 1024) throw new Error('invalid release asset');
+      seen.add(asset.platform);
+      return { ...asset, url: officialAsset(asset.url, value.tag, asset.name),
+        checksumURL: asset.checksumURL ? officialAsset(asset.checksumURL, value.tag, 'SHA256SUMS.txt') : null };
+    });
+    return { ...value, assets };
+  }
+  function proxyURL(target) { return '/api/update?url=' + encodeURIComponent(target); }
+  function makeLink(text, url, className) {
+    const link = document.createElement('a'); link.textContent = text; link.href = url; link.className = className; link.rel = 'noreferrer'; return link;
+  }
+  async function loadRelease() {
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch('/api/releases/latest', { signal: controller.signal, credentials: 'omit', redirect: 'error', headers: { Accept: 'application/json' } });
+      if (!response.ok) { await response.body?.cancel(); throw new Error('release unavailable'); }
+      const text = await response.text(); if (text.length > 128 * 1024) throw new Error('release metadata too large');
+      const release = validateRelease(JSON.parse(text));
+      const grid = $('download-grid'); grid.replaceChildren();
+      for (const key of Object.keys(platforms)) {
+        const asset = release.assets.find(item => item.platform === key); if (!asset) continue;
+        const platform = platforms[key], card = document.createElement('article'); card.className = 'download-card';
+        const title = document.createElement('h3'); title.textContent = platform.title;
+        const detail = document.createElement('p'); detail.className = 'asset-detail'; detail.textContent = platform.detail + ' · ' + (asset.size / (1024 * 1024)).toFixed(1) + ' MiB';
+        const links = document.createElement('div'); links.className = 'download-links';
+        const download = makeLink(platform.button + ' ↓', proxyURL(asset.url), 'button button-primary'); download.dataset.downloadPlatform = key;
+        links.append(download, makeLink('GitHub 备用 ↗', asset.url, 'direct-link'));
+        card.append(title, detail, links); grid.append(card);
+      }
+      $('release-version').textContent = 'v' + release.version;
+      $('release-status').textContent = '正式版 · 发布于 ' + new Date(release.publishedAt).toLocaleDateString('zh-CN');
+      const integrity = $('download-integrity'); integrity.replaceChildren();
+      const checksum = release.assets.find(item => item.checksumURL)?.checksumURL;
+      if (checksum) integrity.append(makeLink('SHA-256 校验清单', proxyURL(checksum), ''), ' · ');
+      integrity.append(makeLink('阅读本版发布说明', release.releaseURL, ''), '。客户端在线更新会验证安装包的 SHA-256。');
+      if (release.version !== '0.1.8') $('development-note').textContent = '内置更新代理与客户端管理服务的客户端支持情况，请以你下载版本的发布说明为准。';
+      grid.hidden = false; integrity.hidden = false; $('release-fallback').hidden = true;
+    } catch {
+      $('release-status').textContent = '暂时无法确认最新正式版本';
+      $('release-fallback-message').textContent = '官方发布信息暂未读取成功。请到 GitHub 发布页确认最新正式版本和可用安装包。';
+      $('download-grid').replaceChildren(); $('download-grid').hidden = true; $('download-integrity').hidden = true; $('release-fallback').hidden = false;
+    } finally { clearTimeout(timer); }
+  }
+  void loadRelease();
+})();
