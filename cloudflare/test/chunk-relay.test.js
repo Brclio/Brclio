@@ -12,10 +12,10 @@ function response(body, status = 206, headers = {}) {
 function part(bytes, start = 0, total = bytes.byteLength, etag = '"same"') {
   return response(bytes, 206, {'content-range': `bytes ${start}-${start + bytes.byteLength - 1}/${total}`, 'content-length': String(bytes.byteLength), etag, 'content-type': 'application/octet-stream'});
 }
-test('single-range parser limits official stable installers to explicit safe integers and one MiB', () => {
-  assert.deepEqual(parseChunkRequest(official, 'bytes=0-1048575', null), {start: 0, end: 1048575, ifRange: undefined});
+test('single-range parser limits official stable installers to explicit safe integers and128KiB', () => {
+  assert.deepEqual(parseChunkRequest(official, 'bytes=0-131071', null), {start: 0, end: 131071, ifRange: undefined});
   assert.deepEqual(parseChunkRequest(official, 'bytes=1048576-1048580', '"same"'), {start: 1048576, end: 1048580, ifRange: '"same"'});
-  for (const range of ['bytes=0-1048576', 'bytes=1-0', 'bytes=0-', 'bytes=-10', 'bytes=0-1,3-4', 'bytes=00-1', 'bytes=0-9007199254740992']) assert.throws(() => parseChunkRequest(official, range));
+  for (const range of ['bytes=0-131072', 'bytes=1-0', 'bytes=0-', 'bytes=-10', 'bytes=0-1,3-4', 'bytes=00-1', 'bytes=0-9007199254740992']) assert.throws(() => parseChunkRequest(official, range));
   assert.equal(parseChunkRequest(official,'bytes=0-1','"'+'a'.repeat(256)+'"').ifRange.length,258);
   for (const etag of ['W/"weak"', 'Wed, 21 Oct 2015 07:28:00 GMT', '"a", "b"', '"bad\r\nheader"', '""', '"é"', '"'+'a'.repeat(257)+'"']) assert.throws(() => parseChunkRequest(official, 'bytes=0-1', etag));
   for (const target of ['https://api.github.com/repos/Brclio/Brclio/releases/latest', official.replace(/Brclio-0\.1\.9-windows-x64.exe$/, 'SHA256SUMS.txt'), official.replace('Brclio-0.1.9-', 'Brclio-0.1.8-')]) assert.throws(() => parseChunkRequest(target, 'bytes=0-1'));
@@ -88,11 +88,47 @@ test('healthy CDN nodes are reused across segments only for the same subscriptio
   await relayChunk(official, nodes, {range: {start: 0, end: 0}, transport});
   assert.deepEqual(calls, [['github.com', 0], ['release-assets.githubusercontent.com', 0], ['github.com', 0], ['release-assets.githubusercontent.com', 1]]);
   calls.length = 0;
-  await relayChunk(official, nodes, {range: {start: 0, end: 0}, transport});
-  assert.deepEqual(calls, [['github.com', 0], ['release-assets.githubusercontent.com', 1]]);
+  const cached=await relayChunk(official, nodes, {range: {start: 0, end: 0}, transport});
+  assert.equal(cached.headers.get('x-brclio-redirect-cache'),'hit');
+  assert.deepEqual(calls, [['release-assets.githubusercontent.com', 1]]);
   calls.length = 0;
   await relayChunk(official, [...nodes], {range: {start: 0, end: 0}, transport});
   assert.deepEqual(calls, [['github.com', 0], ['release-assets.githubusercontent.com', 0], ['github.com', 0], ['release-assets.githubusercontent.com', 1]]);
+});
+test('signed redirect TTL is fixed at60seconds and cache hits cannot extend it',async t=>{
+  t.mock.timers.enable({apis:['Date'],now:Date.now()});const calls=[];
+  const transport=async target=>{calls.push(target.hostname);return target.hostname==='github.com'?response('',302,{location:signed}):part(new Uint8Array([1]));};
+  try{
+    const first=await relayChunk(official,nodes,{range:{start:0,end:0},transport});assert.equal(first.headers.get('x-brclio-redirect-cache'),'miss');
+    t.mock.timers.tick(59999);calls.length=0;await relayChunk(official,nodes,{range:{start:0,end:0},transport});assert.deepEqual(calls,['release-assets.githubusercontent.com']);
+    t.mock.timers.tick(2);calls.length=0;await relayChunk(official,nodes,{range:{start:0,end:0},transport});assert.deepEqual(calls,['github.com','release-assets.githubusercontent.com']);
+  }finally{t.mock.timers.reset();}
+});
+test('cached403 refreshes via canonical URL within the original two-attempt budget',async()=>{
+  let rejectCached=false;const calls=[];
+  const transport=async(target,node)=>{calls.push([target.hostname,node.id]);if(target.hostname==='github.com')return response('',302,{location:signed});if(rejectCached){rejectCached=false;return response('',403);}return part(new Uint8Array([1]));};
+  await relayChunk(official,nodes,{range:{start:0,end:0},transport});rejectCached=true;calls.length=0;
+  const result=await relayChunk(official,nodes,{range:{start:0,end:0,ifRange:'"same"'},transport});
+  assert.equal(result.status,206);assert.equal(result.headers.get('x-brclio-redirect-cache'),'refreshed');
+  assert.deepEqual(calls,[['release-assets.githubusercontent.com',0],['github.com',0],['release-assets.githubusercontent.com',0]]);
+  calls.length=0;
+  await assert.rejects(()=>relayChunk(official,nodes,{range:{start:0,end:0},transport:async target=>{calls.push(target.hostname);return target.hostname==='github.com'?response('',302,{location:signed}):response('',403);}}));
+  assert.deepEqual(calls,['release-assets.githubusercontent.com','github.com','release-assets.githubusercontent.com']);
+});
+test('signed redirect cache stores only complete verified responses and cannot hide validation failures',async()=>{
+  const calls=[];let valid=false;
+  const transport=async target=>{calls.push(target.hostname);if(target.hostname==='github.com')return response('',302,{location:signed});return part(new Uint8Array([1]),0,1,valid?'"same"':'W/"weak"');};
+  await assert.rejects(()=>relayChunk(official,nodes,{range:{start:0,end:0},transport}));valid=true;calls.length=0;
+  await relayChunk(official,nodes,{range:{start:0,end:0},transport});assert.deepEqual(calls,['github.com','release-assets.githubusercontent.com']);
+  calls.length=0;
+  await assert.rejects(()=>relayChunk(official,nodes,{range:{start:0,end:0,ifRange:'"changed"'},transport}));assert.deepEqual(calls,['release-assets.githubusercontent.com']);
+});
+test('signed redirect cache is bounded to sixteen canonical assets per subscription array',async()=>{
+  const calls=[];const transport=async target=>{calls.push(target.hostname);return target.hostname==='github.com'?response('',302,{location:signed}):part(new Uint8Array([1]));};
+  const asset=index=>official.replaceAll('0.1.9',`0.2.${index}`);
+  for(let index=0;index<17;index++)await relayChunk(asset(index),nodes,{range:{start:0,end:0},transport});
+  calls.length=0;await relayChunk(asset(16),nodes,{range:{start:0,end:0},transport});assert.deepEqual(calls,['release-assets.githubusercontent.com']);
+  calls.length=0;await relayChunk(asset(0),nodes,{range:{start:0,end:0},transport});assert.deepEqual(calls,['github.com','release-assets.githubusercontent.com']);
 });
 test('hostile redirect and excess body bytes are rejected before delivery', async () => {
   let calls = 0;
@@ -109,7 +145,7 @@ test('chunk deadline bounds a stalled body and an already canceled request opens
   assert.equal(calls, 1); assert.equal(transportSignal.aborted, true);
   const abort = new AbortController(); abort.abort();
   await assert.rejects(() => relayChunk(official, nodes, {range: {start: 0, end: 0}, signal: abort.signal, transport: async () => {throw new Error('must not open');}}));
-  assert.equal(MAX_CHUNK_BYTES, 1048576);
+  assert.equal(MAX_CHUNK_BYTES, 131072);
 });
 test('final chunk failures expose only fixed enums and numeric attempt diagnostics',async t=>{
   const messages=[];t.mock.method(console,'warn',value=>messages.push(JSON.parse(value)));

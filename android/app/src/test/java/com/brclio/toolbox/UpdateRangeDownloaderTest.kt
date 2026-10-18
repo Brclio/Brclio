@@ -15,7 +15,7 @@ import javax.net.ssl.SSLException
 
 class UpdateRangeDownloaderTest {
     private val etag = "\"stable-release-etag\""
-    private val mib = UpdateRangeDownloader.SEGMENT_BYTES
+    private val chunk = UpdateRangeDownloader.SEGMENT_BYTES
 
     private class FixtureResponse(
         override val status: Int,
@@ -44,16 +44,16 @@ class UpdateRangeDownloaderTest {
     }
 
     @Test fun boundedRangesCoverExactBoundariesAndFinalPartialSegment() {
-        assertEquals("bytes=0-${mib - 1}", UpdateRangeDownloader.segment(0, mib).header)
-        assertEquals("bytes=$mib-$mib", UpdateRangeDownloader.segment(mib, mib + 1).header)
+        assertEquals("bytes=0-${chunk - 1}", UpdateRangeDownloader.segment(0, chunk).header)
+        assertEquals("bytes=$chunk-$chunk", UpdateRangeDownloader.segment(chunk, chunk + 1).header)
         assertEquals("bytes=0-0", UpdateRangeDownloader.segment(0, 1).header)
-        for ((start, total) in listOf(0L to 0L, -1L to 3L, 3L to 3L, 0L to (512L * mib + 1), Long.MAX_VALUE to Long.MAX_VALUE)) {
+        for ((start, total) in listOf(0L to 0L, -1L to 3L, 3L to 3L, 0L to (512L * 1024 * 1024 + 1), Long.MAX_VALUE to Long.MAX_VALUE)) {
             assertTrue(runCatching { UpdateRangeDownloader.segment(start, total) }.isFailure)
         }
     }
 
     @Test fun copiesSerialSegmentsWithIfRangeAndPreservesWholeFileDigest() {
-        val original = ByteArray((2 * mib + 31).toInt()) { (it % 251).toByte() }
+        val original = ByteArray((2 * chunk + 31).toInt()) { (it % 251).toByte() }
         val total = original.size.toLong()
         val output = ByteArrayOutputStream()
         val digest = MessageDigest.getInstance("SHA-256")
@@ -66,8 +66,8 @@ class UpdateRangeDownloaderTest {
             response(part, total, original.copyOfRange(part.start.toInt(), part.end.toInt() + 1)).also(opened::add)
         }, {}, progress::add)
         assertEquals(total, received)
-        assertEquals(listOf("bytes=0-${mib - 1}" to null, "bytes=$mib-${2 * mib - 1}" to etag,
-            "bytes=${2 * mib}-${total - 1}" to etag), requests)
+        assertEquals(listOf("bytes=0-${chunk - 1}" to null, "bytes=$chunk-${2 * chunk - 1}" to etag,
+            "bytes=${2 * chunk}-${total - 1}" to etag), requests)
         assertArrayEquals(original, output.toByteArray())
         assertArrayEquals(MessageDigest.getInstance("SHA-256").digest(original), digest.digest())
         assertTrue(opened.all { it.closed })
@@ -117,7 +117,7 @@ class UpdateRangeDownloaderTest {
 
     @Test fun changedEtagOrTotalInLaterSegmentFailsBeforeItsBytesAreWritten() {
         for (changeEtag in listOf(true, false)) {
-            val total = mib + 5
+            val total = chunk + 5
             val responses = mutableListOf<FixtureResponse>()
             val output = ByteArrayOutputStream()
             assertTrue(runCatching {
@@ -132,7 +132,7 @@ class UpdateRangeDownloaderTest {
                     }
                 }, {}, {})
             }.isFailure)
-            assertEquals(mib.toInt(), output.size())
+            assertEquals(chunk.toInt(), output.size())
             assertEquals(2, responses.size)
             assertTrue(responses.all { it.closed })
         }
@@ -162,9 +162,9 @@ class UpdateRangeDownloaderTest {
     }
 
     @Test fun cancellationDuringSegmentClosesResponseAndStopsLaterRequests() {
-        val total = 2 * mib
+        val total = 2 * chunk
         var reads = 0
-        val body = object : ByteArrayInputStream(ByteArray(mib.toInt())) {
+        val body = object : ByteArrayInputStream(ByteArray(chunk.toInt())) {
             override fun read(bytes: ByteArray, offset: Int, length: Int): Int {
                 reads++
                 return super.read(bytes, offset, length)
@@ -184,7 +184,7 @@ class UpdateRangeDownloaderTest {
     }
 
     @Test fun cancellationBetweenSegmentsDoesNotRequestAnotherSegment() {
-        val total = 2 * mib
+        val total = 2 * chunk
         val fixture = response(UpdateRangeDownloader.segment(0, total), total)
         var received = 0L
         var calls = 0
@@ -192,7 +192,7 @@ class UpdateRangeDownloaderTest {
             UpdateRangeDownloader.copy(total, ByteArrayOutputStream(), { _, _ -> calls++; fixture },
                 { if (received > 0) throw IOException("cancelled") }, { received = it })
         }.isFailure)
-        assertEquals(mib, received)
+        assertEquals(chunk, received)
         assertEquals(1, calls)
         assertTrue(fixture.closed)
     }
@@ -236,7 +236,7 @@ class UpdateRangeDownloaderTest {
     }
 
     @Test fun recoveryKeepsTheSameLaterSegmentAndIfRangeWithoutDuplicatingBytes() {
-        val original = ByteArray((mib + 23).toInt()) { (it % 251).toByte() }
+        val original = ByteArray((chunk + 23).toInt()) { (it % 251).toByte() }
         val requests = mutableListOf<Pair<String, String?>>()
         val opened = mutableListOf<FixtureResponse>()
         val output = ByteArrayOutputStream()

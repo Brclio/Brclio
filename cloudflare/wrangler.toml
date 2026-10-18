@@ -39,7 +39,7 @@ simple = { limit = 120, period = 60 }
 [[ratelimits]]
 name = "UPDATE_CHUNK_LIMITER"
 namespace_id = "1004"
-simple = { limit = 600, period = 60 }
+simple = { limit = 1800, period = 60 }
 
 [observability]
 enabled = false

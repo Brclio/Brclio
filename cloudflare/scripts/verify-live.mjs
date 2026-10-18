@@ -30,16 +30,17 @@ const lines=new TextDecoder('utf-8',{fatal:true}).decode(manifestBytes).replace(
 const entries=lines.map(line=>{const match=/^([0-9a-fA-F]{64})[ \t]+\*?([^\r\n]+)$/.exec(line);assert.ok(match,'Invalid checksum manifest line');return {hash:match[1].toLowerCase(),name:match[2]};});
 const selected=entries.filter(entry=>entry.name===asset.name);assert.equal(selected.length,1,'Expected exactly one checksum line for selected installer');
 assert.equal('sha256:'+selected[0].hash,asset.digest,'Installer metadata and checksum manifest disagree');
-const hash=createHash('sha256');let bytes=0,segments=0,etag,maxSegmentMs=0,retryCount=0;const chunkBytes=1024*1024,http503Diagnostics=[];
+const hash=createHash('sha256');let bytes=0,segments=0,etag,maxSegmentMs=0,retryCount=0;const chunkBytes=128*1024,http503Diagnostics=[],redirectCacheCounts={hit:0,miss:0,refreshed:0,unknown:0};
 try{while(bytes<asset.size){
   const start=bytes,end=Math.min(asset.size-1,start+chunkBytes-1),segmentStarted=Date.now();
   const fetched=await smokeSegment(through(asset.browser_download_url),{signal:AbortSignal.timeout(20000),headers:{Range:`bytes=${start}-${end}`,...(etag?{'If-Range':etag}:{})}});
   const response=fetched.response;retryCount+=fetched.retryCount;http503Diagnostics.push(...fetched.diagnostics.map(item=>({...item,start,end})));
   assert.equal(response.status,206,`Installer segment failed with HTTP ${response.status}`);assert.equal(response.headers.get('x-brclio-route'),'subscription-vless');
+  const cache=response.headers.get('x-brclio-redirect-cache');redirectCacheCounts[Object.hasOwn(redirectCacheCounts,cache)?cache:'unknown']++;
   assert.equal(response.headers.get('content-range'),`bytes ${start}-${end}/${asset.size}`);assert.equal(response.headers.get('content-length'),String(end-start+1));
   const currentETag=response.headers.get('etag');assert.match(currentETag||'',/^"[\x21\x23-\x7e]{1,256}"$/);assert.ok(!response.headers.has('content-encoding')||response.headers.get('content-encoding')==='identity');
   if(etag)assert.equal(currentETag,etag);else etag=currentETag;
   const chunk=await boundedBytes(response,end-start+1);assert.equal(chunk.length,end-start+1);bytes+=chunk.length;hash.update(chunk);segments++;maxSegmentMs=Math.max(maxSegmentMs,Date.now()-segmentStarted);
 }}catch(error){error.segmentRetryCount=retryCount+(error.segmentRetryCount||0);error.http503Diagnostics=[...http503Diagnostics,...(error.http503Diagnostics||[])];throw error;}
 assert.equal(bytes,asset.size);const digest=hash.digest('hex');assert.equal(`sha256:${digest}`,asset.digest);assert.equal(digest,selected[0].hash);
-console.log(JSON.stringify({ok:true,service:service.origin,release:release.tag_name,asset:asset.name,bytes,sha256:digest,manifestVerified:true,downloadMode:'serial-verified-1MiB-ranges',segments,strongETagVerified:true,maxSegmentMs,retryCount,http503Diagnostics,durationMs:Date.now()-started},null,2));
+console.log(JSON.stringify({ok:true,service:service.origin,release:release.tag_name,asset:asset.name,bytes,sha256:digest,manifestVerified:true,downloadMode:'serial-verified-128KiB-ranges',segments,strongETagVerified:true,maxSegmentMs,retryCount,http503Diagnostics,redirectCacheCounts,durationMs:Date.now()-started},null,2));

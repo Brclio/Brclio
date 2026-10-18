@@ -243,7 +243,8 @@ function segment(bytes, init, overrides = {}) {
   } });
 }
 
-test('built-in installer buffers validated 1MiB segments, locks route and keeps internal size out of fetch options', async () => {
+test('built-in installer buffers validated 128KiB segments, locks route and keeps internal size out of fetch options', async () => {
+  assert.equal(CHUNK_BYTES, 131072);
   const bytes = crypto.randomBytes(CHUNK_BYTES * 2 + 17);
   let native = false;
   const { router, calls, resolved } = fixture({ resolve: () => native ? 'PROXY localhost:7890' : 'DIRECT', fetch: async (_kind, _url, init) => {

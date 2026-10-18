@@ -7,7 +7,7 @@ const SYSTEM_PARTITION = 'brclio-update-system';
 const DIRECT_PARTITION = 'brclio-update-direct';
 const OFFICIAL_HOSTS = new Set(['github.com', 'api.github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com']);
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
-const CHUNK_BYTES = 1024 * 1024;
+const CHUNK_BYTES = 128 * 1024;
 const MAX_INSTALLER_BYTES = 1536 * 1024 * 1024;
 
 function routingError(message) { const error = new Error(message); error.code = 'BRCLIO_UPDATE_ROUTE'; return error; }

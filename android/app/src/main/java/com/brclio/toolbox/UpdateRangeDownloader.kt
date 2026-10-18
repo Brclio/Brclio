@@ -6,7 +6,7 @@ import java.io.OutputStream
 
 /** A fresh bounded relay invocation for every APK segment; never resume unverified bytes. */
 internal object UpdateRangeDownloader {
-    const val SEGMENT_BYTES = 1024 * 1024L
+    const val SEGMENT_BYTES = 128 * 1024L
     private const val MAX_APK_BYTES = 512 * 1024 * 1024L
     private val contentRange = Regex("^bytes (0|[1-9][0-9]*)-(0|[1-9][0-9]*)/(0|[1-9][0-9]*)$")
     private val strongEtag = Regex("^\"[\\x21\\x23-\\x7E]{1,256}\"$")

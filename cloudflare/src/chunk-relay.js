@@ -2,11 +2,21 @@ import {officialTarget, redirectTarget} from './protocol.js';
 import {tunnelRequest, safeFailure} from './tunnel.js';
 import {relayResponse} from './relay.js';
 
-export const MAX_CHUNK_BYTES = 1024 * 1024;
+export const MAX_CHUNK_BYTES = 128 * 1024;
 const MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024;
 const strongETag = value => typeof value === 'string' && /^"[\x21\x23-\x7e]{1,256}"$/.test(value);
 const successfulNodes = new WeakMap();
+const signedRedirects = new WeakMap();
+const REDIRECT_TTL_MS = 60000;
+const MAX_REDIRECTS = 16;
 class InvalidChunk extends Error {}
+class ExpiredRedirect extends Error {}
+function redirectsFor(nodes) {
+  let redirects = signedRedirects.get(nodes);
+  if (!redirects) { redirects = new Map(); signedRedirects.set(nodes, redirects); }
+  for (const [key, entry] of redirects) if (entry.expires <= Date.now()) redirects.delete(key);
+  return redirects;
+}
 
 export function isInstallerTarget(value) {
   const target = officialTarget(value);
@@ -68,16 +78,20 @@ export async function relayChunk(value, nodes, {range, signal, transport = tunne
   const abort = new AbortController(), failed = new Map();
   let preferred = successfulNodes.get(nodes);
   if (!preferred) { preferred = new Map(); successfulNodes.set(nodes, preferred); }
+  const redirects = redirectsFor(nodes);
   const cancel = () => abort.abort();
   signal?.addEventListener('abort', cancel, {once: true});
   if (signal?.aborted) cancel();
   const timer = setTimeout(cancel, Math.max(1, headerDeadlineMs));
   const started = Date.now();
-  let active, activeHost, activeNode;
+  let active, activeHost, activeNode, refreshedRedirect = false;
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (abort.signal.aborted || !nodes.length) throw new Error('下载已取消或没有可用节点');
-      let current = initial;
+      const cached = redirects.get(initial.href);
+      const usingCache = Boolean(cached && cached.expires > Date.now());
+      if (cached && !usingCache) redirects.delete(initial.href);
+      let current = usingCache ? new URL(cached.url) : initial;
       try {
         for (let redirect = 0; ; redirect++) {
           if (abort.signal.aborted) throw new Error('下载已取消');
@@ -87,6 +101,7 @@ export async function relayChunk(value, nodes, {range, signal, transport = tunne
           activeNode = previous && !excluded.has(previous) ? previous : nodes.find(node => !excluded.has(node));
           if (!activeNode) throw new Error('没有可用的备用节点');
           active = await transport(current, activeNode, {signal: abort.signal, range: `bytes=${range.start}-${range.end}`, ifRange: range.ifRange});
+          if (usingCache && active.status === 403) { redirects.delete(initial.href); refreshedRedirect = true; throw new ExpiredRedirect('缓存下载地址已失效'); }
           if (active.status >= 500 || active.status === 429) throw new Error('代理上游暂不可用');
           if (![301, 302, 303, 307, 308].includes(active.status)) break;
           const location = active.headers.get('location');
@@ -99,15 +114,23 @@ export async function relayChunk(value, nodes, {range, signal, transport = tunne
         const {length, etag} = validateHead(active, range);
         const bytes = await completeBody(active, length, abort.signal);
         preferred.set(activeHost, activeNode);
-        const headers = new Headers({'Cache-Control': 'no-store, no-transform', 'X-Content-Type-Options': 'nosniff', 'X-Brclio-Route': 'subscription-vless', 'Accept-Ranges': 'bytes', 'Content-Type': 'application/octet-stream', 'Content-Length': String(length), 'Content-Range': active.headers.get('content-range'), ETag: etag});
+        if (!usingCache && ['release-assets.githubusercontent.com', 'objects.githubusercontent.com'].includes(current.hostname)) {
+          const validated = redirectTarget(current.href, initial.href);
+          redirects.delete(initial.href);
+          while (redirects.size >= MAX_REDIRECTS) redirects.delete(redirects.keys().next().value);
+          redirects.set(initial.href, {url: validated.href, expires: Date.now() + REDIRECT_TTL_MS});
+        }
+        const headers = new Headers({'Cache-Control': 'no-store, no-transform', 'X-Content-Type-Options': 'nosniff', 'X-Brclio-Route': 'subscription-vless', 'X-Brclio-Redirect-Cache': refreshedRedirect ? 'refreshed' : usingCache ? 'hit' : 'miss', 'Accept-Ranges': 'bytes', 'Content-Type': 'application/octet-stream', 'Content-Length': String(length), 'Content-Range': active.headers.get('content-range'), ETag: etag});
         for (const name of ['content-disposition', 'last-modified']) if (active.headers.has(name)) headers.set(name, active.headers.get(name));
         return relayResponse(new Response(bytes).body, {status: 206, headers}, waitUntil);
       } catch (error) {
-        if (preferred.get(activeHost) === activeNode) preferred.delete(activeHost);
-        if (activeNode) { const excluded = failed.get(activeHost) || new Set(); excluded.add(activeNode); failed.set(activeHost, excluded); }
+        if (!(error instanceof ExpiredRedirect)) {
+          if (preferred.get(activeHost) === activeNode) preferred.delete(activeHost);
+          if (activeNode) { const excluded = failed.get(activeHost) || new Set(); excluded.add(activeNode); failed.set(activeHost, excluded); }
+        }
         if (active) { active.close(); await active.body?.cancel().catch(() => {}); active = null; }
         const terminal = error instanceof InvalidChunk || abort.signal.aborted || attempt === 1;
-        const failure = error instanceof InvalidChunk ? {stage: 'http', code: 'invalid_segment_response'} : abort.signal.aborted ? {stage: 'relay', code: 'timeout_or_cancelled'} : safeFailure(error);
+        const failure = error instanceof InvalidChunk ? {stage: 'http', code: 'invalid_segment_response'} : error instanceof ExpiredRedirect ? {stage: 'http', code: 'signed_url_expired'} : abort.signal.aborted ? {stage: 'relay', code: 'timeout_or_cancelled'} : safeFailure(error);
         console.warn(JSON.stringify({event: terminal ? 'proxy_chunk_failed' : 'proxy_chunk_retry', ...failure, attempt: attempt + 1, nodeIndex: nodes.indexOf(activeNode), elapsedMs: Date.now() - started}));
         if (terminal) throw error;
       }

@@ -37,7 +37,7 @@ export async function handlePublic(request, env, dependencies = {}, ctx) {
   if ((!summary && url.pathname !== '/api/update') || request.method !== 'GET') return null;
   const ip = request.headers.get('CF-Connecting-IP') || 'development';
   const chunked = !summary && request.headers.has('range');
-  if (!await rateLimit(env, chunked ? 'UPDATE_CHUNK_LIMITER' : 'UPDATE_LIMITER', ip, chunked ? 600 : 120)) return json({error: '请求过于频繁，请稍后重试'}, 429, {'Retry-After': '60'});
+  if (!await rateLimit(env, chunked ? 'UPDATE_CHUNK_LIMITER' : 'UPDATE_LIMITER', ip, chunked ? 1800 : 120)) return json({error: '请求过于频繁，请稍后重试'}, 429, {'Retry-After': '60'});
   if ((summary && request.headers.has('range')) || (!chunked && request.headers.has('if-range'))) return json({error: '该请求不支持下载范围'}, 416);
   let target;
   try {
@@ -45,11 +45,11 @@ export async function handlePublic(request, env, dependencies = {}, ctx) {
   } catch {
     return json({error: '只允许 Brclio 官方更新地址'}, 400);
   }
-  if (!chunked && isInstallerTarget(target.href)) return json({error: '安装包必须使用不超过 1 MiB 的显式单段 Range 请求'}, 416);
+  if (!chunked && isInstallerTarget(target.href)) return json({error: '安装包必须使用不超过 128 KiB 的显式单段 Range 请求'}, 416);
   let range;
   if (chunked) {
     try { range = parseChunkRequest(target.href, request.headers.get('range'), request.headers.get('if-range')); }
-    catch { return json({error: '只支持官方安装包不超过 1 MiB 的显式单段范围'}, 416); }
+    catch { return json({error: '只支持官方安装包不超过 128 KiB 的显式单段范围'}, 416); }
   }
   const started = Date.now();
   try {

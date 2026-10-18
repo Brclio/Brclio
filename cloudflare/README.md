@@ -64,7 +64,7 @@ use the ignored `.dev.vars` file.
 
 Wrangler declares native rate limits for per-IP login attempts (8/minute),
 combined admin attempts (30/minute), update metadata/legacy requests (120/minute per IP),
-and installer segment requests (600/minute per IP, separate namespace `1004`).
+and installer segment requests (1800/minute per IP, separate namespace `1004`).
 These limits are per Cloudflare location, as provided by the native rate-limit
 API; no storage service is provisioned. The in-memory fallback exists for local
 development and unit tests.
@@ -96,7 +96,7 @@ and it detects no system proxy.
   `Brclio/Brclio` only. Arbitrary targets, arbitrary GitHub repositories, direct
   signed asset URLs, HTTP, and custom ports are rejected.
 - Current clients request official installers with one explicit `Range: bytes=start-end`
-  containing at most 1 MiB. Metadata and checksum manifests cannot use Range.
+  containing at most 128 KiB. Metadata and checksum manifests cannot use Range.
   The response is HTTP 206 with a precise `Content-Range`, `Content-Length` and
   strong quoted `ETag` (1–256 visible ASCII characters inside the quotes).
   Later requests send that ETag unchanged in `If-Range`.
@@ -157,7 +157,7 @@ update traffic. Normal authenticated HTTPS is used only to access the private
 GitHub configuration and retrieve the proxy subscription itself.
 
 Release redirects are followed manually and only to GitHub's recognized asset
-storage. Current clients download serial segments of at most 1 MiB, each in a
+storage. Current clients download serial segments of at most 128 KiB, each in a
 separate Worker invocation. Every segment is fully buffered and checked before
 any segment byte reaches the client. A transient network/5xx/429 failure or short
 body may retry once on another subscribed node, with failed nodes excluded from
@@ -169,6 +169,17 @@ verification script may repeat a still-unemitted segment once after 300–500 ms
 when the public HTTP response is 503, within its existing deadline; persistent
 503, other statuses and validation failures stop the download. This bounds both memory and per-invocation TLS
 CPU instead of decrypting an entire large installer in one request.
+
+A second WeakMap, also keyed by the exact parsed subscription array, caches only
+the manually validated signed CDN URL for each canonical official installer URL.
+It holds at most 16 entries per array with a fixed 60-second TTL; hits do not extend
+that lifetime. Entries are stored only after a complete verified 206 segment, and
+contain no response, stream or socket. New node arrays automatically isolate old
+entries. A cached CDN 403 removes the entry and returns to canonical GitHub within
+the existing two-attempt budget, without marking the healthy node as failed.
+Other validation failures still stop immediately. No signed URL is accepted from
+the public caller or returned in the response. The fixed response enum
+`X-Brclio-Redirect-Cache: hit|miss|refreshed` supports live CPU verification.
 
 The ordinary response route remains for metadata and small checksum manifests.
 Large installer requests without Range are rejected before transport because
@@ -229,7 +240,7 @@ Native observability persistence is disabled. A successful relay includes
 `npm test` covers VLESS framing, fragmented/chunked HTTP, certificate stream
 peek behavior, socket queue bounds, actual workerd binary-WebSocket handling,
 fixed-length streaming in the actual Worker runtime, strict target/redirect restrictions,
-segmented streaming and cancellation, buffered one-MiB Range validation and fail-closed
+segmented streaming and cancellation, buffered 128 KiB Range validation and fail-closed
 ETag/If-Range behavior, node-cache expiry/invalidation, login/origin/CSRF/session cookies, native
 rate-limit routing, GitHub authorization containment and SHA conflicts. Actual
 TLS handshakes additionally cover constrained intermediate CAs, unknown critical
@@ -256,7 +267,7 @@ npm run smoke -- https://tools.brclio.com
 npm run smoke -- https://tools.brclio.com --large
 ```
 
-Installer downloads use the same serial verified one-MiB requests as current clients,
+Installer downloads use the same serial verified 128 KiB requests as current clients,
 including strong ETag/If-Range checks. `--large` selects an installer larger than 100 MiB. Neither command saves or runs
 an installer. The default origin is `https://tools.brclio.com`; an explicit
 origin or `BRCLIO_CLIENT_SERVICE_URL` can override it for verification. On a Node runtime that supports it,
