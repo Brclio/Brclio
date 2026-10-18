@@ -1,6 +1,6 @@
 'use strict';
 
-const { API_URL } = require('./updater.cjs');
+const { API_URL, requestBlockMessage } = require('./updater.cjs');
 
 const SERVICE_ORIGIN = 'https://tools.brclio.com';
 const SYSTEM_PARTITION = 'brclio-update-system';
@@ -147,6 +147,11 @@ function createUpdateProxy(options) {
       if (REDIRECTS.has(response.status) || response.redirected || (response.url && response.url !== endpoint.href)) {
         await cancel(response);
         throw routingError('内置更新代理返回异常重定向，已停止。');
+      }
+      const blocked = requestBlockMessage(response, true);
+      if (blocked) {
+        await cancel(response);
+        throw routingError(blocked);
       }
       // A platform-level 503 can terminate an invocation before the Worker's
       // own bounded upstream retries run. Recover once, only for installers.

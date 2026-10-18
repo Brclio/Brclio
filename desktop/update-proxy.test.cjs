@@ -117,9 +117,40 @@ test('unavailable built-in service cancels its body and explains the temporary o
   const { router } = fixture({ fetch: async () => new Response(new ReadableStream({ cancel() { cancelled++; } }), { status: 502 }) });
   await assert.rejects(router.fetch(API_URL), /内置更新代理连接失败，可关闭内置代理/);
   assert.equal(cancelled, 1);
-  for (const status of [403, 404, 429]) {
-    const fixtureWithStatus = fixture({ fetch: async () => new Response('GitHub response', { status }) });
-    assert.equal((await fixtureWithStatus.router.fetch(API_URL)).status, status);
+  const notPublished = fixture({ fetch: async () => new Response('GitHub response', { status: 404 }) });
+  assert.equal((await notPublished.router.fetch(API_URL)).status, 404);
+});
+
+test('built-in access errors identify challenges or service refusal without reading or exposing response content', async () => {
+  for (const [status, headers, message] of [
+    [403, {}, /内置更新服务拒绝请求（HTTP 403）/],
+    [429, {}, /内置更新服务暂时限制请求（HTTP 429）/],
+    [403, { 'cf-mitigated': 'challenge' }, /Cloudflare 安全验证拦截/],
+    [200, { 'cf-mitigated': 'CHALLENGE' }, /Cloudflare 安全验证拦截/],
+    [503, { 'cf-mitigated': 'challenge' }, /Cloudflare 安全验证拦截/],
+  ]) {
+    let cancelled = 0; let read = 0;
+    const { router, calls, states } = fixture({ fetch: async () => new Response(new ReadableStream({
+      pull() { read++; throw new Error('private URL and response HTML must remain unread'); },
+      cancel() { cancelled++; },
+    }, { highWaterMark: 0 }), { status, headers }) });
+    await assert.rejects(router.fetch(API_URL), error => message.test(error.message) && !/GitHub|private|HTML/.test(error.message));
+    assert.equal(cancelled, 1); assert.equal(read, 0); assert.equal(calls.length, 1);
+    assert.ok(states.every(state => !/private|HTML/.test(JSON.stringify(state))));
+  }
+});
+
+test('native direct and system routes preserve GitHub limits and expose challenge headers to the updater', async () => {
+  for (const system of [false, true]) {
+    for (const challenge of [false, true]) {
+      const { router, calls } = fixture({ resolve: () => system ? 'PROXY localhost:7890' : 'DIRECT',
+        fetch: async () => new Response(null, { status: 403, headers: challenge ? { 'cf-mitigated': 'challenge' } : {} }) });
+      if (!system) await router.setEnabled(false);
+      const updater = createUpdater({ currentVersion: '0.1.0', directory: '/unused-check-only', fetch: router.fetch });
+      const state = await updater.check();
+      assert.match(state.error, challenge ? /Cloudflare 安全验证拦截/ : /GitHub 暂时限制请求/);
+      assert.equal(calls.length, 1); assert.equal(calls[0][0], 'native'); assert.equal(calls[0][1], API_URL);
+    }
   }
 });
 
@@ -425,12 +456,49 @@ test('503 recovery never applies to metadata, checksum, 502, 429 or transport fa
   for (const status of [502, 429]) {
     const { router, calls } = fixture({ fetch: async () => new Response('unavailable', { status }) });
     const request = router.fetch(downloadURL, {}, { expectedSize: 1 });
-    if (status === 429) { const response = await request; assert.equal(response.status, 429); await response.body.cancel(); }
-    else await assert.rejects(request, /内置更新代理连接失败/);
+    await assert.rejects(request, status === 429 ? /内置更新服务暂时限制请求/ : /内置更新代理连接失败/);
     assert.equal(calls.length, 1);
   }
   const { router, calls } = fixture({ fetch: async () => { throw new Error('TLS connection failed'); } });
   await assert.rejects(router.fetch(downloadURL, {}, { expectedSize: 1 }), /内置更新代理连接失败/); assert.equal(calls.length, 1);
+});
+
+test('later installer access blocks preserve the safe explanation and remove partial downloads without retry', async t => {
+  const bytes = crypto.randomBytes(CHUNK_BYTES + 29);
+  const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+  const assetName = 'Brclio-0.2.0-mac-arm64.dmg';
+  for (const [status, headers, message] of [
+    [403, {}, /内置更新服务拒绝请求/],
+    [429, {}, /内置更新服务暂时限制请求/],
+    [403, { 'cf-mitigated': 'challenge' }, /Cloudflare 安全验证拦截/],
+    [200, { 'cf-mitigated': 'challenge' }, /Cloudflare 安全验证拦截/],
+  ]) {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-access-block-'));
+    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    let blockedRequests = 0; let cancelled = 0;
+    const { router, states } = fixture({ fetch: async (_kind, url, init) => {
+      const target = new URL(url).searchParams.get('url');
+      if (target === API_URL) return new Response(JSON.stringify({ tag_name: 'v0.2.0', assets: [
+        { name: assetName, size: bytes.length, browser_download_url: downloadURL, digest: `sha256:${digest}` },
+        { name: 'SHA256SUMS.txt', browser_download_url: checksumURL },
+      ] }));
+      if (target === checksumURL) return new Response(`${digest}  ${assetName}`);
+      if (new Headers(init.headers).get('range').startsWith('bytes=0-')) return segment(bytes, init);
+      blockedRequests++;
+      return new Response(new ReadableStream({
+        pull() { throw new Error('https://private.invalid/?token=secret HTML must not be read'); },
+        cancel() { cancelled++; },
+      }, { highWaterMark: 0 }), { status, headers });
+    } });
+    const updater = createUpdater({ currentVersion: '0.1.0', directory, platform: 'darwin', architecture: 'arm64', fetch: router.fetch,
+      onOperation: (_kind, active) => router.setBusy(active) });
+    await updater.check(); const state = await updater.download();
+    assert.equal(state.status, 'error'); assert.match(state.error, message); assert.equal(state.canInstall, false);
+    assert.equal(blockedRequests, 1); assert.equal(cancelled, 1);
+    assert.deepEqual(await fs.readdir(directory), []);
+    assert.ok(states.every(value => !/private|token=|HTML/.test(JSON.stringify(value))));
+    assert.equal((await router.state()).busy, false);
+  }
 });
 
 test('abort during the 503 recovery delay stops promptly without a second request', async () => {

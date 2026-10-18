@@ -76,4 +76,45 @@ class UpdateProxyPolicyTest {
             assertTrue(source, runCatching { UpdateProxyPolicy.relayAddress(source) }.isFailure)
         }
     }
+
+    @Test fun cloudflareChallengeTakesPriorityOverHttpStatusAndRoute() {
+        val expected = "更新请求被 Cloudflare 安全验证拦截，请稍后重试或切换更新网络。"
+        for (route in UpdateProxyRoute.entries) {
+            for (status in listOf(200, 206, 302, 403, 429, 503)) {
+                assertEquals(expected, UpdateProxyPolicy.responseError(status, route, " \tChAlLeNgE\t "))
+            }
+        }
+    }
+
+    @Test fun builtinServiceDenialAndRateLimitAreNotAttributedToGithub() {
+        assertEquals("内置更新服务拒绝请求（HTTP 403），可关闭内置代理或稍后重试。",
+            UpdateProxyPolicy.responseError(403, UpdateProxyRoute.BUILTIN))
+        assertEquals("内置更新服务暂时限制请求（HTTP 429），可关闭内置代理或稍后重试。",
+            UpdateProxyPolicy.responseError(429, UpdateProxyRoute.BUILTIN))
+    }
+
+    @Test fun ordinaryGithubLimitsKeepTheirExistingMessageOnSystemAndDirectRoutes() {
+        for (route in listOf(UpdateProxyRoute.SYSTEM, UpdateProxyRoute.DIRECT)) {
+            for (status in listOf(403, 429)) {
+                assertEquals("GitHub 请求受到限制，请稍后重试。", UpdateProxyPolicy.responseError(status, route))
+            }
+        }
+    }
+
+    @Test fun challengeHeaderMustMatchExactlyAndUntrustedHeaderTextNeverAppearsInErrors() {
+        val untrusted = "https://private.example/sub?token=fixture-sensitive-value"
+        for (header in listOf(null, "", "challenge-other", "other challenge", untrusted)) {
+            assertFalse(UpdateProxyPolicy.isCloudflareChallenge(header))
+            val message = UpdateProxyPolicy.responseError(403, UpdateProxyRoute.BUILTIN, header)
+            assertFalse(message.contains(untrusted))
+            assertFalse(message.contains("fixture-sensitive-value"))
+            assertEquals(UpdateProxyPolicy.responseError(403, UpdateProxyRoute.BUILTIN), message)
+        }
+    }
+
+    @Test fun unrelatedHttpErrorsKeepTheirExistingMessages() {
+        assertEquals("GitHub 尚未发布正式更新。", UpdateProxyPolicy.responseError(404, UpdateProxyRoute.BUILTIN))
+        assertEquals("内置更新代理暂不可用，可关闭内置代理后重试。", UpdateProxyPolicy.responseError(502, UpdateProxyRoute.BUILTIN))
+        assertEquals("更新服务器返回 HTTP 502，请重试。", UpdateProxyPolicy.responseError(502, UpdateProxyRoute.SYSTEM))
+    }
 }

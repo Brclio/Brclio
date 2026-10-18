@@ -57,6 +57,15 @@ function checksumFor(text, filename) {
   return matches[0][1].toLowerCase();
 }
 
+function requestBlockMessage(response, builtin = false) {
+  if (response.headers.get('cf-mitigated')?.trim().toLowerCase() === 'challenge') {
+    return '更新请求被 Cloudflare 安全验证拦截，请稍后重试或切换更新网络。';
+  }
+  if (builtin && response.status === 403) return '内置更新服务拒绝请求（HTTP 403），可关闭内置代理或稍后重试。';
+  if (builtin && response.status === 429) return '内置更新服务暂时限制请求（HTTP 429），可关闭内置代理或稍后重试。';
+  return null;
+}
+
 async function fileDigest(filename) {
   const hash = crypto.createHash('sha256');
   for await (const chunk of createReadStream(filename)) hash.update(chunk);
@@ -77,6 +86,11 @@ function createUpdater(options) {
 
   async function request(url, signal, expectedSize) {
     const response = await fetchURL(url, { signal, redirect: 'follow', headers: { Accept: 'application/vnd.github+json', 'User-Agent': `Brclio/${currentVersion}` } }, expectedSize === undefined ? undefined : { expectedSize });
+    const blocked = requestBlockMessage(response);
+    if (blocked) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(blocked);
+    }
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
       if (response.status === 404) throw new Error('正式版本尚未发布，请稍后检查。');
@@ -214,4 +228,4 @@ function createUpdater(options) {
   return { state: snapshot, check, download, install, restoreResult };
 }
 
-module.exports = { createUpdater, parseRelease, compareVersions, checksumFor, API_URL };
+module.exports = { createUpdater, parseRelease, compareVersions, checksumFor, requestBlockMessage, API_URL };

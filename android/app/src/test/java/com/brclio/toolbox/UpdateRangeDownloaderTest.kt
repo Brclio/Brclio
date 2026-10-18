@@ -327,4 +327,33 @@ class UpdateRangeDownloaderTest {
         assertTrue(fixture.closed)
         assertEquals(3, closedChecks)
     }
+
+    @Test fun laterSegmentKeepsSafeChallengeAndServiceMessagesWithoutRetry() {
+        val messages = listOf(
+            UpdateProxyPolicy.responseError(200, UpdateProxyRoute.BUILTIN, "challenge"),
+            UpdateProxyPolicy.responseError(403, UpdateProxyRoute.BUILTIN),
+            UpdateProxyPolicy.responseError(429, UpdateProxyRoute.BUILTIN),
+        )
+        for (message in messages) {
+            val total = chunk + 23
+            val first = response(UpdateRangeDownloader.segment(0, total), total)
+            val output = ByteArrayOutputStream()
+            val failure = IllegalStateException(message)
+            var calls = 0
+            var pauses = 0
+            val actual = runCatching {
+                UpdateRangeDownloader.copy(total, output, { part, _ ->
+                    calls++
+                    if (part.start > 0) throw failure
+                    first
+                }, {}, {}, { pauses++ })
+            }.exceptionOrNull()
+            assertTrue(actual === failure)
+            assertEquals(message, actual?.message)
+            assertEquals(2, calls)
+            assertEquals(0, pauses)
+            assertEquals(chunk.toInt(), output.size())
+            assertTrue(first.closed)
+        }
+    }
 }

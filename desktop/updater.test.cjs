@@ -188,6 +188,27 @@ test('rejected HTTP responses cancel unread streams before reporting an update e
   assert.equal(cancelled, 1);
 });
 
+test('Cloudflare challenges take precedence over HTTP status without reading challenge HTML', async t => {
+  for (const status of [200, 403, 429]) {
+    let cancelled = 0; let read = 0;
+    const { updater, states } = await setup(t, { fetch: async () => new Response(new ReadableStream({
+      pull() { read++; throw new Error('private URL and response HTML must not be read'); },
+      cancel() { cancelled++; },
+    }, { highWaterMark: 0 }), { status, headers: { 'cf-mitigated': ' challenge ' } }) });
+    const state = await updater.check();
+    assert.equal(state.status, 'error'); assert.match(state.error, /Cloudflare 安全验证拦截/);
+    assert.equal(cancelled, 1); assert.equal(read, 0);
+    assert.ok(states.every(value => !/private|HTML|GitHub/.test(value.error || '')));
+  }
+});
+
+test('direct GitHub 403 and 429 retain the GitHub rate-limit explanation without a challenge header', async t => {
+  for (const status of [403, 429]) {
+    const { updater } = await setup(t, { fetch: async () => new Response(null, { status }) });
+    assert.match((await updater.check()).error, /GitHub 暂时限制请求/);
+  }
+});
+
 test('concurrent install requests share verification and open the installer only once', async t => {
   const opened = [];
   const { updater } = await setup(t, { options: { installPackage: async descriptor => {

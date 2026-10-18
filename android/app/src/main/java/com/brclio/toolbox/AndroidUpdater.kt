@@ -272,6 +272,11 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
             connection = request
             if (closed || Thread.currentThread().isInterrupted) { request.disconnect(); error("下载已停止。") }
             val code = request.responseCode
+            val mitigated = request.getHeaderField("cf-mitigated")
+            if (UpdateProxyPolicy.isCloudflareChallenge(mitigated)) {
+                request.disconnect()
+                error(UpdateProxyPolicy.responseError(code, route, mitigated))
+            }
             if (code in setOf(301, 302, 303, 307, 308)) {
                 if (usesRelay) {
                     request.disconnect()
@@ -286,14 +291,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 if (segment != null && code == HttpURLConnection.HTTP_UNAVAILABLE) return request
                 if (code != if (segment == null) HttpURLConnection.HTTP_OK else HttpURLConnection.HTTP_PARTIAL) {
                     request.disconnect()
-                    error(when (code) {
-                        200 -> "内置更新代理未返回分段安装包，可关闭内置代理后重试。"
-                        404 -> "GitHub 尚未发布正式更新。"
-                        403, 429 -> "GitHub 请求受到限制，请稍后重试。"
-                        in 500..599 -> if (usesRelay) "内置更新代理暂不可用，可关闭内置代理后重试。"
-                            else "更新服务器返回 HTTP $code，请重试。"
-                        else -> "更新服务器返回 HTTP $code，请重试。"
-                    })
+                    error(UpdateProxyPolicy.responseError(code, route))
                 }
                 return request
             }
