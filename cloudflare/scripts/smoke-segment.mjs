@@ -1,3 +1,17 @@
+// Logs contain only fixed enums and a syntactically valid public request ID.
+export function smokeResponseDiagnostic(response) {
+  const ray = response.headers.get('cf-ray') || '';
+  const server = response.headers.get('server')?.toLowerCase();
+  const route = response.headers.get('x-brclio-route');
+  return {
+    status: response.status,
+    cfRay: /^[a-f0-9]{16,32}-[a-z]{3}$/i.test(ray) ? ray : null,
+    cfMitigatedEnum: response.headers.get('cf-mitigated') === 'challenge' ? 'challenge' : null,
+    serverEnum: !server ? 'missing' : server === 'cloudflare' ? 'cloudflare' : /^(?:github|github\.com)$/.test(server) ? 'github' : 'other',
+    routeEnum: !route ? 'missing' : route === 'subscription-vless' ? 'subscription-vless' : 'other',
+  };
+}
+
 async function diagnostic503(response) {
   const reader = response.body?.getReader();
   let text = '', size = 0;
@@ -15,8 +29,10 @@ async function diagnostic503(response) {
     : /Service (?:Temporarily )?Unavailable/i.test(rawTitle) ? 'Service Unavailable'
     : rawTitle ? 'other' : 'missing';
   const errorCode = /\b(?:Error\s*(?:code\s*)?[:#]?\s*)(\d{3,5})\b/i.exec(text)?.[1] || null;
-  return {status: 503, cfRay: response.headers.get('cf-ray')?.slice(0,128) || null, contentType: response.headers.get('content-type')?.split(';')[0].slice(0,128) || null,
-    server: response.headers.get('server')?.slice(0,64) || null, contentLength: /^\d{1,12}$/.test(response.headers.get('content-length') || '') ? response.headers.get('content-length') : null, sampledBytes: size, title, errorCode};
+  const safe = smokeResponseDiagnostic(response);
+  const contentType = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+  return {...safe, contentType: !contentType ? null : ['text/html', 'text/plain', 'application/json', 'application/octet-stream'].includes(contentType) ? contentType : 'other',
+    server: safe.serverEnum, contentLength: /^\d{1,12}$/.test(response.headers.get('content-length') || '') ? response.headers.get('content-length') : null, sampledBytes: size, title, errorCode};
 }
 
 export async function smokeSegment(url, {headers, signal, fetchImpl = fetch, delay = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
