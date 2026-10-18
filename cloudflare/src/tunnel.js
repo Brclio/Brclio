@@ -74,7 +74,8 @@ export async function openWebSocket(node, fetchImpl = fetch, signal) {
   return {socket, queue};
 }
 
-export async function tunnelRequest(target, node, {range, signal, openSocket = openWebSocket, handshakeMs = 4500} = {}) {
+export async function tunnelRequest(target, node, {range, ifRange, signal, openSocket = openWebSocket, handshakeMs = 4500} = {}) {
+  if (ifRange !== undefined && (typeof ifRange !== 'string' || !/^"[\x21\x23-\x7e]{1,256}"$/.test(ifRange))) throw new TunnelError('http', 'invalid_if_range');
   const abort = new AbortController();
   let queue, socket, stage = 'ws', phase = 'ws_open', sentFrames = 0;
   const fail = () => { abort.abort(); queue?.fail(new Error('代理连接已取消')); };
@@ -118,6 +119,7 @@ export async function tunnelRequest(target, node, {range, signal, openSocket = o
       'Accept-Encoding: identity', 'Connection: close'
     ];
     if (range) headers.push(`Range: ${range}`);
+    if (ifRange) headers.push(`If-Range: ${ifRange}`);
     await tls.write(encoder.encode(headers.join('\r\n') + '\r\n\r\n'));
     phase = 'http_header_wait';
     const reader = new ByteReader(() => tls.read());

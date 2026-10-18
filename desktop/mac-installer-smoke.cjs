@@ -102,7 +102,7 @@ async function main() {
       const systemSession = session.fromPartition('brclio-update-system', { cache: false });
       const directSession = session.fromPartition('brclio-update-direct', { cache: false });
       systemSession.resolveProxy = resolveProxy;
-      const fetch = async requested => {
+      const fetch = async (requested, init = {}) => {
         const url = new URL(requested).searchParams.get('url') || requested;
         globalThis.__macInstallSmokeRequests.push(url);
         if (url === 'https://api.github.com/repos/Brclio/Brclio/releases/latest') return new Response(JSON.stringify(release));
@@ -110,9 +110,17 @@ async function main() {
         if (url === prefix + assetName) {
           // Electron's real net stack supports file: URLs; no Node require is
           // available inside Playwright's main-process evaluation context.
-          const source = await originalFetch(fixture.fileURL);
+          const range = new Headers(init.headers).get('range');
+          const source = await originalFetch(fixture.fileURL, range ? { headers: { Range: range } } : {});
           if (!source.ok) throw new Error('Cannot stream the real local DMG.');
-          return new Response(source.body);
+          if (!range) return new Response(source.body);
+          const match = /^bytes=(\d+)-(\d+)$/.exec(range);
+          if (!match) throw new Error('Unexpected fixture range.');
+          const start = Number(match[1]), end = Number(match[2]);
+          // Electron file: applies Range to the body but reports HTTP200 with
+          // no range headers. Supply the service's verified range contract.
+          return new Response(source.body, { status: 206, headers: { 'content-range': `bytes ${start}-${end}/${fixture.size}`,
+            'content-length': String(end - start + 1), etag: `"${fixture.expected}"` } });
         }
         throw new Error('Unexpected update request: ' + url);
       };

@@ -71,8 +71,8 @@
         const title = document.createElement('h3'); title.textContent = platform.title;
         const detail = document.createElement('p'); detail.className = 'asset-detail'; detail.textContent = platform.detail + ' · ' + (asset.size / (1024 * 1024)).toFixed(1) + ' MiB';
         const links = document.createElement('div'); links.className = 'download-links';
-        const download = makeLink(platform.button + ' ↓', proxyURL(asset.url), 'button button-primary'); download.dataset.downloadPlatform = key;
-        links.append(download, makeLink('GitHub 备用 ↗', asset.url, 'direct-link'));
+        const download = makeLink(platform.button + ' ↓', asset.url, 'button button-primary'); download.dataset.downloadPlatform = key;
+        links.append(download, makeLink('发布说明 ↗', release.releaseURL, 'direct-link'));
         card.append(title, detail, links); grid.append(card);
       }
       $('release-version').textContent = 'v' + release.version;

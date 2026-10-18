@@ -1,6 +1,7 @@
 import {readConfig, writeConfig, getNodes} from '../config.js';
 import {officialTarget} from '../protocol.js';
 import {relayUpdate} from '../relay.js';
+import {isInstallerTarget, parseChunkRequest, relayChunk} from '../chunk-relay.js';
 import {json, readJSON, rateLimit} from '../http.js';
 import {latestReleaseURL, readReleaseResponse} from '../releases.js';
 
@@ -35,18 +36,26 @@ export async function handlePublic(request, env, dependencies = {}, ctx) {
   const summary = url.pathname === '/api/releases/latest';
   if ((!summary && url.pathname !== '/api/update') || request.method !== 'GET') return null;
   const ip = request.headers.get('CF-Connecting-IP') || 'development';
-  if (!await rateLimit(env, 'UPDATE_LIMITER', ip, 120)) return json({error: '请求过于频繁，请稍后重试'}, 429, {'Retry-After': '60'});
-  if (request.headers.has('range')) return json({error: '请使用完整下载请求'}, 416);
+  const chunked = !summary && request.headers.has('range');
+  if (!await rateLimit(env, chunked ? 'UPDATE_CHUNK_LIMITER' : 'UPDATE_LIMITER', ip, chunked ? 600 : 120)) return json({error: '请求过于频繁，请稍后重试'}, 429, {'Retry-After': '60'});
+  if ((summary && request.headers.has('range')) || (!chunked && request.headers.has('if-range'))) return json({error: '该请求不支持下载范围'}, 416);
   let target;
   try {
     target = officialTarget(summary ? latestReleaseURL : url.searchParams.get('url'));
   } catch {
     return json({error: '只允许 Brclio 官方更新地址'}, 400);
   }
+  if (!chunked && isInstallerTarget(target.href)) return json({error: '安装包必须使用不超过 1 MiB 的显式单段 Range 请求'}, 416);
+  let range;
+  if (chunked) {
+    try { range = parseChunkRequest(target.href, request.headers.get('range'), request.headers.get('if-range')); }
+    catch { return json({error: '只支持官方安装包不超过 1 MiB 的显式单段范围'}, 416); }
+  }
   const started = Date.now();
   try {
     const nodes = await (dependencies.getNodes || getNodes)(env);
-    const response = await (dependencies.relayUpdate || relayUpdate)(target.href, nodes, {
+    const response = await (chunked ? dependencies.relayChunk || relayChunk : dependencies.relayUpdate || relayUpdate)(target.href, nodes, {
+      ...(range ? {range} : {}),
       signal: request.signal,
       headerDeadlineMs: Math.max(1, 18000 - (Date.now() - started)),
       waitUntil: ctx ? promise => ctx.waitUntil(promise) : undefined

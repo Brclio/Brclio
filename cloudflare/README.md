@@ -14,6 +14,7 @@ in the existing private GitHub data repository.
 - `src/service.js`: general service identity and authenticated overview data.
 - `src/http.js`: shared response, JSON-body and rate-limit helpers.
 - `src/verified-tls.js`: fail-closed certificate-extension policy for the pinned TLS library.
+- `src/chunk-relay.js`: bounded, fully verified installer ranges for current clients.
 - `src/modules/index.js`: registry of implemented modules.
 - `src/modules/update-proxy.js`: existing public update and private proxy-config routes.
 
@@ -62,7 +63,8 @@ configuration, commands saved in shell history, or logs. Local development may
 use the ignored `.dev.vars` file.
 
 Wrangler declares native rate limits for per-IP login attempts (8/minute),
-combined admin attempts (30/minute), and update requests (120/minute per IP).
+combined admin attempts (30/minute), update metadata/legacy requests (120/minute per IP),
+and installer segment requests (600/minute per IP, separate namespace `1004`).
 These limits are per Cloudflare location, as provided by the native rate-limit
 API; no storage service is provisioned. The in-memory fallback exists for local
 development and unit tests.
@@ -72,7 +74,10 @@ administrator saves a configuration, the private GitHub file
 `config/update-proxy.json` takes precedence. Writes validate the subscription,
 include its current Git SHA, and report a conflict instead of overwriting a
 concurrent change. Public requests cache the file for 15 seconds and parsed
-subscription nodes for 60 seconds. Administrator reads always refresh the file.
+subscription nodes for 10 minutes while the configured URL stays identical. Expired
+nodes are never served as an unlimited stale fallback. URL changes bypass the node
+cache, and an administrator save clears both caches in that Worker isolate.
+Administrator reads always refresh the file.
 
 The deployment uses one Worker at the confirmed custom-domain origin
 `https://tools.brclio.com` in that same Cloudflare account. The administration
@@ -90,11 +95,22 @@ and it detects no system proxy.
 - `GET /api/update?url=...`: latest metadata or release file from
   `Brclio/Brclio` only. Arbitrary targets, arbitrary GitHub repositories, direct
   signed asset URLs, HTTP, and custom ports are rejected.
+- Current clients request official installers with one explicit `Range: bytes=start-end`
+  containing at most 1 MiB. Metadata and checksum manifests cannot use Range.
+  The response is HTTP 206 with a precise `Content-Range`, `Content-Length` and
+  strong quoted `ETag` (1–256 visible ASCII characters inside the quotes).
+  Later requests send that ETag unchanged in `If-Range`.
+  Installer requests without Range receive 416 before loading subscription nodes.
+  The complete segment is validated and buffered before responding; HTTP 200
+  fallback, compressed data, inconsistent lengths/ranges and changed/weak ETags
+  are rejected. Invalid request ranges receive 416. Clients must compare the
+  total with official release metadata and verify the final full-file SHA-256.
 - `GET /`: Brclio introduction and downloads for actual published clients.
 - `GET /api/releases/latest`: validated stable-release summary from the same
   subscribed relay: `{version,tag,publishedAt,releaseURL,assets}`. Assets include
   `{name,size,platform,url,checksumURL}` for recognized Mac, Windows and Android
-  installers. Draft/prerelease, nonofficial/mismatched URLs, missing or duplicate
+  installers. Homepage installer links point to these validated official GitHub
+  asset URLs; release-note links are separate. Draft/prerelease, nonofficial/mismatched URLs, missing or duplicate
   checksum manifests, and ambiguous installers are rejected. The homepage says
   built-in proxy support is included only after validated published metadata
   reports version 0.1.9 or later; older versions retain the unsupported notice. Metadata is bounded
@@ -141,23 +157,36 @@ update traffic. Normal authenticated HTTPS is used only to access the private
 GitHub configuration and retrieve the proxy subscription itself.
 
 Release redirects are followed manually and only to GitHub's recognized asset
-storage. Download responses are streamed as consecutive 4 MiB HTTP ranges, with
-range/length/ETag validation. This bounds unread WebSocket data and avoids
-loading a whole installer into the Worker. Cloudflare responses use a `FixedLengthStream` and `no-transform` to retain the
-original installer length without edge recompression; client SHA-256 verification remains necessary. A failed
-segment aborts the download; the client must start a fresh download. Incoming
-custom Range requests are rejected. An upstream that ignores Range can serve
-only a small response up to 4 MiB.
+storage. Current clients download serial segments of at most 1 MiB, each in a
+separate Worker invocation. Every segment is fully buffered and checked before
+any segment byte reaches the client. A transient network/5xx/429 failure or short
+body may retry once on another subscribed node, with failed nodes excluded from
+that request's retry. Successful nodes are reused per public target host in a
+WeakMap keyed by the parsed subscription array; a refreshed or changed array has
+no old preferences, and unused arrays can be garbage collected. No socket or other
+request I/O object is reused. Validation failures never retry. Clients
+do not add another retry layer. This bounds both memory and per-invocation TLS
+CPU instead of decrypting an entire large installer in one request.
+
+The ordinary response route remains for metadata and small checksum manifests.
+Large installer requests without Range are rejected before transport because
+production observability confirmed `exceededCpu` for a whole Windows download.
+The older internal streaming helper is retained, but recognized official installers
+cannot reach it through the public route. Homepage installer links point to GitHub.
+All responses use `no-transform`; full-file client
+SHA-256 and platform installer checks remain required.
 
 Private configuration reads retain a 5-second timeout. Subscription reads have
 a 10-second timeout so a cold subscription response taking more than 5 seconds
 can complete. The overall 18-second initial-response deadline includes both
-setup reads and is passed to the relay as only the remaining time.
+setup reads and is passed to the relay as only the remaining time. In single-range
+mode this deadline also covers buffering and verification of the complete segment.
 
 Each tunnel has a 4.5-second header/handshake deadline and a 15-second read-idle
 deadline. An 18-second overall initial-response deadline includes private config
 and subscription reads, keeping version checks inside the clients’ 20-second
-timeout. At most three subscription routes are attempted. Client cancellation
+timeout. Legacy requests attempt at most three subscription routes; a single-range
+request makes at most two complete segment attempts. Client cancellation
 closes the active socket and aborts any segment being opened. An unread-data cap
 also closes a socket instead of allowing unbounded memory growth.
 
@@ -193,7 +222,8 @@ Native observability persistence is disabled. A successful relay includes
 `npm test` covers VLESS framing, fragmented/chunked HTTP, certificate stream
 peek behavior, socket queue bounds, actual workerd binary-WebSocket handling,
 fixed-length streaming in the actual Worker runtime, strict target/redirect restrictions,
-segmented streaming and cancellation, login/origin/CSRF/session cookies, native
+segmented streaming and cancellation, buffered one-MiB Range validation and fail-closed
+ETag/If-Range behavior, node-cache expiry/invalidation, login/origin/CSRF/session cookies, native
 rate-limit routing, GitHub authorization containment and SHA conflicts. Actual
 TLS handshakes additionally cover constrained intermediate CAs, unknown critical
 extensions, CA signing key usage, and permitted noncritical extensions. Homepage
@@ -219,7 +249,8 @@ npm run smoke -- https://tools.brclio.com
 npm run smoke -- https://tools.brclio.com --large
 ```
 
-`--large` selects an installer larger than 100 MiB. Neither command saves or runs
+Installer downloads use the same serial verified one-MiB requests as current clients,
+including strong ETag/If-Range checks. `--large` selects an installer larger than 100 MiB. Neither command saves or runs
 an installer. The default origin is `https://tools.brclio.com`; an explicit
 origin or `BRCLIO_CLIENT_SERVICE_URL` can override it for verification. On a Node runtime that supports it,
 `node --use-env-proxy scripts/verify-live.mjs https://tools.brclio.com

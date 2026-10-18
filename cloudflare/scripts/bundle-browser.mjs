@@ -44,7 +44,8 @@ const manifest = {
   rateLimits: [
     {name: 'LOGIN_LIMITER', namespaceId: '1001', limit: 8, period: 60},
     {name: 'LOGIN_GLOBAL_LIMITER', namespaceId: '1002', limit: 30, period: 60},
-    {name: 'UPDATE_LIMITER', namespaceId: '1003', limit: 120, period: 60}
+    {name: 'UPDATE_LIMITER', namespaceId: '1003', limit: 120, period: 60},
+    {name: 'UPDATE_CHUNK_LIMITER', namespaceId: '1004', limit: 600, period: 60}
   ]
 };
 await writeFile(new URL('manifest.json', output), JSON.stringify(manifest, null, 2) + '\n');

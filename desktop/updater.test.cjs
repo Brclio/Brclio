@@ -69,6 +69,21 @@ test('manual check fetches metadata only and reports current version accurately'
   assert.equal(current.opened.length, 0);
 });
 
+test('installer expected size is a separate transport context, never a network fetch option', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-updater-context-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const contexts = [];
+  const updater = createUpdater({ currentVersion: '0.1.0', directory, platform: 'darwin', architecture: 'arm64',
+    fetch: async (url, init, context) => {
+      assert.equal('expectedSize' in init, false); contexts.push(context);
+      if (url === API_URL) return new Response(JSON.stringify(releaseFixture()));
+      if (url.endsWith('SHA256SUMS.txt')) return new Response(`${digest}  ${releaseFixture().assets[0].name}`);
+      return new Response(bytes);
+    } });
+  await updater.check(); assert.equal((await updater.download()).status, 'downloaded');
+  assert.deepEqual(contexts, [undefined, undefined, { expectedSize: bytes.length }]);
+});
+
 test('download verifies SHA256 and byte size before installer can open, then verifies again on install', async t => {
   const { updater, directory, opened, states } = await setup(t);
   await updater.check();

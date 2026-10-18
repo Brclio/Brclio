@@ -2,6 +2,7 @@ import { publicHTTPS, parseSubscription, decoder, encoder } from './protocol.js'
 
 const diagnostic = (stage,code,status) => console.warn(JSON.stringify({event:'proxy_setup_failed',stage,code,...(Number.isInteger(status)?{status}:{})}));
 export const CONFIG_PATH = 'config/update-proxy.json';
+export const NODES_CACHE_TTL_MS = 10 * 60 * 1000;
 let configCache;
 let nodesCache;
 export function clearConfigCache() { configCache = undefined; nodesCache = undefined; }
@@ -60,7 +61,7 @@ export async function getNodes(env, fetchImpl = fetch) {
   try {config = await readConfig(env, {fetchImpl});} catch {diagnostic('config','read_failed'); throw new Error('读取私有配置失败');}
   if (nodesCache?.url === config.subscriptionUrl && nodesCache.expires > Date.now()) return nodesCache.nodes;
   const nodes = await readSubscription(config.subscriptionUrl, fetchImpl);
-  nodesCache = {url: config.subscriptionUrl, nodes, expires: Date.now() + 60000};
+  nodesCache = {url: config.subscriptionUrl, nodes, expires: Date.now() + NODES_CACHE_TTL_MS};
   return nodes;
 }
 export async function writeConfig(env, input, fetchImpl = fetch) {

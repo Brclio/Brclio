@@ -85,3 +85,16 @@ test('slow setup consumes the existing overall metadata deadline instead of exte
     assert.equal(result.status,200);assert.equal(remaining,3000);
   }finally{t.mock.timers.reset();}
 });
+test('single installer segments use a separate limiter and preserve range protocol',async()=>{
+  const target='https://github.com/Brclio/Brclio/releases/download/v0.1.9/Brclio-0.1.9-android.apk';let chunkLimits=0,legacyLimits=0,loads=0,called=0;
+  const bindings={...env,UPDATE_CHUNK_LIMITER:{limit:async()=>{chunkLimits++;return{success:true};}},UPDATE_LIMITER:{limit:async()=>{legacyLimits++;return{success:false};}}};
+  const dependencies={getNodes:async()=>{loads++;return['node'];},relayChunk:async(url,nodes,options)=>{called++;assert.equal(url,target);assert.deepEqual(nodes,['node']);assert.deepEqual(options.range,{start:1,end:2,ifRange:'"same"'});return new Response(new Uint8Array([1,2]),{status:206,headers:{'content-range':'bytes 1-2/3','content-length':'2',etag:'"same"'}});}};
+  const response=await handle(request('/api/update?url='+encodeURIComponent(target),{headers:{range:'bytes=1-2','if-range':'"same"'}}),bindings,dependencies);
+  assert.equal(response.status,206);assert.equal(called,1);assert.equal(chunkLimits,1);assert.equal(legacyLimits,0);
+  for(const [url,range]of[[target,'bytes=0-1048576'],[target,'bytes=0-1,3-4'],[target.replace(/Brclio-0\.1\.9-android.apk$/,'SHA256SUMS.txt'),'bytes=0-1'],['https://api.github.com/repos/Brclio/Brclio/releases/latest','bytes=0-1']]){
+    const invalid=await handle(request('/api/update?url='+encodeURIComponent(url),{headers:{range}}),bindings,dependencies);assert.equal(invalid.status,416);
+  }
+  assert.equal(loads,1);assert.equal(called,1);
+  const noRange=await handle(request('/api/update?url='+encodeURIComponent(target)),{...env,UPDATE_LIMITER:{limit:async()=>({success:true})}},dependencies);assert.equal(noRange.status,416);assert.equal(loads,1);assert.equal(called,1);assert.match((await noRange.json()).error,/1 MiB/);
+  const limited=await handle(request('/api/update?url='+encodeURIComponent(target),{headers:{range:'bytes=0-0'}}),{...env,UPDATE_CHUNK_LIMITER:{limit:async()=>({success:false})}},dependencies);assert.equal(limited.status,429);assert.equal(limited.headers.get('retry-after'),'60');
+});

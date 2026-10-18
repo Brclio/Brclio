@@ -7,7 +7,7 @@ assert.ok(origin,'Pass the confirmed custom-domain origin or set BRCLIO_CLIENT_S
 const service=new URL(origin);
 assert.equal(service.protocol,'https:');
 const through=target=>{officialTarget(target);const url=new URL('/api/update',service);url.searchParams.set('url',target);return url;};
-async function proxied(target){const response=await fetch(through(target));assert.equal(response.status,200,`Proxy request failed with HTTP ${response.status}`);assert.equal(response.headers.get('x-brclio-route'),'subscription-vless');return response;}
+async function proxied(target){const response=await fetch(through(target),{signal:AbortSignal.timeout(20000)});assert.equal(response.status,200,`Proxy request failed with HTTP ${response.status}`);assert.equal(response.headers.get('x-brclio-route'),'subscription-vless');return response;}
 async function boundedBytes(response,limit){
   const reader=response.body.getReader();const chunks=[];let size=0;
   try{while(true){const next=await reader.read();if(next.done)break;size+=next.value.length;assert.ok(size<=limit,'Checksum manifest exceeds allowed size');chunks.push(next.value);}}finally{await reader.cancel().catch(()=>{});}
@@ -29,8 +29,15 @@ const lines=new TextDecoder('utf-8',{fatal:true}).decode(manifestBytes).replace(
 const entries=lines.map(line=>{const match=/^([0-9a-fA-F]{64})[ \t]+\*?([^\r\n]+)$/.exec(line);assert.ok(match,'Invalid checksum manifest line');return {hash:match[1].toLowerCase(),name:match[2]};});
 const selected=entries.filter(entry=>entry.name===asset.name);assert.equal(selected.length,1,'Expected exactly one checksum line for selected installer');
 assert.equal('sha256:'+selected[0].hash,asset.digest,'Installer metadata and checksum manifest disagree');
-const response=await proxied(asset.browser_download_url);assert.equal(Number(response.headers.get('content-length')),asset.size);
-const hash=createHash('sha256');let bytes=0;const reader=response.body.getReader();
-while(true){const chunk=await reader.read();if(chunk.done)break;bytes+=chunk.value.length;assert.ok(bytes<=asset.size,'Unexpected installer length');hash.update(chunk.value);}
+const hash=createHash('sha256');let bytes=0,segments=0,etag,maxSegmentMs=0;const chunkBytes=1024*1024;
+while(bytes<asset.size){
+  const start=bytes,end=Math.min(asset.size-1,start+chunkBytes-1),segmentStarted=Date.now();
+  const response=await fetch(through(asset.browser_download_url),{signal:AbortSignal.timeout(20000),headers:{Range:`bytes=${start}-${end}`,...(etag?{'If-Range':etag}:{})}});
+  assert.equal(response.status,206,`Installer segment failed with HTTP ${response.status}`);assert.equal(response.headers.get('x-brclio-route'),'subscription-vless');
+  assert.equal(response.headers.get('content-range'),`bytes ${start}-${end}/${asset.size}`);assert.equal(response.headers.get('content-length'),String(end-start+1));
+  const currentETag=response.headers.get('etag');assert.match(currentETag||'',/^"[\x21\x23-\x7e]{1,256}"$/);assert.ok(!response.headers.has('content-encoding')||response.headers.get('content-encoding')==='identity');
+  if(etag)assert.equal(currentETag,etag);else etag=currentETag;
+  const chunk=await boundedBytes(response,end-start+1);assert.equal(chunk.length,end-start+1);bytes+=chunk.length;hash.update(chunk);segments++;maxSegmentMs=Math.max(maxSegmentMs,Date.now()-segmentStarted);
+}
 assert.equal(bytes,asset.size);const digest=hash.digest('hex');assert.equal(`sha256:${digest}`,asset.digest);assert.equal(digest,selected[0].hash);
-console.log(JSON.stringify({ok:true,service:service.origin,release:release.tag_name,asset:asset.name,bytes,sha256:digest,manifestVerified:true,durationMs:Date.now()-started},null,2));
+console.log(JSON.stringify({ok:true,service:service.origin,release:release.tag_name,asset:asset.name,bytes,sha256:digest,manifestVerified:true,downloadMode:'serial-verified-1MiB-ranges',segments,strongETagVerified:true,maxSegmentMs,durationMs:Date.now()-started},null,2));

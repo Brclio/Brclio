@@ -2,7 +2,7 @@ import {test} from 'node:test';import assert from 'node:assert/strict';import {r
 const script=await readFile(new URL('../src/home-client.txt',import.meta.url),'utf8');
 function fixture(version){const tag='v'+version,base='https://github.com/Brclio/Brclio/releases/';return{version,tag,publishedAt:'2026-10-18T00:00:00Z',releaseURL:base+'tag/'+tag,assets:[{platform:'android',name:'Brclio-'+version+'-android.apk',size:4096,url:base+'download/'+tag+'/Brclio-'+version+'-android.apk',checksumURL:base+'download/'+tag+'/SHA256SUMS.txt'}]};}
 async function render(version,{available=true}={}){
- const elements=new Map();function element(){return{textContent:'',hidden:false,dataset:{},addEventListener(){},append(){},replaceChildren(){}};}
+ const elements=new Map();function element(){return{textContent:'',hidden:false,dataset:{},children:[],addEventListener(){},append(...children){this.children.push(...children);},replaceChildren(...children){this.children=children;}};}
  const document={getElementById(id){if(!elements.has(id))elements.set(id,element());return elements.get(id);},querySelectorAll(){return[];},createElement:element};
  document.getElementById('development-note').textContent='neutral pending release metadata';
  vm.runInNewContext(script,{document,navigator:{clipboard:{writeText:async()=>{}}},URL,AbortController,setTimeout,clearTimeout,fetch:async()=>available?Response.json(fixture(version)):new Response('{}',{status:502})});
@@ -15,4 +15,11 @@ test('homepage states proxy support only for validated published stable releases
 test('homepage makes no new-release capability claim before or after failed metadata validation',async()=>{
  const failed=await render('0.1.9',{available:false});assert.equal(failed.get('development-note').textContent,'neutral pending release metadata');assert.equal(failed.get('download-grid').hidden,true);
  const html=await readFile(new URL('../src/home.html',import.meta.url),'utf8');assert.match(html,/支持情况将在确认正式版本后显示/);assert.doesNotMatch(html,/当前公开发布的 v0\.1\.8/);
+});
+test('homepage installers link to validated official assets and separate release notes',async()=>{
+ const elements=await render('0.1.9');const links=elements.get('download-grid').children[0].children[2].children;
+ assert.equal(links[0].href,fixture('0.1.9').assets[0].url);assert.equal(links[0].dataset.downloadPlatform,'android');
+ assert.equal(links[1].href,fixture('0.1.9').releaseURL);assert.equal(links[1].textContent,'发布说明 ↗');
+ assert.ok(!links.some(link=>link.href.includes('/api/update')));
+ assert.match(elements.get('download-integrity').children[0].href,/^\/api\/update\?url=/);
 });

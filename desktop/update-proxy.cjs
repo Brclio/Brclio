@@ -7,6 +7,8 @@ const SYSTEM_PARTITION = 'brclio-update-system';
 const DIRECT_PARTITION = 'brclio-update-direct';
 const OFFICIAL_HOSTS = new Set(['github.com', 'api.github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com']);
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+const CHUNK_BYTES = 1024 * 1024;
+const MAX_INSTALLER_BYTES = 1536 * 1024 * 1024;
 
 function routingError(message) { const error = new Error(message); error.code = 'BRCLIO_UPDATE_ROUTE'; return error; }
 
@@ -127,26 +129,106 @@ function createUpdateProxy(options) {
 
   function setBusy(value) { busy = value === true; publish(snapshot()); }
 
-  async function fetch(url, init = {}) {
+  async function builtinRequest(selected, target, init) {
+    const endpoint = new URL('/api/update', SERVICE_ORIGIN);
+    endpoint.searchParams.set('url', target);
+    const response = await selected.fetch(endpoint.href, { ...init, redirect: 'manual', credentials: 'omit' });
+    if (REDIRECTS.has(response.status) || response.redirected || (response.url && response.url !== endpoint.href)) {
+      await cancel(response);
+      throw routingError('内置更新代理返回异常重定向，已停止。');
+    }
+    if (response.status >= 500) {
+      await cancel(response);
+      throw connectionError('builtin', init.signal);
+    }
+    return response;
+  }
+
+  async function installerResponse(selected, target, init, expectedSize) {
+    if (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > MAX_INSTALLER_BYTES) {
+      throw routingError('安装包大小无效，已停止分段下载。');
+    }
+    // A fresh service invocation per segment bounds Worker CPU use. Keep the
+    // original route and expose bytes only after the whole segment is verified.
+    const abort = new AbortController();
+    let reader; let offset = 0; let etag; let closed = false;
+    const stop = () => { abort.abort(); return reader?.cancel().catch(() => {}); };
+    init.signal?.addEventListener('abort', stop, { once: true });
+    if (init.signal?.aborted) stop();
+    const finish = () => { closed = true; init.signal?.removeEventListener('abort', stop); };
+    const active = () => { if (abort.signal.aborted || closed) throw connectionError('builtin', { aborted: true }); };
+    async function next() {
+      active();
+      const end = Math.min(expectedSize - 1, offset + CHUNK_BYTES - 1);
+      const headers = new Headers(init.headers);
+      headers.set('Range', `bytes=${offset}-${end}`);
+      headers.delete('If-Range');
+      if (etag) headers.set('If-Range', etag);
+      const response = await builtinRequest(selected, target, { ...init, headers, signal: abort.signal });
+      if (abort.signal.aborted) await cancel(response);
+      active();
+      if (offset === 0 && !response.ok) return response;
+      const range = /^bytes (0|[1-9]\d*)-(0|[1-9]\d*)\/(0|[1-9]\d*)$/.exec(response.headers.get('content-range') || '');
+      const currentETag = response.headers.get('etag');
+      if (response.status !== 206 || !range || Number(range[1]) !== offset || Number(range[2]) !== end
+          || Number(range[3]) !== expectedSize || response.headers.get('content-length') !== String(end - offset + 1)
+          || !/^"[\x21\x23-\x7e]{1,256}"$/.test(currentETag || '') || (etag && currentETag !== etag)
+          || (response.headers.has('content-encoding') && response.headers.get('content-encoding').toLowerCase() !== 'identity') || !response.body) {
+        await cancel(response);
+        throw routingError('安装包分段信息不一致，已停止下载。');
+      }
+      etag = currentETag;
+      reader = response.body.getReader();
+      return response;
+    }
+    let first;
+    try { first = await next(); } catch (failure) { stop(); finish(); throw failure; }
+    if (!first.ok) { finish(); return responseAt(first, target, 'builtin', init.signal); }
+    const headers = new Headers(first.headers);
+    headers.delete('content-range'); headers.delete('accept-ranges');
+    headers.set('content-length', String(expectedSize));
+    const body = new ReadableStream({
+      async pull(controller) {
+        try {
+          active();
+          if (!reader) await next();
+          const expected = Math.min(CHUNK_BYTES, expectedSize - offset);
+          const chunks = []; let length = 0;
+          while (true) {
+            const item = await reader.read(); active();
+            if (item.done) break;
+            length += item.value.length;
+            if (length > expected) throw routingError('安装包分段长度异常，已停止下载。');
+            chunks.push(item.value);
+          }
+          reader.releaseLock(); reader = undefined;
+          if (length !== expected) throw routingError('安装包分段未完成，请重新下载。');
+          const bytes = new Uint8Array(length); let written = 0;
+          for (const chunk of chunks) { bytes.set(chunk, written); written += chunk.length; }
+          offset += length; controller.enqueue(bytes);
+          if (offset === expectedSize) { finish(); controller.close(); }
+        } catch (failure) {
+          const safe = failure?.code === 'BRCLIO_UPDATE_ROUTE' ? failure : connectionError('builtin', abort.signal);
+          await stop(); finish();
+          change({ error: safe.message }); controller.error(safe);
+        }
+      },
+      cancel() { const stopped = stop(); finish(); return stopped; },
+    }, { highWaterMark: 0 });
+    const response = new Response(body, { status: 200, headers });
+    Object.defineProperty(response, 'url', { value: target });
+    return response;
+  }
+
+  async function fetch(url, init = {}, context = {}) {
     let selected;
     try {
       let target = officialURL(url, true);
       selected = await select(target, init.signal);
       change({ route: selected.route, error: null });
       if (selected.route === 'builtin') {
-        const endpoint = new URL('/api/update', SERVICE_ORIGIN);
-        endpoint.searchParams.set('url', target);
-        const response = await selected.fetch(endpoint.href, { ...init, redirect: 'manual', credentials: 'omit' });
-        // The service is a fixed HTTPS endpoint. A redirect is never delegated
-        // to Chromium, even when it points back to the same hostname.
-        if (REDIRECTS.has(response.status) || response.redirected || (response.url && response.url !== endpoint.href)) {
-          await cancel(response);
-          throw routingError('内置更新代理返回异常重定向，已停止。');
-        }
-        if (response.status >= 500) {
-          await cancel(response);
-          throw connectionError('builtin', init.signal);
-        }
+        if (/\.(?:dmg|exe)$/.test(new URL(target).pathname)) return await installerResponse(selected, target, init, context.expectedSize);
+        const response = await builtinRequest(selected, target, init);
         return responseAt(response, target, selected.route, init.signal);
       }
       for (let redirects = 0; ; redirects++) {
@@ -180,4 +262,4 @@ function createUpdateProxy(options) {
   return { fetch, state, setEnabled, setBusy };
 }
 
-module.exports = { createUpdateProxy, officialURL, usesProxy, SERVICE_ORIGIN, SYSTEM_PARTITION, DIRECT_PARTITION };
+module.exports = { createUpdateProxy, officialURL, usesProxy, SERVICE_ORIGIN, SYSTEM_PARTITION, DIRECT_PARTITION, CHUNK_BYTES };

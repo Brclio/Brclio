@@ -16,6 +16,7 @@ import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.URL
 import java.security.MessageDigest
+import java.security.DigestOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.HttpsURLConnection
@@ -62,30 +63,49 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         publish("downloading", release, 0, release.apk.size)
         try {
             val deadline = System.currentTimeMillis() + 10 * 60 * 1000
-            val response = open(release.apk.url, route)
             val digest = MessageDigest.getInstance("SHA-256")
             var received = 0L
             var lastProgress = 0L
-            response.inputStream.use { input ->
-                temporary.outputStream().use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        check(!closed && !Thread.currentThread().isInterrupted) { "下载已停止。" }
-                        check(System.currentTimeMillis() < deadline) { "下载超时，请重试。" }
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        received += count
-                        check(received <= release.apk.size) { "安装包大小超过发布记录。" }
-                        output.write(buffer, 0, count)
-                        digest.update(buffer, 0, count)
-                        val now = System.currentTimeMillis()
-                        if (now - lastProgress >= 150) {
-                            publish("downloading", release, received, release.apk.size)
-                            lastProgress = now
+            fun checkActive() {
+                check(!closed && !Thread.currentThread().isInterrupted) { "下载已停止。" }
+                check(System.currentTimeMillis() < deadline) { "下载超时，请重试。" }
+            }
+            fun progress(bytes: Long) {
+                received = bytes
+                val now = System.currentTimeMillis()
+                if (now - lastProgress >= 150) {
+                    publish("downloading", release, received, release.apk.size)
+                    lastProgress = now
+                }
+            }
+            DigestOutputStream(temporary.outputStream(), digest).use { output ->
+                if (route == UpdateProxyRoute.BUILTIN) {
+                    received = UpdateRangeDownloader.copy(release.apk.size, output, { segment, etag ->
+                        val response = open(release.apk.url, route, segment, etag)
+                        object : UpdateRangeDownloader.Response {
+                            override val status: Int get() = response.responseCode
+                            override fun header(name: String): String? = response.getHeaderField(name)
+                            override val body get() = response.inputStream
+                            override fun close() { response.disconnect(); connection = null }
+                        }
+                    }, ::checkActive, ::progress)
+                } else {
+                    val response = open(release.apk.url, route)
+                    response.inputStream.use { input ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            checkActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            checkActive()
+                            check(received + count <= release.apk.size) { "安装包大小超过发布记录。" }
+                            output.write(buffer, 0, count)
+                            progress(received + count)
                         }
                     }
                 }
             }
+            checkActive()
             check(received == release.apk.size) { "安装包下载不完整，请重试。" }
             check(digest.digest().hex() == checksum) { "安装包 SHA-256 校验失败，已删除下载文件。" }
             verifyPackage(temporary, release)
@@ -223,11 +243,14 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         }
     }
 
-    private fun open(address: String, route: UpdateProxyRoute): HttpsURLConnection {
+    private fun open(address: String, route: UpdateProxyRoute,
+        segment: UpdateRangeDownloader.Segment? = null, etag: String? = null): HttpsURLConnection {
         check(UpdateProxyPolicy.allowedSource(address)) { "更新下载地址不受信任。" }
         val usesRelay = route == UpdateProxyRoute.BUILTIN
+        check(segment == null || (usesRelay && address.endsWith("-android.apk"))) { "更新分段下载地址无效。" }
         var url = if (usesRelay) UpdateProxyPolicy.relayAddress(address) else address
         repeat(6) {
+            check(!closed && !Thread.currentThread().isInterrupted) { "下载已停止。" }
             if (!usesRelay) check(UpdatePolicy.allowedDownloadHost(url)) { "更新下载地址不受信任。" }
             // System routing uses Android's default ProxySelector. The relay and an
             // explicit direct connection never receive an additional HTTP proxy.
@@ -240,8 +263,14 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 setRequestProperty("User-Agent", "Brclio-Android/$currentVersion")
                 setRequestProperty("Accept", "application/vnd.github+json")
                 setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                if (segment != null) {
+                    setRequestProperty("Range", segment.header)
+                    setRequestProperty("Accept-Encoding", "identity")
+                    if (etag != null) setRequestProperty("If-Range", etag)
+                }
             }
             connection = request
+            if (closed || Thread.currentThread().isInterrupted) { request.disconnect(); error("下载已停止。") }
             val code = request.responseCode
             if (code in setOf(301, 302, 303, 307, 308)) {
                 if (usesRelay) {
@@ -252,9 +281,10 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 url = URL(URL(url), destination).toString()
                 request.disconnect()
             } else {
-                if (code != HttpURLConnection.HTTP_OK) {
+                if (code != if (segment == null) HttpURLConnection.HTTP_OK else HttpURLConnection.HTTP_PARTIAL) {
                     request.disconnect()
                     error(when (code) {
+                        200 -> "内置更新代理未返回分段安装包，可关闭内置代理后重试。"
                         404 -> "GitHub 尚未发布正式更新。"
                         403, 429 -> "GitHub 请求受到限制，请稍后重试。"
                         in 500..599 -> if (usesRelay) "内置更新代理暂不可用，可关闭内置代理后重试。"

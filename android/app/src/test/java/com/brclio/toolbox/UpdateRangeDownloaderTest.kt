@@ -1,0 +1,215 @@
+package com.brclio.toolbox
+
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.InputStream
+import java.security.DigestOutputStream
+import java.security.MessageDigest
+
+class UpdateRangeDownloaderTest {
+    private val etag = "\"stable-release-etag\""
+    private val mib = UpdateRangeDownloader.SEGMENT_BYTES
+
+    private class FixtureResponse(
+        override val status: Int,
+        val headers: MutableMap<String, String>,
+        override val body: InputStream,
+    ) : UpdateRangeDownloader.Response {
+        var closed = false
+        override fun header(name: String) = headers[name]
+        override fun close() { closed = true; body.close() }
+    }
+
+    private fun response(part: UpdateRangeDownloader.Segment, total: Long, bytes: ByteArray = ByteArray(part.length.toInt())) =
+        FixtureResponse(206, mutableMapOf("Content-Range" to "bytes ${part.start}-${part.end}/$total",
+            "Content-Length" to part.length.toString(), "ETag" to etag), ByteArrayInputStream(bytes))
+
+    private fun rejects(modify: (FixtureResponse) -> Unit, total: Long = 23): FixtureResponse {
+        val fixture = response(UpdateRangeDownloader.segment(0, total), total)
+        modify(fixture)
+        val output = ByteArrayOutputStream()
+        assertTrue(runCatching {
+            UpdateRangeDownloader.copy(total, output, { _, _ -> fixture }, {}, {})
+        }.isFailure)
+        assertTrue("rejected response must be disconnected", fixture.closed)
+        assertEquals("untrusted headers must be rejected before writing", 0, output.size())
+        return fixture
+    }
+
+    @Test fun boundedRangesCoverExactBoundariesAndFinalPartialSegment() {
+        assertEquals("bytes=0-${mib - 1}", UpdateRangeDownloader.segment(0, mib).header)
+        assertEquals("bytes=$mib-$mib", UpdateRangeDownloader.segment(mib, mib + 1).header)
+        assertEquals("bytes=0-0", UpdateRangeDownloader.segment(0, 1).header)
+        for ((start, total) in listOf(0L to 0L, -1L to 3L, 3L to 3L, 0L to (512L * mib + 1), Long.MAX_VALUE to Long.MAX_VALUE)) {
+            assertTrue(runCatching { UpdateRangeDownloader.segment(start, total) }.isFailure)
+        }
+    }
+
+    @Test fun copiesSerialSegmentsWithIfRangeAndPreservesWholeFileDigest() {
+        val original = ByteArray((2 * mib + 31).toInt()) { (it % 251).toByte() }
+        val total = original.size.toLong()
+        val output = ByteArrayOutputStream()
+        val digest = MessageDigest.getInstance("SHA-256")
+        val opened = mutableListOf<FixtureResponse>()
+        val requests = mutableListOf<Pair<String, String?>>()
+        val progress = mutableListOf<Long>()
+        val received = UpdateRangeDownloader.copy(total, DigestOutputStream(output, digest), { part, ifRange ->
+            assertTrue("preceding invocation must be closed", opened.all { it.closed })
+            requests += part.header to ifRange
+            response(part, total, original.copyOfRange(part.start.toInt(), part.end.toInt() + 1)).also(opened::add)
+        }, {}, progress::add)
+        assertEquals(total, received)
+        assertEquals(listOf("bytes=0-${mib - 1}" to null, "bytes=$mib-${2 * mib - 1}" to etag,
+            "bytes=${2 * mib}-${total - 1}" to etag), requests)
+        assertArrayEquals(original, output.toByteArray())
+        assertArrayEquals(MessageDigest.getInstance("SHA-256").digest(original), digest.digest())
+        assertTrue(opened.all { it.closed })
+        assertEquals(total, progress.last())
+        assertTrue(progress.zipWithNext().all { (previous, next) -> previous < next })
+    }
+
+    @Test fun rejectsFullBodyFallbackBeforeReading() {
+        val fixture = FixtureResponse(200, mutableMapOf(), ByteArrayInputStream(byteArrayOf(1)))
+        assertTrue(runCatching { UpdateRangeDownloader.copy(1, ByteArrayOutputStream(), { _, _ -> fixture }, {}, {}) }.isFailure)
+        assertTrue(fixture.closed)
+    }
+
+    @Test fun rejectsWrongOffsetsEndTotalAndMalformedContentRange() {
+        for (value in listOf("bytes 1-22/23", "bytes 0-21/23", "bytes 0-22/24", "bytes 0-22/*", "bytes 00-22/23",
+            "bytes 0-22/9223372036854775808", "bytes 0-22/23, bytes 0-22/23", "bytes 0-22/23\r\n")) {
+            rejects({ it.headers["Content-Range"] = value })
+        }
+        rejects({ it.headers.remove("Content-Range") })
+    }
+
+    @Test fun rejectsMissingOrWrongLengthAndEncodedBodies() {
+        rejects({ it.headers.remove("Content-Length") })
+        for (value in listOf("22", "24", "-23", "+23", "023", "9223372036854775808", "23, 23")) {
+            rejects({ it.headers["Content-Length"] = value })
+        }
+        rejects({ it.headers["Content-Encoding"] = "gzip" })
+    }
+
+    @Test fun rejectsWeakUnquotedMissingOrInvalidStrongEtags() {
+        for (value in listOf("W/$etag", "stable-release-etag", "\"\"", "\"bad\"etag\"", "\"bad\r\netag\"", "\"\u0080\"",
+            "\"first\", \"second\"", "\"${"x".repeat(257)}\"")) {
+            rejects({ it.headers["ETag"] = value })
+        }
+        rejects({ it.headers.remove("ETag") })
+    }
+
+    @Test fun acceptsVisibleAsciiStrongEtagAtTheSharedProtocolBoundary() {
+        val fixture = response(UpdateRangeDownloader.segment(0, 23), 23)
+        fixture.headers["ETag"] = "\"${"x".repeat(256)}\""
+        fixture.headers["Content-Encoding"] = "identity"
+        val output = ByteArrayOutputStream()
+        assertEquals(23L, UpdateRangeDownloader.copy(23, output, { _, _ -> fixture }, {}, {}))
+        assertEquals(23, output.size())
+        assertTrue(fixture.closed)
+    }
+
+    @Test fun changedEtagOrTotalInLaterSegmentFailsBeforeItsBytesAreWritten() {
+        for (changeEtag in listOf(true, false)) {
+            val total = mib + 5
+            val responses = mutableListOf<FixtureResponse>()
+            val output = ByteArrayOutputStream()
+            assertTrue(runCatching {
+                UpdateRangeDownloader.copy(total, output, { part, ifRange ->
+                    response(part, total).also {
+                        if (part.start > 0) {
+                            assertEquals(etag, ifRange)
+                            if (changeEtag) it.headers["ETag"] = "\"changed\""
+                            else it.headers["Content-Range"] = "bytes ${part.start}-${part.end}/${total + 1}"
+                        }
+                        responses += it
+                    }
+                }, {}, {})
+            }.isFailure)
+            assertEquals(mib.toInt(), output.size())
+            assertEquals(2, responses.size)
+            assertTrue(responses.all { it.closed })
+        }
+    }
+
+    @Test fun detectsTruncatedAndOversizedSegmentsAndStopsBeforeNextInvocation() {
+        for (bodySize in listOf(22, 24)) {
+            val fixture = response(UpdateRangeDownloader.segment(0, 23), 23, ByteArray(bodySize))
+            var calls = 0
+            val output = ByteArrayOutputStream()
+            assertTrue(runCatching {
+                UpdateRangeDownloader.copy(23, output, { _, _ -> calls++; fixture }, {}, {})
+            }.isFailure)
+            assertEquals(1, calls)
+            assertEquals("incomplete segments must never reach the whole-file digest/output", 0, output.size())
+            assertTrue(fixture.closed)
+        }
+    }
+
+    @Test fun cancellationBeforeRequestDoesNotOpenConnection() {
+        var opened = false
+        assertTrue(runCatching {
+            UpdateRangeDownloader.copy(23, ByteArrayOutputStream(), { _, _ -> opened = true; error("unexpected") },
+                { throw IOException("cancelled") }, {})
+        }.isFailure)
+        assertFalse(opened)
+    }
+
+    @Test fun cancellationDuringSegmentClosesResponseAndStopsLaterRequests() {
+        val total = 2 * mib
+        var reads = 0
+        val body = object : ByteArrayInputStream(ByteArray(mib.toInt())) {
+            override fun read(bytes: ByteArray, offset: Int, length: Int): Int {
+                reads++
+                return super.read(bytes, offset, length)
+            }
+        }
+        val headers = response(UpdateRangeDownloader.segment(0, total), total).headers
+        val fixture = FixtureResponse(206, headers, body)
+        val output = ByteArrayOutputStream()
+        var calls = 0
+        assertTrue(runCatching {
+            UpdateRangeDownloader.copy(total, output, { _, _ -> calls++; fixture },
+                { if (reads > 0) throw IOException("cancelled") }, {})
+        }.isFailure)
+        assertEquals(0, output.size())
+        assertEquals(1, calls)
+        assertTrue(fixture.closed)
+    }
+
+    @Test fun cancellationBetweenSegmentsDoesNotRequestAnotherSegment() {
+        val total = 2 * mib
+        val fixture = response(UpdateRangeDownloader.segment(0, total), total)
+        var received = 0L
+        var calls = 0
+        assertTrue(runCatching {
+            UpdateRangeDownloader.copy(total, ByteArrayOutputStream(), { _, _ -> calls++; fixture },
+                { if (received > 0) throw IOException("cancelled") }, { received = it })
+        }.isFailure)
+        assertEquals(mib, received)
+        assertEquals(1, calls)
+        assertTrue(fixture.closed)
+    }
+
+    @Test fun bodyReadFailureAndOutputFailureCloseResponse() {
+        for (failWrite in listOf(false, true)) {
+            val fixture = response(UpdateRangeDownloader.segment(0, 23), 23)
+            val brokenBody = object : InputStream() { override fun read(): Int = throw IOException("read failed") }
+            val actual = if (failWrite) fixture else FixtureResponse(206, fixture.headers, brokenBody)
+            val output = object : ByteArrayOutputStream() {
+                override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                    if (failWrite) throw IOException("write failed")
+                    super.write(bytes, offset, length)
+                }
+                override fun write(bytes: ByteArray) = write(bytes, 0, bytes.size)
+            }
+            assertTrue(runCatching { UpdateRangeDownloader.copy(23, output, { _, _ -> actual }, {}, {}) }.isFailure)
+            assertTrue(actual.closed)
+        }
+    }
+}

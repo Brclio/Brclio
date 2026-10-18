@@ -33,17 +33,19 @@ async function main() {
         { name: assetName, size: payload.length, browser_download_url: prefix + assetName, digest: `sha256:${hash}` },
         { name: 'SHA256SUMS.txt', size: 100, browser_download_url: prefix + 'SHA256SUMS.txt' },
       ] };
-      globalThis.__updateSmoke = { corrupted: true, calls: [], routes: [], opened: [], gateMetadata: true, systemProxy: false };
+      globalThis.__updateSmoke = { corrupted: true, calls: [], routes: [], ranges: [], opened: [], gateMetadata: true, systemProxy: false };
       const resolveProxy = async () => globalThis.__updateSmoke.systemProxy ? 'PROXY 127.0.0.1:7890; DIRECT' : 'DIRECT';
       session.defaultSession.resolveProxy = resolveProxy;
       const systemSession = session.fromPartition('brclio-update-system', { cache: false });
       const directSession = session.fromPartition('brclio-update-direct', { cache: false });
       systemSession.resolveProxy = resolveProxy;
-      const fetch = async requested => {
+      const fetch = async (requested, init = {}) => {
         const endpoint = new URL(requested);
         const url = endpoint.searchParams.get('url') || requested;
         globalThis.__updateSmoke.routes.push(endpoint.pathname === '/api/update' ? 'builtin' : 'native');
         globalThis.__updateSmoke.calls.push(url);
+        const range = new Headers(init.headers).get('range');
+        globalThis.__updateSmoke.ranges.push(range);
         if (url.includes('/releases/latest')) {
           if (globalThis.__updateSmoke.gateMetadata) await new Promise(resolve => {
             globalThis.__updateSmoke.releaseMetadata = () => { globalThis.__updateSmoke.gateMetadata = false; resolve(); };
@@ -52,13 +54,15 @@ async function main() {
         }
         if (url.endsWith('SHA256SUMS.txt')) return new Response(`${hash}  ${assetName}\n`);
         const body = globalThis.__updateSmoke.corrupted ? new Uint8Array(payload.length).fill(120) : payload;
-        let offset = 0;
+        const match = range && /^bytes=(\d+)-(\d+)$/.exec(range);
+        const start = match ? Number(match[1]) : 0, end = match ? Number(match[2]) : body.length - 1;
+        let offset = start;
         const stream = new ReadableStream({ async pull(controller) {
           await new Promise(resolve => setTimeout(resolve, 30));
-          if (offset >= body.length) { controller.close(); return; }
-          controller.enqueue(body.subarray(offset, offset + 64 * 1024)); offset += 64 * 1024;
+          if (offset > end) { controller.close(); return; }
+          controller.enqueue(body.subarray(offset, Math.min(end + 1, offset + 64 * 1024))); offset += 64 * 1024;
         } });
-        return new Response(stream);
+        return new Response(stream, match ? { status: 206, headers: { 'content-range': `bytes ${start}-${end}/${body.length}`, 'content-length': String(end - start + 1), etag: '"fixture"' } } : {});
       };
       net.fetch = fetch;
       systemSession.fetch = fetch;
@@ -122,6 +126,8 @@ async function main() {
     await expect(page.locator('#update-proxy')).not.toBeChecked();
     assert.equal((await page.evaluate(() => window.brclio.getUpdateProxyState())).enabled, false);
     assert.ok((await application.evaluate(() => globalThis.__updateSmoke.routes)).every(route => route === 'builtin'));
+    const ranges = await application.evaluate(() => globalThis.__updateSmoke.ranges.filter(Boolean));
+    assert.deepEqual(ranges, [`bytes=0-1048575`, `bytes=1048576-${Buffer.byteLength(fixtureText) - 1}`, `bytes=0-1048575`, `bytes=1048576-${Buffer.byteLength(fixtureText) - 1}`]);
     await application.close();
     application = await electron.launch({ cwd: root, args: packagedExecutable ? [] : [root],
       ...(packagedExecutable ? { executablePath: packagedExecutable } : {}),
@@ -131,7 +137,7 @@ async function main() {
     assert.equal((await restarted.evaluate(() => window.brclio.getUpdateProxyState())).enabled, true);
     await restarted.click('#about-button');
     await expect(restarted.locator('#about-update-proxy')).toBeChecked();
-    console.log('PASS native update IPC/UI: built-in metadata/checksum/stream routing, system proxy precedence, shared session-only switches, busy locking, restart default, failed-hash cleanup, safe preparation failure and cached retry. Real native replacement is tested separately.');
+    console.log('PASS native update IPC/UI: built-in metadata/checksum and validated 1MiB segments, system proxy precedence, shared session-only switches, busy locking, restart default, failed-hash cleanup, safe preparation failure and cached retry. Real native replacement is tested separately.');
   } finally {
     if (application) await application.close();
     await fs.rm(temporary, { recursive: true, force: true });

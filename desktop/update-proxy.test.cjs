@@ -6,7 +6,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createUpdateProxy, usesProxy, SERVICE_ORIGIN, SYSTEM_PARTITION, DIRECT_PARTITION } = require('./update-proxy.cjs');
+const { createUpdateProxy, usesProxy, SERVICE_ORIGIN, SYSTEM_PARTITION, DIRECT_PARTITION, CHUNK_BYTES } = require('./update-proxy.cjs');
 const { createUpdater, API_URL } = require('./updater.cjs');
 
 const downloadURL = 'https://github.com/Brclio/Brclio/releases/download/v0.2.0/Brclio-0.2.0-mac-arm64.dmg';
@@ -153,7 +153,7 @@ test('unsupported target URLs are rejected before proxy detection or network acc
 });
 
 test('release download tags may omit v just as the updater release parser allows', async () => {
-  const { router, calls } = fixture();
+  const { router, calls } = fixture({ resolve: () => 'PROXY localhost:7890' });
   await router.fetch(downloadURL.replace('/v0.2.0/', '/0.2.0/'));
   assert.equal(calls.length, 1);
 });
@@ -175,7 +175,7 @@ test('connection, PAC and streaming errors never expose raw URLs or sensitive tr
   assert.match((await pac.router.state()).error, /无法读取/);
   await assert.rejects(pac.router.fetch(API_URL), error => !error.message.includes(secret));
   const stream = fixture({ fetch: async () => new Response(new ReadableStream({ start(controller) { controller.error(new Error(secret)); } })) });
-  const response = await stream.router.fetch(downloadURL);
+  const response = await stream.router.fetch(checksumURL);
   await assert.rejects(response.text(), error => /内置更新代理连接失败/.test(error.message) && !error.message.includes(secret));
 });
 
@@ -214,7 +214,8 @@ test('check, checksum and streamed installer all use built-in routing; switch st
       { name: 'SHA256SUMS.txt', size: 100, browser_download_url: checksumURL },
     ] }));
     if (target === checksumURL) { manifestBusy = (await router.state()).busy; return new Response(`${digest}  ${assetName}`); }
-    return new Response(new ReadableStream({ start(controller) { releaseStream = () => { controller.enqueue(bytes); controller.close(); }; } }));
+    return new Response(new ReadableStream({ start(controller) { releaseStream = () => { controller.enqueue(bytes); controller.close(); }; } }),
+      { status: 206, headers: { 'content-range': `bytes 0-${bytes.length - 1}/${bytes.length}`, 'content-length': String(bytes.length), etag: '"fixture"' } });
   } });
   const updater = createUpdater({ currentVersion: '0.1.0', directory, platform: 'darwin', architecture: 'arm64',
     fetch: router.fetch, onOperation: (_kind, active) => router.setBusy(active) });
@@ -230,4 +231,152 @@ test('check, checksum and streamed installer all use built-in routing; switch st
   assert.equal((await router.state()).busy, false);
   assert.deepEqual(calls.map(([, url]) => new URL(url).searchParams.get('url')), [API_URL, checksumURL, downloadURL]);
   assert.deepEqual(await fs.readFile(path.join(directory, assetName)), bytes);
+});
+
+function segment(bytes, init, overrides = {}) {
+  const headers = new Headers(init.headers);
+  const match = /^bytes=(\d+)-(\d+)$/.exec(headers.get('range'));
+  assert.ok(match);
+  const start = Number(match[1]), end = Number(match[2]);
+  return new Response(bytes.subarray(start, end + 1), { status: 206, ...overrides, headers: {
+    'content-range': `bytes ${start}-${end}/${bytes.length}`, 'content-length': String(end - start + 1), etag: '"fixture"', ...overrides.headers,
+  } });
+}
+
+test('built-in installer buffers validated 1MiB segments, locks route and keeps internal size out of fetch options', async () => {
+  const bytes = crypto.randomBytes(CHUNK_BYTES * 2 + 17);
+  let native = false;
+  const { router, calls, resolved } = fixture({ resolve: () => native ? 'PROXY localhost:7890' : 'DIRECT', fetch: async (_kind, _url, init) => {
+    assert.equal('expectedSize' in init, false);
+    return segment(bytes, init);
+  } });
+  const response = await router.fetch(downloadURL, { headers: { 'User-Agent': 'Brclio/test' } }, { expectedSize: bytes.length });
+  assert.equal(response.status, 200); assert.equal(response.url, downloadURL);
+  assert.equal(response.headers.get('content-range'), null);
+  assert.equal(response.headers.get('content-length'), String(bytes.length));
+  assert.equal(calls.length, 1);
+  native = true;
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+  assert.deepEqual(calls.map(([, , init]) => new Headers(init.headers).get('range')), [`bytes=0-${CHUNK_BYTES - 1}`, `bytes=${CHUNK_BYTES}-${CHUNK_BYTES * 2 - 1}`, `bytes=${CHUNK_BYTES * 2}-${bytes.length - 1}`]);
+  assert.deepEqual(calls.map(([, , init]) => new Headers(init.headers).get('if-range')), [null, '"fixture"', '"fixture"']);
+  assert.ok(calls.every(([kind]) => kind === 'builtin'));
+  assert.equal(resolved.length, 2, 'PAC selected only once for this virtual response');
+});
+
+test('system and disabled routes do not split installer requests or expose internal size', async () => {
+  for (const enabled of [true, false]) {
+    const { router, calls } = fixture({ resolve: () => enabled ? 'PROXY localhost:7890' : 'DIRECT' });
+    if (!enabled) await router.setEnabled(false);
+    assert.equal(await (await router.fetch(downloadURL, {}, { expectedSize: CHUNK_BYTES * 2 })).text(), 'native');
+    assert.equal(calls.length, 1); assert.equal(calls[0][2].headers, undefined); assert.equal('expectedSize' in calls[0][2], false);
+  }
+});
+
+test('installer range validation rejects fallback, malformed metadata, weak ETag and changing segments', async () => {
+  const bytes = Buffer.alloc(CHUNK_BYTES + 3, 1);
+  const invalid = [
+    { status: 200 }, { headers: { 'content-range': `bytes 1-${CHUNK_BYTES}/${bytes.length}` } },
+    { headers: { 'content-range': `bytes 0-${CHUNK_BYTES - 1}/${bytes.length + 1}` } },
+    { headers: { 'content-range': `bytes 00-${CHUNK_BYTES - 1}/${bytes.length}` } },
+    { headers: { 'content-length': String(CHUNK_BYTES - 1) } }, { headers: { etag: 'W/"weak"' } },
+    { headers: { etag: '' } }, { headers: { etag: '""' } }, { headers: { etag: '"é"' } },
+    { headers: { etag: '"' + 'x'.repeat(257) + '"' } }, { headers: { etag: '"one", "two"' } }, { headers: { 'content-encoding': 'gzip' } },
+  ];
+  for (const override of invalid) {
+    const { router, calls } = fixture({ fetch: async (_kind, _url, init) => segment(bytes, init, override) });
+    await assert.rejects(router.fetch(downloadURL, {}, { expectedSize: bytes.length }), /分段信息/);
+    assert.equal(calls.length, 1);
+  }
+  const { router, calls } = fixture({ fetch: async (_kind, _url, init) => segment(bytes, init, calls.length === 2 ? { headers: { etag: '"changed"' } } : {}) });
+  const response = await router.fetch(downloadURL, {}, { expectedSize: bytes.length });
+  await assert.rejects(response.arrayBuffer(), /分段信息/); assert.equal(calls.length, 2);
+});
+
+test('truncated or oversized segment emits no bytes and does not start another request', async () => {
+  const size = CHUNK_BYTES + 3;
+  for (const actual of [CHUNK_BYTES - 1, CHUNK_BYTES + 1]) {
+    const { router, calls } = fixture({ fetch: async () => new Response(Buffer.alloc(actual), { status: 206,
+      headers: { 'content-range': `bytes 0-${CHUNK_BYTES - 1}/${size}`, 'content-length': String(CHUNK_BYTES), etag: '"fixture"' } }) });
+    const response = await router.fetch(downloadURL, {}, { expectedSize: size });
+    await assert.rejects(response.body.getReader().read(), /分段/); assert.equal(calls.length, 1);
+  }
+});
+
+test('cancelling or aborting a segmented stream cancels the current body and never opens the next segment', async () => {
+  const bytes = Buffer.alloc(CHUNK_BYTES + 3);
+  for (const abortRequest of [false, true]) {
+    let cancelled = 0;
+    const controller = new AbortController();
+    const { router, calls } = fixture({ fetch: async () => new Response(new ReadableStream({ cancel() { cancelled++; } }), { status: 206,
+      headers: { 'content-range': `bytes 0-${CHUNK_BYTES - 1}/${bytes.length}`, 'content-length': String(CHUNK_BYTES), etag: '"fixture"' } }) });
+    const response = await router.fetch(downloadURL, { signal: controller.signal }, { expectedSize: bytes.length });
+    if (abortRequest) { const pending = response.text(); controller.abort(); await assert.rejects(pending, { name: 'AbortError' }); }
+    else await response.body.cancel();
+    assert.equal(cancelled, 1); assert.equal(calls.length, 1);
+  }
+});
+
+test('installer size is required before any built-in network request', async () => {
+  const { router, calls } = fixture();
+  for (const expectedSize of [undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER]) await assert.rejects(router.fetch(downloadURL, {}, { expectedSize }), /大小无效/);
+  assert.equal(calls.length, 0);
+});
+
+test('segment redirects and transient errors do not expose transport details or silently retry', async () => {
+  const bytes = Buffer.alloc(CHUNK_BYTES + 3);
+  for (const failure of ['redirect', 'service', 'stream']) {
+    const { router, calls } = fixture({ fetch: async (_kind, _url, init) => {
+      if (calls.length === 1) return segment(bytes, init);
+      if (failure === 'redirect') return new Response(null, { status: 302, headers: { location: 'https://private.invalid/?token=secret' } });
+      if (failure === 'service') return new Response('secret transport detail', { status: 502 });
+      return new Response(new ReadableStream({ start(controller) { controller.error(new Error('secret transport detail')); } }), { status: 206,
+        headers: { 'content-range': `bytes ${CHUNK_BYTES}-${bytes.length - 1}/${bytes.length}`, 'content-length': '3', etag: '"fixture"' } });
+    } });
+    const response = await router.fetch(downloadURL, {}, { expectedSize: bytes.length });
+    await assert.rejects(response.arrayBuffer(), error => !error.message.includes('secret') && (failure === 'redirect' ? /异常重定向/.test(error.message) : /内置更新代理连接失败/.test(error.message)));
+    assert.equal(calls.length, 2);
+  }
+});
+
+test('cancellation between validated segments does not prefetch another segment', async () => {
+  const bytes = Buffer.alloc(CHUNK_BYTES + 3);
+  const { router, calls } = fixture({ fetch: async (_kind, _url, init) => segment(bytes, init) });
+  const response = await router.fetch(downloadURL, {}, { expectedSize: bytes.length });
+  const reader = response.body.getReader();
+  assert.equal((await reader.read()).value.length, CHUNK_BYTES);
+  assert.equal(calls.length, 1);
+  await reader.cancel();
+  assert.equal(calls.length, 1);
+});
+
+test('updater retains whole-package SHA verification and removes partial files after later-segment failure', async t => {
+  const bytes = crypto.randomBytes(CHUNK_BYTES + 37);
+  const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+  const assetName = 'Brclio-0.2.0-mac-arm64.dmg';
+  for (const mode of ['corrupted', 'truncated']) {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-chunk-cleanup-'));
+    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    const { router } = fixture({ fetch: async (_kind, url, init) => {
+      const target = new URL(url).searchParams.get('url');
+      if (target === API_URL) return new Response(JSON.stringify({ tag_name: 'v0.2.0', assets: [
+        { name: assetName, size: bytes.length, browser_download_url: downloadURL, digest: `sha256:${digest}` },
+        { name: 'SHA256SUMS.txt', browser_download_url: checksumURL },
+      ] }));
+      if (target === checksumURL) { assert.equal(new Headers(init.headers).get('range'), null); return new Response(`${digest}  ${assetName}`); }
+      if (new Headers(init.headers).get('range').startsWith('bytes=0-')) return segment(bytes, init);
+      const wrong = Buffer.from(bytes); wrong[wrong.length - 1] ^= 0xff;
+      if (mode === 'corrupted') return segment(wrong, init);
+      return new Response(bytes.subarray(CHUNK_BYTES, bytes.length - 1), { status: 206,
+        headers: { 'content-range': `bytes ${CHUNK_BYTES}-${bytes.length - 1}/${bytes.length}`, 'content-length': '37', etag: '"fixture"' } });
+    } });
+    const updater = createUpdater({ currentVersion: '0.1.0', directory, platform: 'darwin', architecture: 'arm64', fetch: router.fetch,
+      onOperation: (_kind, active) => router.setBusy(active) });
+    await updater.check();
+    const state = await updater.download();
+    assert.equal(state.status, 'error');
+    assert.match(state.error, mode === 'corrupted' ? /SHA256/ : /分段未完成/);
+    assert.deepEqual(await fs.readdir(directory), []);
+    assert.equal((await router.state()).busy, false);
+    assert.match((await updater.install()).error, /先下载并校验/);
+  }
 });

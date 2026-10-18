@@ -75,7 +75,7 @@ const updateProxy = createUpdateProxy({ whenReady: () => app.whenReady(),
   netFetch: (url, options) => net.fetch(url, options),
 });
 const updater = createUpdater({ currentVersion: app.getVersion(), directory: path.join(app.getPath('userData'), 'updates'),
-  fetch: (url, options) => updateProxy.fetch(url, options),
+  fetch: (url, options, context) => updateProxy.fetch(url, options, context),
   onOperation: (_kind, active) => updateProxy.setBusy(active),
   installPackage: descriptor => {
     if (!app.isPackaged || !installer) throw new Error('请使用安装版 Brclio 进行在线更新。');

@@ -75,8 +75,8 @@ function createUpdater(options) {
   function change(patch) { state = { ...state, ...patch }; publish(snapshot()); return snapshot(); }
   function failure(error) { return change({ status: 'error', error: error.message || '操作失败，请重试。' }); }
 
-  async function request(url, signal) {
-    const response = await fetchURL(url, { signal, redirect: 'follow', headers: { Accept: 'application/vnd.github+json', 'User-Agent': `Brclio/${currentVersion}` } });
+  async function request(url, signal, expectedSize) {
+    const response = await fetchURL(url, { signal, redirect: 'follow', headers: { Accept: 'application/vnd.github+json', 'User-Agent': `Brclio/${currentVersion}` } }, expectedSize === undefined ? undefined : { expectedSize });
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
       if (response.status === 404) throw new Error('正式版本尚未发布，请稍后检查。');
@@ -147,7 +147,7 @@ function createUpdater(options) {
           verified = { filename: destination, expected, size: selected.size };
           return change({ status: 'downloaded', progress: 100, downloadedBytes: selected.size, canInstall: true });
         }
-        const response = await request(selected.downloadURL, controller.signal);
+        const response = await request(selected.downloadURL, controller.signal, selected.size);
         if (!response.body) throw new Error('安装包下载内容为空。');
         const hash = crypto.createHash('sha256');
         const output = await fs.open(partial, 'wx', 0o600);
