@@ -38,7 +38,9 @@ const manifest = {
   sha256: createHash('sha256').update(bundle).digest('hex'),
   compatibilityDate: '2026-10-18',
   compatibilityFlags: ['nodejs_compat', 'global_fetch_strictly_public'],
-  secrets: ['ADMIN_EMAIL', 'ADMIN_PASSWORD', 'SESSION_SECRET', 'GITHUB_TOKEN', 'GITHUB_DATA_REPOSITORY', 'PROXY_SUBSCRIPTION_URL'],
+  keepVars: true,
+  dashboardVariableType: 'plain_text',
+  environmentVariables: ['ADMIN_EMAIL', 'ADMIN_PASSWORD', 'SESSION_SECRET', 'GITHUB_TOKEN', 'GITHUB_DATA_REPOSITORY', 'PROXY_SUBSCRIPTION_URL'],
   rateLimits: [
     {name: 'LOGIN_LIMITER', namespaceId: '1001', limit: 8, period: 60},
     {name: 'LOGIN_GLOBAL_LIMITER', namespaceId: '1002', limit: 30, period: 60},

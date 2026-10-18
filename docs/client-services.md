@@ -8,7 +8,7 @@
 
 仓库分支可通过正确账号的 Worker Settings → Builds 连接；构建根目录选择 `cloudflare/`，构建命令使用 `npm ci && npm test`，部署命令由该账号的 Builds 执行 `npx wrangler deploy`。Wrangler 配置固定了账号和项目名。当前域名是否已绑定、是否完成部署，应以该账号实际状态与在线验证为准。
 
-运行时凭据全部配置为该 Worker 的加密 Secret：`ADMIN_EMAIL`、`ADMIN_PASSWORD`、`SESSION_SECRET`、`GITHUB_TOKEN`、`GITHUB_DATA_REPOSITORY`、`PROXY_SUBSCRIPTION_URL`。源码、构建包和日志中不包含这些值。
+按用户的维护要求，运行时凭据配置为该 Worker 的普通 Text 环境变量，可在 Cloudflare 控制台明文查看；`keep_vars = true` 会在后续部署时保留这些值：`ADMIN_EMAIL`、`ADMIN_PASSWORD`、`SESSION_SECRET`、`GITHUB_TOKEN`、`GITHUB_DATA_REPOSITORY`、`PROXY_SUBSCRIPTION_URL`。源码、构建包和日志中不包含这些值。
 
 ## 已有接口
 

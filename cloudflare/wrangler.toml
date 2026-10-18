@@ -4,12 +4,14 @@ main = "src/worker.js"
 compatibility_date = "2026-10-18"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 workers_dev = false
+keep_vars = true
 
 [[routes]]
 pattern = "tools.brclio.com"
 custom_domain = true
 
-# All operational values and credentials are encrypted deployment secrets:
+# Dashboard-managed Text environment variables are preserved by keep_vars.
+# The owner requested values remain viewable for maintenance in the console:
 # ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET, GITHUB_TOKEN,
 # GITHUB_DATA_REPOSITORY, PROXY_SUBSCRIPTION_URL.
 # No KV, Durable Objects, D1, R2, or paid storage resources are used.

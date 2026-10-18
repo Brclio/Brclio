@@ -40,20 +40,23 @@ npm run bundle:browser
 The browser bundle is a standalone ES module at
 `dist/browser/brclio-client-services.mjs`. It embeds the admin HTML and JavaScript;
 no auxiliary assets need uploading. `dist/browser/manifest.json` records its
-SHA-256, intended account/project, compatibility settings, secret names and native
+SHA-256, intended account/project, compatibility settings, environment-variable names and native
 rate-limit bindings. Rebuild it after any source or UI changes. In the correct
 account's Worker editor, use that complete module, compatibility date `2026-10-18`,
 and flags `nodejs_compat` and `global_fetch_strictly_public`.
 
-Configure these encrypted secret names on the same Worker in the browser:
+Configure these environment-variable names on the same Worker in the browser:
 `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `SESSION_SECRET`, `GITHUB_TOKEN`,
-`GITHUB_DATA_REPOSITORY`, and `PROXY_SUBSCRIPTION_URL`. No secret values are present
+`GITHUB_DATA_REPOSITORY`, and `PROXY_SUBSCRIPTION_URL`. No environment-variable values are present
 in the bundle or manifest.
 
-All six values are encrypted Cloudflare deployment secrets. `SESSION_SECRET`
+At the owner’s request, all six values are Dashboard-managed **Text** variables,
+viewable in the Cloudflare console for maintenance. `keep_vars = true` preserves
+those values across deployments. They remain server-only; the Worker never
+returns them in a public response. `SESSION_SECRET`
 must be a random string with at least 32 characters. The GitHub repository value
 is `owner/repository`; the token needs access to that private repository with
-Contents read/write. Do not place actual secret values in source, Wrangler
+Contents read/write. Do not place actual credential values in source, Wrangler
 configuration, commands saved in shell history, or logs. Local development may
 use the ignored `.dev.vars` file.
 
