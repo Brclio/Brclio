@@ -216,6 +216,11 @@ changes. See `certs/README.md` for trust-store provenance and regeneration.
 
 Proxy failures log only a fixed event, stage enum and error-code enum. No raw
 exception, URL, node UUID, subscription, response body or credential is logged.
+Chunk retry/final-failure events also contain only numeric attempt, subscription
+node index and elapsed milliseconds. HTTP parsing scans buffered records with a
+cursor instead of copying the unread record for each header byte. Lines require
+CRLF and are limited to 8 KiB including that terminator; header and trailer content
+budgets count actual UTF-8 wire bytes up to 32 KiB.
 Native observability persistence is disabled. A successful relay includes
 `X-Brclio-Route: subscription-vless`.
 

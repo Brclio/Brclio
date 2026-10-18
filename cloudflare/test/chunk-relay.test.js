@@ -111,3 +111,11 @@ test('chunk deadline bounds a stalled body and an already canceled request opens
   await assert.rejects(() => relayChunk(official, nodes, {range: {start: 0, end: 0}, signal: abort.signal, transport: async () => {throw new Error('must not open');}}));
   assert.equal(MAX_CHUNK_BYTES, 1048576);
 });
+test('final chunk failures expose only fixed enums and numeric attempt diagnostics',async t=>{
+  const messages=[];t.mock.method(console,'warn',value=>messages.push(JSON.parse(value)));
+  await assert.rejects(()=>relayChunk(official,nodes,{range:{start:0,end:0},transport:async()=>{throw new Error('https://private-node.example/?token=private-credential');}}));
+  assert.deepEqual(messages.map(item=>item.event),['proxy_chunk_retry','proxy_chunk_failed']);
+  assert.deepEqual(messages.map(item=>item.nodeIndex),[0,1]);assert.deepEqual(messages.map(item=>item.attempt),[1,2]);
+  assert.ok(messages.every(item=>item.stage==='relay'&&item.code==='upstream_failed'&&Number.isInteger(item.elapsedMs)));
+  assert.ok(!JSON.stringify(messages).includes('private'));
+});

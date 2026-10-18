@@ -72,6 +72,7 @@ export async function relayChunk(value, nodes, {range, signal, transport = tunne
   signal?.addEventListener('abort', cancel, {once: true});
   if (signal?.aborted) cancel();
   const timer = setTimeout(cancel, Math.max(1, headerDeadlineMs));
+  const started = Date.now();
   let active, activeHost, activeNode;
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -105,8 +106,10 @@ export async function relayChunk(value, nodes, {range, signal, transport = tunne
         if (preferred.get(activeHost) === activeNode) preferred.delete(activeHost);
         if (activeNode) { const excluded = failed.get(activeHost) || new Set(); excluded.add(activeNode); failed.set(activeHost, excluded); }
         if (active) { active.close(); await active.body?.cancel().catch(() => {}); active = null; }
-        if (error instanceof InvalidChunk || abort.signal.aborted || attempt === 1) throw error;
-        console.warn(JSON.stringify({event: 'proxy_chunk_retry', ...safeFailure(error)}));
+        const terminal = error instanceof InvalidChunk || abort.signal.aborted || attempt === 1;
+        const failure = error instanceof InvalidChunk ? {stage: 'http', code: 'invalid_segment_response'} : abort.signal.aborted ? {stage: 'relay', code: 'timeout_or_cancelled'} : safeFailure(error);
+        console.warn(JSON.stringify({event: terminal ? 'proxy_chunk_failed' : 'proxy_chunk_retry', ...failure, attempt: attempt + 1, nodeIndex: nodes.indexOf(activeNode), elapsedMs: Date.now() - started}));
+        if (terminal) throw error;
       }
     }
     throw new Error('内置代理暂不可用');

@@ -79,24 +79,53 @@ export function vlessHeader(uuid, hostname, port = 443) {
 }
 
 export class ByteReader {
-  constructor(read) { this.readNext = read; this.pending = new Uint8Array(); }
+  constructor(read) { this.readNext = read; this.pending = new Uint8Array(); this.offset = 0; this.lastLineContentBytes = 0; }
+  take(n) {
+    const bytes = this.pending.subarray(this.offset, this.offset + n);
+    this.offset += n;
+    if (this.offset === this.pending.length) { this.pending = new Uint8Array(); this.offset = 0; }
+    return bytes;
+  }
+  async fill() {
+    if (this.offset < this.pending.length) return;
+    const next = await this.readNext();
+    if (!next?.length) throw new Error('代理连接提前结束');
+    this.pending = next; this.offset = 0;
+  }
   async readSome() {
-    if (this.pending.length) { const p = this.pending; this.pending = new Uint8Array(); return p; }
+    if (this.offset < this.pending.length) return this.take(this.pending.length - this.offset);
     return this.readNext();
   }
   async exact(n) {
-    while (this.pending.length < n) {
-      const next = await this.readNext();
-      if (!next?.length) throw new Error('代理连接提前结束');
-      this.pending = concat(this.pending, next);
+    if (!Number.isSafeInteger(n) || n < 0) throw new Error('无效的读取长度');
+    if (!n) return new Uint8Array();
+    await this.fill();
+    if (this.pending.length - this.offset >= n) return this.take(n);
+    const result = new Uint8Array(n); let written = 0;
+    while (written < n) {
+      await this.fill();
+      const bytes = this.take(Math.min(n - written, this.pending.length - this.offset));
+      result.set(bytes, written); written += bytes.length;
     }
-    const result = this.pending.slice(0, n); this.pending = this.pending.slice(n); return result;
+    return result;
   }
   async line(max = 8192) {
-    const bytes = [];
-    for (let i = 0; i < max; i++) {
-      const b = (await this.exact(1))[0]; bytes.push(b);
-      if (b === 10) return decoder.decode(new Uint8Array(bytes)).replace(/\r?\n$/, '');
+    if (!Number.isSafeInteger(max) || max < 1) throw new Error('响应头过大');
+    const parts = []; let length = 0;
+    while (length < max) {
+      await this.fill();
+      const end = Math.min(this.pending.length, this.offset + max - length);
+      const newline = this.pending.subarray(this.offset, end).indexOf(10);
+      const part = this.take(newline < 0 ? end - this.offset : newline + 1);
+      parts.push(part); length += part.length;
+      if (newline >= 0) {
+        const bytes = parts.length === 1 ? part : concat(...parts);
+        if (bytes.length < 2 || bytes.at(-2) !== 13) throw new Error('无效的 HTTP 行结束');
+        const content = bytes.subarray(0, bytes.length - 2);
+        if (content.includes(13)) throw new Error('无效的 HTTP 行结束');
+        this.lastLineContentBytes = length - 2;
+        return decoder.decode(content);
+      }
     }
     throw new Error('响应头过大');
   }
@@ -108,7 +137,7 @@ export async function readHTTPHead(reader) {
   if (!match) throw new Error('代理返回无效 HTTP 响应');
   const headers = new Headers(); let size = 0;
   while (true) {
-    const line = await reader.line(); size += line.length;
+    const line = await reader.line(); size += reader.lastLineContentBytes;
     if (size > 32768) throw new Error('响应头过大');
     if (!line) break;
     const colon = line.indexOf(':');
@@ -135,7 +164,7 @@ export function httpBody(reader, headers, close) {
             if (!/^[0-9a-f]+(?:;.*)?$/i.test(line)) throw new Error('无效分块长度');
             chunkLeft = parseInt(line.split(';')[0], 16);
             if (!Number.isSafeInteger(chunkLeft) || chunkLeft > 1024 * 1024 * 1024) throw new Error('无效分块长度');
-            if (!chunkLeft) { let trailerSize = 0; while (true) { const s = await reader.line(); trailerSize += s.length; if (trailerSize > 32768) throw new Error('响应尾部过大'); if (!s) break; } finished = true; controller.close(); close(); return; }
+            if (!chunkLeft) { let trailerSize = 0; while (true) { const s = await reader.line(); trailerSize += reader.lastLineContentBytes; if (trailerSize > 32768) throw new Error('响应尾部过大'); if (!s) break; } finished = true; controller.close(); close(); return; }
           }
           const data = await reader.exact(Math.min(chunkLeft, 16384)); chunkLeft -= data.length;
           if (!chunkLeft && decoder.decode(await reader.exact(2)) !== '\r\n') throw new Error('无效分块结束');
