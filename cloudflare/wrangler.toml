@@ -3,7 +3,7 @@ account_id = "cacceff607775c81f667b7a951d4639f"
 main = "src/worker.js"
 compatibility_date = "2026-10-18"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
-workers_dev = false
+workers_dev = true
 keep_vars = true
 
 [[routes]]

@@ -31,7 +31,7 @@ const manifest = {
   publicOrigin: 'https://tools.brclio.com',
   bootstrapOrigin: 'https://brclio-client-services.aiyuechuang.workers.dev',
   bootstrapPaths: ['/api/client/update-proxy', '/api/health'],
-  workersDev: false,
+  workersDev: true,
   routes: [{pattern: 'tools.brclio.com', customDomain: true}],
   generatedAt: new Date().toISOString(),
   filename,

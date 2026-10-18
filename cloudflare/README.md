@@ -22,8 +22,9 @@ used to deploy this project.
 The fallback is an alias of the same Worker. Its host guard permits only `GET
 /api/client/update-proxy` and `GET /api/health`; all other paths and methods,
 including the homepage, login and administration, return 404. Roll out that
-host guard while `workers_dev = false`, then enable only the production alias
-in the correct account and persist `workers_dev = true` after verification.
+host guard before enabling the production alias in the correct account. The
+production alias is now enabled and persisted with `workers_dev = true`;
+preview URLs remain disabled.
 Preview URLs remain disabled. The fallback avoids the custom domain’s confirmed
 Bot Fight Mode challenge without disabling zone protection. Its reachability in
 any particular network must still be verified.

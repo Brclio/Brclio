@@ -6,7 +6,7 @@
 
 单一 Worker 为 `brclio-client-services`，账号固定为 `cacceff607775c81f667b7a951d4639f`。主入口 `https://tools.brclio.com` 的根路径介绍 Brclio、提供正式 GitHub 下载链接，后台为 `/admin`。不需要 Pages、第二个 Worker 或付费存储。
 
-同一 Worker 的生产别名 `https://brclio-client-services.aiyuechuang.workers.dev` 仅作为配置引导备用入口：只允许 GET `/api/client/update-proxy` 和 GET `/api/health`，主页、后台、登录和其它路径全部 404。先部署此限制并保持 `workers_dev = false`，再由正确账号控制台启用生产别名，验证后将配置持久化为 true；预览入口保持关闭。自定义域名上已确认的 Bot Fight Mode 质询不通过关闭整区防护解决。备用域名在各网络中的可达性需实际验证。
+同一 Worker 的生产别名 `https://brclio-client-services.aiyuechuang.workers.dev` 仅作为配置引导备用入口：只允许 GET `/api/client/update-proxy` 和 GET `/api/health`，主页、后台、登录和其它路径全部 404。已先部署该限制，再在正确账号控制台启用生产别名，配置持久化为 `workers_dev = true`；预览入口保持关闭。自定义域名上已确认的 Bot Fight Mode 质询不通过关闭整区防护解决。备用域名在各网络中的可达性需实际验证。
 
 GitHub Builds 构建根目录为 `cloudflare`，构建命令 `npm ci && npm test`，部署命令由正确账号执行 `npx wrangler deploy`。本地 CLI 若登录其它账号，不应用于部署。
 
