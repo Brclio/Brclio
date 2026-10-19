@@ -1,6 +1,7 @@
 package com.brclio.toolbox
 
 import org.json.JSONObject
+import org.json.JSONArray
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -16,6 +17,38 @@ class AccountPolicyTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             AccountPolicy.validate(JSONObject().put("path", "/api/account/login").put("method", "POST").put("body", JSONObject().put("value", "字".repeat(50000))))
+        }
+    }
+    @Test fun settingsAllowOnlyBoundedJsonAndRetainTheCurrentSession() {
+        for ((path, method) in listOf("/api/account/profile" to "PUT", "/api/account/password" to "POST")) {
+            val body = JSONObject().put("fixture", "value")
+            val request = AccountPolicy.validate(JSONObject().put("path", path).put("method", method).put("body", body))
+            assertEquals(body.toString(), request.body)
+            assertTrue(request.cancelsGoogle)
+            assertFalse(request.changesAuth)
+            for (invalidMethod in listOf("GET", "DELETE", "PATCH", method.lowercase(), if (method == "PUT") "POST" else "PUT")) {
+                assertThrows(IllegalArgumentException::class.java) {
+                    AccountPolicy.validate(JSONObject().put("path", path).put("method", invalidMethod).put("body", body))
+                }
+            }
+            for (invalidPath in listOf("$path?x=y", "$path/", AccountPolicy.ORIGIN + path, path.replace("/api/", "//api/"), path.replace("/account/", "/account/%2e%2e/"))) {
+                assertThrows(IllegalArgumentException::class.java) {
+                    AccountPolicy.validate(JSONObject().put("path", invalidPath).put("method", method).put("body", body))
+                }
+            }
+            for (invalidBody in listOf(JSONObject.NULL, JSONArray(), "fixture", JSONObject().put("nickname", "字".repeat(50000)))) {
+                assertThrows(IllegalArgumentException::class.java) {
+                    AccountPolicy.validate(JSONObject().put("path", path).put("method", method).put("body", invalidBody))
+                }
+            }
+        }
+        val session = AccountPolicy.validate(JSONObject().put("path", "/api/account/session"))
+        assertFalse(session.cancelsGoogle)
+        assertFalse(session.changesAuth)
+        for (path in listOf("/api/account/login", "/api/account/register", "/api/account/logout")) {
+            val request = AccountPolicy.validate(JSONObject().put("path", path).put("method", "POST"))
+            assertTrue(request.cancelsGoogle)
+            assertTrue(request.changesAuth)
         }
     }
     @Test fun oauthUrlAndProofAreBoundToTrustedDeviceHandoff() {

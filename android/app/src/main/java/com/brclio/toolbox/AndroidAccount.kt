@@ -36,9 +36,8 @@ class AndroidAccount(private val activity: Activity) {
     fun request(input: JSONObject, callback: (JSONObject?, String?) -> Unit) {
         // Reject malformed requests before consuming a native worker thread.
         val request = AccountPolicy.validate(input)
-        val changesAuth = request.path in setOf("/api/account/login", "/api/account/register", "/api/account/logout")
-        if (changesAuth) cancelGoogle()
-        val version = if (changesAuth) authVersion.incrementAndGet() else authVersion.get()
+        if (request.cancelsGoogle) cancelGoogle()
+        val version = if (request.changesAuth) authVersion.incrementAndGet() else authVersion.get()
         execute(callback) {
             try { accept(raw(request.path, request.method, request.body), version) }
             finally {
@@ -85,8 +84,7 @@ class AndroidAccount(private val activity: Activity) {
                 val result = raw("/api/account/device/poll?id=$id&verifier=$verifier", "GET", null, operation)
                 if (result.optBoolean("pending")) continue
                 check(result.opt("token") is String && result.opt("user") is JSONObject) { "谷歌登录尚未完成，请重试。" }
-                checkActive(operation)
-                return@execute accept(result, version)
+                return@execute accept(result, version, operation)
             }
             error("谷歌登录已超时，请重新登录。")
           } catch (error: Exception) {
@@ -98,7 +96,10 @@ class AndroidAccount(private val activity: Activity) {
     }
 
     fun cancelGoogle(): JSONObject {
-        synchronized(lock) { google }?.let { it.canceled = true; it.connection?.disconnect() }
+        val connection = synchronized(lock) {
+            google?.let { it.canceled = true; it.connection }
+        }
+        connection?.disconnect()
         return JSONObject().put("canceled", true)
     }
 
@@ -107,7 +108,8 @@ class AndroidAccount(private val activity: Activity) {
         check(operation?.canceled != true) { "谷歌登录已取消，请重新登录。" }
     }
 
-    private fun accept(result: JSONObject, version: Int): JSONObject = synchronized(lock) {
+    private fun accept(result: JSONObject, version: Int, operation: GoogleOperation? = null): JSONObject = synchronized(lock) {
+        checkActive(operation)
         check(version == authVersion.get()) { "账号状态已变化，请重新登录。" }
         if (result.has("token")) {
             val token = result.optString("token")
