@@ -86,6 +86,10 @@ async function main() {
     report.checks.push('Real signed old fixture launched from a private Unicode/space/metacharacter application path; native renderer initialized.');
 
     await application.evaluate(({ net, session }, fixture) => {
+      const load = process.getBuiltinModule('node:module').createRequire(process.cwd() + '/package.json');
+      const { createReadStream } = load('node:fs');
+      const { Readable } = load('node:stream');
+      const { fileURLToPath } = load('node:url');
       const assetName = `Brclio-${fixture.version}-mac-${fixture.architecture}.dmg`;
       const prefix = `https://github.com/Brclio/Brclio/releases/download/v${fixture.version}/`;
       const release = { tag_name: `v${fixture.version}`, draft: false, prerelease: false, body: '真实 macOS 更新验收。', assets: [
@@ -93,7 +97,6 @@ async function main() {
         { name: 'SHA256SUMS.txt', size: 128, browser_download_url: prefix + 'SHA256SUMS.txt' },
       ] };
       globalThis.__macInstallSmokeRequests = [];
-      const originalFetch = net.fetch.bind(net);
       // Current-source fixtures route through isolated updater sessions. Keep
       // this native replacement test independent of the host's PAC settings and
       // live release service, including when the built-in route is enabled.
@@ -110,16 +113,13 @@ async function main() {
         if (url === 'https://api.github.com/repos/Brclio/Brclio/releases/latest') return new Response(JSON.stringify(release));
         if (url === prefix + 'SHA256SUMS.txt') return new Response(`${fixture.expected}  ${assetName}\n`);
         if (url === prefix + assetName) {
-          // Electron's real net stack supports file: URLs; no Node require is
-          // available inside Playwright's main-process evaluation context.
-          const source = await originalFetch(fixture.fileURL);
-          if (!source.ok) throw new Error('Cannot stream the real local DMG.');
-          return new Response(source.body);
+          // session.fetch dynamically calls net.request, including for file:.
+          // Read the actual DMG bytes without re-entering this network mock.
+          return new Response(Readable.toWeb(createReadStream(fileURLToPath(fixture.fileURL))));
         }
         throw new Error('Unexpected update request: ' + url);
       };
       net.fetch = fetch;
-      const load = process.getBuiltinModule('node:module').createRequire(process.cwd() + '/package.json');
       net.request = load('./test/electron-update-request-fixture.cjs').mockElectronRequest(fetch);
       systemSession.fetch = fetch;
       directSession.fetch = fetch;

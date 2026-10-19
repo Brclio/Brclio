@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const os = require('node:os');
+const { pathToFileURL } = require('node:url');
 const { electronUpdateFetch } = require('./electron-update-fetch.cjs');
 
 // Exercise the actual fixture installed into the release smoke's main process.
@@ -17,9 +19,12 @@ const end = source.indexOf('\n    }, { version: targetVersion', start);
 assert.ok(start >= 0 && end > start);
 const callback = source.slice(start + 'await application.evaluate('.length, end) + '\n}';
 
-test('macOS native replacement fixture intercepts isolated proxy sessions without live network', async () => {
+test('macOS native replacement fixture streams the real file without re-entering mocked Electron requests', async t => {
   const bytes = Buffer.from('local actual DMG fixture bytes');
-  const fileURL = 'file:///private/test-package.dmg';
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mac-dmg-fixture-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const filename = path.join(directory, '真实 DMG & space.dmg'); fs.writeFileSync(filename, bytes);
+  const fileURL = pathToFileURL(filename).href;
   const nativeCalls = [];
   const net = { fetch: async (url, init = {}) => {
     const range = new Headers(init.headers).get('range'); nativeCalls.push({ url, range }); assert.equal(url, fileURL);
@@ -46,10 +51,10 @@ test('macOS native replacement fixture intercepts isolated proxy sessions withou
   assert.equal((await builtin.fetch('https://github.com/robots.txt', {method:'HEAD'})).status, 200);
   assert.equal((await (await builtin.fetch(metadataURL)).json()).tag_name, 'v0.2.0');
   assert.deepEqual(Buffer.from(await (await builtin.fetch(assetURL)).arrayBuffer()), bytes);
-  assert.deepEqual(nativeCalls, [{ url: fileURL, range: null }]);
+  assert.deepEqual(nativeCalls, []);
   assert.equal((await (await electronUpdateFetch(net.request, builtin, metadataURL)).json()).tag_name, 'v0.2.0');
   assert.deepEqual(Buffer.from(await (await electronUpdateFetch(net.request, builtin, assetURL)).arrayBuffer()), bytes);
-  assert.deepEqual(nativeCalls, [{ url: fileURL, range: null }, { url: fileURL, range: null }]);
+  assert.deepEqual(nativeCalls, []);
   await assert.rejects(builtin.fetch('https://unrecognized.example/'), /Unexpected update request/);
 
 });

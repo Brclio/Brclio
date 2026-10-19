@@ -68,6 +68,25 @@ try{
    return{ok:actualDigest===digest&&!installed&&proxyNativeUnexpected===0&&closed.every(Boolean),actualElectron:true,externalNetworkRequests:false,defaultTimeoutsOverridden:false,configurationRequests,firstCheckAndDownloadFreshConfigurations:configurationRequests===8,probesPerPrimaryOperation:16,primaryProbeCount:wireRequests.slice(0,37).filter(x=>x.method==='HEAD').length,probeURL:'https://github.com/robots.txt',probeConcurrencyBound:16,continuousBytes:payload.length,fullSHA256:actualDigest,allRequestsOfficial:wireRequests.every(x=>/^https:\/\/(?:github\.com|api\.github\.com|release-assets\.githubusercontent\.com|objects\.githubusercontent\.com)\//.test(x.url)),rangeRequests:wireRequests.filter(x=>x.range).length,allBridgeListenersClosed:closed.every(Boolean),primaryBridgeCount:firstOperationPorts,http2Used:relay.requests.some(value=>value.httpVersion==='2.0'),http1RedirectVerified:true,http2ChecksumAndInstallerRedirectsVerified:true,nativeRedirectReturnedBeforeFollow:true,unsafeRedirectNeverFollowed:true,truncatedBodyRejected:true,innerWrongHostnameRejected:true,untrustedWSSRejected:true,cancellationStopsTunnel:true,installed:false};
   }finally{await router.close();for(const value of sessionsToClose){await value.closeAllConnections();value.setCertificateVerifyProc(null);}await relay.close();}
  },root);
+ // Exercise the exact release-install fixture in real Electron. Its original
+ // net.fetch delegates dynamically to net.request, which a VM stub cannot model.
+ Object.assign(result,await app.evaluate(async({app,net,session},root)=>{
+  const load=process.getBuiltinModule('node:module').createRequire(root+'/package.json'),fs=load('node:fs/promises'),path=load('node:path'),crypto=load('node:crypto'),vm=load('node:vm'),{pathToFileURL}=load('node:url');
+  const {electronUpdateFetch}=load('./desktop/electron-update-fetch.cjs');
+  const source=await fs.readFile(path.join(root,'desktop/mac-installer-smoke.cjs'),'utf8'),marker='await application.evaluate(({ net, session }, fixture) => {',start=source.indexOf(marker),end=source.indexOf('\n    }, { version: targetVersion',start);
+  if(start<0||end<=start)throw Error('Missing native-install fixture callback');
+  const inject=vm.runInThisContext('('+source.slice(start+'await application.evaluate('.length,end)+'\n})');
+  const filename=path.join(app.getPath('userData'),"真实 DMG & ' space.dmg"),body=crypto.randomBytes(2*1024*1024+37),digest=crypto.createHash('sha256').update(body).digest('hex');
+  await fs.writeFile(filename,body);let nativeFileRequests=0;
+  try{
+   inject({net,session},{version:'0.2.0',architecture:'arm64',fileURL:pathToFileURL(filename).href,size:body.length,expected:digest});
+   const request=net.request;net.request=options=>{if(new URL(options.url).protocol==='file:')nativeFileRequests++;return request(options);};
+   const response=await electronUpdateFetch(options=>net.request(options),session.defaultSession,'https://github.com/Brclio/Brclio/releases/download/v0.2.0/Brclio-0.2.0-mac-arm64.dmg');
+   const actual=Buffer.from(await response.arrayBuffer());
+   if(actual.length!==body.length||crypto.createHash('sha256').update(actual).digest('hex')!==digest||nativeFileRequests!==0)throw Error('Real local DMG fixture bytes were not preserved independently of network mocks');
+   return{macInstallerFixtureRealFileBytes:actual.length,macInstallerFixtureSHA256:digest,macInstallerFixtureNativeFileRequests:nativeFileRequests,macInstallerFixtureReadVerified:true};
+  }finally{await fs.rm(filename,{force:true});}
+ },root));
  assert.equal(result.ok,true);assert.equal(result.rangeRequests,0);assert.equal(result.primaryBridgeCount,32);assert.equal(result.firstCheckAndDownloadFreshConfigurations,true);
  await fs.mkdir(path.join(root,'artifacts'),{recursive:true});await fs.writeFile(path.join(root,'artifacts/desktop-native-proxy-offline.json'),JSON.stringify(result,null,2)+'\n');
  console.log(JSON.stringify(result,null,2));
