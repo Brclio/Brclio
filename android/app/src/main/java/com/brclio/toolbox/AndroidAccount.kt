@@ -139,6 +139,7 @@ class AndroidAccount(private val activity: Activity) {
             connection.readTimeout = 30_000
             connection.useCaches = false
             connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("User-Agent", "Brclio/${BuildConfig.VERSION_NAME}")
             connection.setRequestProperty("X-Brclio-Client", "native")
             preferences.getString("token", null)?.takeIf(AccountPolicy::validToken)?.let {
                 connection.setRequestProperty("Authorization", "Bearer $it")
