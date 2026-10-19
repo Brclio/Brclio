@@ -6,8 +6,9 @@ export async function googleIdentity(code, verifier, nonce, callback, env, fetch
   const response = await fetchImpl('https://oauth2.googleapis.com/token', {
     method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
     body: new URLSearchParams({code, code_verifier: verifier, client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET, redirect_uri: callback, grant_type: 'authorization_code'}),
-    redirect: 'error', signal: AbortSignal.timeout(10000)
+    redirect: 'manual', signal: AbortSignal.timeout(10000)
   });
+  if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); onStage('token_rejected'); throw new Error('Google authorization redirect refused'); }
   if (!response.ok) {
     const failure = await response.json().catch(() => null);
     const known = {invalid_grant: 'token_invalid_grant', invalid_client: 'token_invalid_client', unauthorized_client: 'token_unauthorized_client', invalid_request: 'token_invalid_request', redirect_uri_mismatch: 'token_redirect_mismatch'};
@@ -25,7 +26,8 @@ export async function googleIdentity(code, verifier, nonce, callback, env, fetch
   async function keys(fresh = false) {
     if (!fresh && cachedKeys?.until > Date.now()) return cachedKeys.value;
     onStage('identity_keys');
-    const certs = await fetchImpl('https://www.googleapis.com/oauth2/v3/certs', {redirect: 'error', signal: AbortSignal.timeout(10000)});
+    const certs = await fetchImpl('https://www.googleapis.com/oauth2/v3/certs', {redirect: 'manual', signal: AbortSignal.timeout(10000)});
+    if (certs.status >= 300 && certs.status < 400) { await certs.body?.cancel(); throw new Error('Google keys redirect refused'); }
     if (!certs.ok) throw new Error('Google keys unavailable');
     const value = await certs.json();
     if (!Array.isArray(value.keys)) throw new Error('Google keys unavailable');
