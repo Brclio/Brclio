@@ -22,6 +22,13 @@ public static class BrclioSelectionWindow {
   public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")]
   public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  private static extern int GetClassName(IntPtr window, System.Text.StringBuilder text, int maximum);
+  public static string WindowClass(IntPtr window) {
+    System.Text.StringBuilder text = new System.Text.StringBuilder(128);
+    GetClassName(window, text, text.Capacity);
+    return text.ToString();
+  }
   [DllImport("user32.dll")]
   [return: MarshalAs(UnmanagedType.Bool)]
   public static extern bool IsWindowVisible(IntPtr window);
@@ -114,12 +121,22 @@ public static class BrclioSelectionWindow {
   }
 }
 '@
+  function Write-ContextDiagnostics([string]$reason, [string]$processName) {
+    if ($env:BRCLIO_SELECTION_DIAGNOSTICS -ne '1') { return }
+    try {
+      $detail = @{ reason = $reason; foreground = $foreground.ToInt64(); foregroundClass = [BrclioSelectionWindow]::WindowClass($foreground); process = $processName }
+      $diagnosticBytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $detail -Compress))
+      $stderr = [Console]::OpenStandardError()
+      $stderr.Write($diagnosticBytes, 0, $diagnosticBytes.Length)
+      $stderr.Flush()
+    } catch {}
+  }
   $foreground = [BrclioSelectionWindow]::GetForegroundWindow()
-  if ($foreground -eq [IntPtr]::Zero) { exit 10 }
+  if ($foreground -eq [IntPtr]::Zero) { Write-ContextDiagnostics 'missing_foreground' ''; exit 10 }
   [uint32]$foregroundProcessId = 0
   [void][BrclioSelectionWindow]::GetWindowThreadProcessId($foreground, [ref]$foregroundProcessId)
   $foregroundProcess = Get-Process -Id $foregroundProcessId -ErrorAction Stop
-  if ($foregroundProcess.ProcessName -ine 'explorer') { exit 10 }
+  if ($foregroundProcess.ProcessName -ine 'explorer') { Write-ContextDiagnostics 'foreground_not_explorer' $foregroundProcess.ProcessName; exit 10 }
   $focus = [BrclioSelectionWindow]::GetFocusedWindow($foreground)
   $focusRequired = $false
   $foregroundNumber = $foreground.ToInt64() -band [Int64]4294967295
@@ -147,7 +164,7 @@ public static class BrclioSelectionWindow {
       }
     } catch { continue }
   }
-  if ($matchedWindows -eq 0) { exit 10 }
+  if ($matchedWindows -eq 0) { Write-ContextDiagnostics 'foreground_not_registered' 'explorer'; exit 10 }
   # Windows 11 can retain WS_VISIBLE on background tab panes. Only the pane
   # containing the foreground keyboard focus can disambiguate those views.
   if (-not $unreadableMatch -and $views.Count -gt 1) {

@@ -284,6 +284,7 @@ async function createWindowsSelectionFixture() {
       return result;
     },
     previousTab: window => execute({ action: 'previousTab', window, path: paths.first[0] }),
+    inspect: () => execute({ action: 'inspect' }),
     restoreForeground: () => execute({ action: 'restoreForeground', originalWindow: metadata.originalWindow }),
     cleanup
   };
@@ -291,26 +292,33 @@ async function createWindowsSelectionFixture() {
 
 async function main() {
   const reportPath = path.join(__dirname, '..', 'artifacts', 'windows-selection-smoke.json');
-  const report = { platform: process.platform, realExplorer: true, checks: [], passed: false };
+  const report = { platform: process.platform, realExplorer: true, checks: [], passed: false, stage: 'fixture_setup' };
   let fixture;
   try {
     fixture = await createWindowsSelectionFixture();
     report.environment = fixture.metadata;
     const readSelection = () => getWindowsSelectedPaths({ diagnostics: true });
     const equalPaths = (actual, expected) => assert.deepEqual([...actual].sort(), [...expected].sort());
+    report.stage = 'first_selection';
     await fixture.activate('first');
     equalPaths(await readSelection(), fixture.paths.first);
     report.checks.push('foreground Unicode and literal-symbol file-and-folder multi-selection');
+    report.stage = 'second_selection';
     await fixture.activate('second');
     equalPaths(await readSelection(), fixture.paths.second);
     report.checks.push('foreground single-selection excludes saved background-window selection');
+    report.stage = 'empty_selection';
     await fixture.activate('empty');
     await assert.rejects(readSelection(), /先在资源管理器中选中/);
     report.checks.push('empty selection rejects instead of copying the current folder');
     if (fixture.metadata.productType === 1 && fixture.metadata.build >= 22621) {
+      report.stage = 'new_tab_focus';
       const tab = await fixture.createTab();
+      report.stage = 'new_tab_selection';
       equalPaths(await readSelection(), fixture.paths.second);
+      report.stage = 'previous_tab_focus';
       await fixture.previousTab(tab.window);
+      report.stage = 'previous_tab_selection';
       equalPaths(await readSelection(), fixture.paths.first);
       report.checks.push('Windows 11 active-tab selection and switching exclude hidden-tab selection');
       report.windows11Tabs = 'passed';
@@ -318,14 +326,20 @@ async function main() {
       report.windows11Tabs = 'not exercised: this runner is not client Windows 11 with Explorer tabs';
     }
     if (fixture.metadata.originalWindow && fixture.metadata.originalProcess !== 'explorer') {
+      report.stage = 'non_explorer_rejection';
       await fixture.restoreForeground();
       await assert.rejects(readSelection(), /先切换到资源管理器/);
       report.checks.push('non-Explorer foreground rejects saved background-window selection');
     }
     report.passed = true;
+    report.stage = 'complete';
   } catch (error) {
     report.error = error.message;
     if (error.selectionDiagnostics) report.selectionDiagnostics = error.selectionDiagnostics;
+    if (fixture) {
+      try { report.foregroundAfterFailure = await fixture.inspect(); }
+      catch { report.foregroundInspectionFailed = true; }
+    }
     throw error;
   } finally {
     try { if (fixture) await fixture.cleanup(); }

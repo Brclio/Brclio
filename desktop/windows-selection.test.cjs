@@ -83,6 +83,19 @@ test('native ambiguity diagnostics are opt-in and keep the user-facing error con
   });
 });
 
+test('missing foreground diagnostics preserve the refusal and contain no selected paths', async () => {
+  const detail = {reason:'foreground_not_explorer',foreground:12,foregroundClass:'ApplicationFrameWindow',process:'WWAHost'};
+  const error = Object.assign(new Error('raw process failure'), {code:10,stderr:JSON.stringify(detail)});
+  await assert.rejects(getWindowsSelectedPaths({diagnostics:true,execFile:async()=>{throw error;}}),failure=>{
+    assert.match(failure.message,/先切换到资源管理器/);assert.deepEqual(failure.selectionDiagnostics,detail);return true;
+  });
+  assert.match(WINDOWS_SELECTION_SCRIPT,/Write-ContextDiagnostics 'foreground_not_explorer'/);
+  assert.match(WINDOWS_SELECTION_SCRIPT,/Write-ContextDiagnostics 'foreground_not_registered'/);
+  assert.match(WINDOWS_SELECTION_SCRIPT,/if \(\$env:BRCLIO_SELECTION_DIAGNOSTICS -ne '1'\) \{ return \}/);
+  assert.match(WINDOWS_SELECTION_SCRIPT,/foregroundClass = \[BrclioSelectionWindow\]::WindowClass/);
+  assert.doesNotMatch(WINDOWS_SELECTION_SCRIPT.match(/function Write-ContextDiagnostics[\s\S]*?\n  \}/)[0],/SelectedItems|\.Path|Folder/);
+});
+
 test('script queries the visible active Shell view and rechecks its focus instead of trusting a tab Document', () => {
   assert.match(WINDOWS_SELECTION_SCRIPT, /GetWindowThreadProcessId/);
   assert.match(WINDOWS_SELECTION_SCRIPT, /ProcessName -ine 'explorer'/);
