@@ -25,7 +25,7 @@
   }
   const browser = {
     accountRequest: async ({ path, method = 'GET', body } = {}) => {
-      const routes = { '/api/account/session': ['GET'], '/api/account/code': ['POST'], '/api/account/register': ['POST'], '/api/account/login': ['POST'], '/api/account/logout': ['POST'], '/api/account/data': ['GET', 'PUT'] };
+      const routes = { '/api/account/session': ['GET'], '/api/account/code': ['POST'], '/api/account/register': ['POST'], '/api/account/login': ['POST'], '/api/account/logout': ['POST'], '/api/account/data': ['GET', 'PUT'], '/api/account/profile': ['PUT'], '/api/account/password': ['POST'] };
       if (!routes[path]?.includes(method)) throw new Error('账号请求路径或方法无效。');
       const encoded = body === undefined ? undefined : JSON.stringify(body);
       if (encoded && new TextEncoder().encode(encoded).length > 131072) throw new Error('账号请求数据过大。');
