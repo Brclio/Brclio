@@ -30,7 +30,7 @@ const allow = {limit: async () => ({success: true})};
 function fixture() {
   const store = memoryStore(), sent = [];
   const env = {SESSION_SECRET: 'test-account-secret-of-at-least-32-characters', SMTP_EMAIL: 'sender@example.com', SMTP_APP_PASSWORD: 'test-app-password', GOOGLE_CLIENT_ID: 'client', GOOGLE_CLIENT_SECRET: 'secret', ACCOUNT_LIMITER: allow, ACCOUNT_AUTH_LIMITER: allow, ACCOUNT_EMAIL_LIMITER: allow, ACCOUNT_EMAIL_GLOBAL_LIMITER: allow};
-  const dependencies = {accountStore: store, sendRegistrationCode: async (_env, email, code) => sent.push({email, code}), googleIdentity: async () => ({sub: 'google-test-sub', email: 'google@example.com', name: 'Google User'})};
+  const dependencies = {accountDiagnostic: () => {}, accountStore: store, sendRegistrationCode: async (_env, email, code) => sent.push({email, code}), googleIdentity: async () => ({sub: 'google-test-sub', email: 'google@example.com', name: 'Google User'})};
   async function call(path, method = 'GET', body, options = {}) {
     const headers = {...(method !== 'GET' ? {'Content-Type': 'application/json', Origin: 'https://tools.brclio.com'} : {}), ...(options.native ? {'X-Brclio-Client': 'native'} : {}), ...options.headers};
     if (options.native) delete headers.Origin;
@@ -132,6 +132,71 @@ test('Google authorization verifies state cookie and creates a Google identity w
   assert.equal(complete.headers.get('Location'), '/account');
   const index = f.store.files.get('users/_index.json'), profile = f.store.files.get('users/' + index.google['google-test-sub'] + '/profile.json');
   assert.equal(profile.email, 'google@example.com'); assert.deepEqual(profile.providers, ['google']);
+});
+
+test('verified Google email links the existing password account and preserves its user folder and password', async () => {
+  const f = fixture(), existing = await f.register('existing-user', 'google@example.com');
+  const credentialsPath = 'users/' + existing.user.id + '/credentials.json';
+  const originalPassword = structuredClone(f.store.files.get(credentialsPath).password);
+  const start = await f.call('google/start');
+  const state = new URL(start.headers.get('Location')).searchParams.get('state');
+  const completed = await f.call('google/callback?state=' + state + '&code=valid', 'GET', undefined, {headers:{Cookie:start.headers.get('Set-Cookie').split(';')[0]}});
+  assert.equal(completed.headers.get('Location'), '/account');
+  const index = f.store.files.get('users/_index.json');
+  assert.equal(index.google['google-test-sub'], existing.user.id);
+  assert.equal(index.emails['google@example.com'], existing.user.id);
+  assert.equal(index.usernames['existing-user'], existing.user.id);
+  assert.equal(Object.keys(index.emails).length, 1);
+  const profile = f.store.files.get('users/' + existing.user.id + '/profile.json');
+  assert.deepEqual(profile.providers.sort(), ['google', 'password']);
+  assert.deepEqual(f.store.files.get(credentialsPath).password, originalPassword);
+  assert.equal(f.store.files.get(credentialsPath).googleSub, 'google-test-sub');
+  assert.equal((await f.call('login', 'POST', {identifier:'google@example.com', password:'my correct password'})).status, 200);
+});
+
+test('Google failure diagnostics identify finite phases and never include callback or provider secrets', async () => {
+  const sensitive = 'callback-code-token-cookie-secret-should-never-be-logged';
+  for (const [scenario, expected] of [
+    ['missing-cookie', 'state_cookie_missing'], ['invalid-cookie', 'state_cookie_invalid'], ['mismatched-state', 'state_mismatch'], ['provider-denied', 'provider_denied'],
+    ['invalid-grant', 'token_invalid_grant'], ['unknown-provider-error', 'token_rejected'], ['network', 'token_exchange'],
+    ['injected-error', 'identity_exchange'], ['invalid-profile', 'identity_profile'], ['storage', 'storage_transaction'], ['commit', 'storage_commit']
+  ]) {
+    const f = fixture(), events = [];
+    f.dependencies.accountDiagnostic = event => events.push(event);
+    const started = await f.call('google/start');
+    const state = new URL(started.headers.get('Location')).searchParams.get('state');
+    const cookie = started.headers.get('Set-Cookie').split(';')[0];
+    let query = 'state=' + state + '&code=' + sensitive;
+    if (scenario === 'mismatched-state') query = 'state=wrong&code=' + sensitive;
+    if (scenario === 'provider-denied') query = 'state=' + state + '&error=' + sensitive;
+    if (['invalid-grant', 'unknown-provider-error', 'network'].includes(scenario)) {
+      delete f.dependencies.googleIdentity;
+      f.dependencies.accountFetchImpl = async () => {
+        if (scenario === 'network') throw new Error(sensitive);
+        return Response.json({error: scenario === 'invalid-grant' ? 'invalid_grant' : sensitive, error_description: sensitive, access_token: sensitive}, {status: 400});
+      };
+    }
+    if (scenario === 'injected-error') f.dependencies.googleIdentity = async (...args) => { args.at(-1)(sensitive); throw new Error(sensitive); };
+    if (scenario === 'invalid-profile') f.dependencies.googleIdentity = async () => ({sub:'test-sub', email:sensitive});
+    if (scenario === 'storage') f.store.transaction = async () => {throw new Error(sensitive);};
+    if (scenario === 'commit') {
+      const transaction = f.store.transaction.bind(f.store);
+      f.store.transaction = async mutate => {await transaction(mutate); throw new Error(sensitive);};
+    }
+    const response = await f.call('google/callback?' + query, 'GET', undefined, {headers:scenario === 'missing-cookie' ? {} : {Cookie:scenario === 'invalid-cookie' ? '__Host-brclio_oauth=' + sensitive : cookie}});
+    assert.equal(response.status, 302, scenario);
+    assert.equal(response.headers.get('Location'), '/account?error=google', scenario);
+    assert.match(response.headers.get('Set-Cookie'), /Max-Age=0/);
+    assert.deepEqual(events, [{event:'account_google_callback_failed', stage:expected}], scenario);
+    assert.ok(!JSON.stringify(events).includes(sensitive));
+  }
+  const success = fixture(), events = [];
+  success.dependencies.accountDiagnostic = value => events.push(value);
+  const start = await success.call('google/start');
+  const state = new URL(start.headers.get('Location')).searchParams.get('state');
+  const completed = await success.call('google/callback?state=' + state + '&code=valid', 'GET', undefined, {headers:{Cookie:start.headers.get('Set-Cookie').split(';')[0]}});
+  assert.equal(completed.headers.get('Location'), '/account');
+  assert.deepEqual(events, [], 'successful sign-ins do not log identities or request data');
 });
 
 test('device polling requires its verifier, explicit authenticated approval, and consumes grant once', async () => {

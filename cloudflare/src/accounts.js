@@ -8,6 +8,18 @@ import {sendRegistrationCode} from './mail.js';
 const COOKIE = '__Host-brclio_user', OAUTH_COOKIE = '__Host-brclio_oauth';
 const WEB_LIFETIME = 7 * 86400, NATIVE_LIFETIME = 30 * 86400;
 const CODE_LIFETIME = 600000, DEVICE_LIFETIME = 300000;
+const GOOGLE_DIAGNOSTIC_STAGES = new Set([
+  'not_configured', 'state_cookie_missing', 'state_cookie_invalid', 'state_type', 'state_mismatch', 'provider_denied', 'missing_code',
+  'identity_exchange', 'token_exchange', 'token_invalid_grant', 'token_invalid_client', 'token_unauthorized_client', 'token_invalid_request', 'token_redirect_mismatch', 'token_rejected', 'token_response',
+  'identity_header', 'identity_keys', 'identity_signature', 'identity_issuer', 'identity_audience', 'identity_nonce', 'identity_expiration', 'identity_subject', 'identity_email', 'identity_profile',
+  'storage_transaction', 'storage_identity_conflict', 'storage_commit', 'session_cookie', 'unknown'
+]);
+function googleDiagnostic(dependencies, stage) {
+  // Only locally defined finite stages can reach logs. Never include request URLs,
+  // provider bodies, exception messages, identity claims, cookies, or credentials.
+  const event = {event: 'account_google_callback_failed', stage: GOOGLE_DIAGNOSTIC_STAGES.has(stage) ? stage : 'unknown'};
+  try { (dependencies.accountDiagnostic || (value => console.warn(JSON.stringify(value))))(event); } catch {}
+}
 const own = (object, key) => Object.hasOwn(object, key) ? object[key] : undefined;
 const seconds = () => Math.floor(Date.now() / 1000);
 const cookie = (name, value, maxAge) => `${name}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
@@ -112,21 +124,32 @@ export async function handleAccount(request, env, dependencies = {}) {
   }
 
   if (path === '/api/account/google/callback' && request.method === 'GET') {
-    const stateText = url.searchParams.get('state'), state = await unseal(cookieValue(request, OAUTH_COOKIE), env.SESSION_SECRET);
+    const stateText = url.searchParams.get('state'), stateCookie = cookieValue(request, OAUTH_COOKIE), state = await unseal(stateCookie, env.SESSION_SECRET);
     const clear = cookie(OAUTH_COOKIE, '', 0);
-    const failure = () => {
+    const failure = stage => {
+      googleDiagnostic(dependencies, stage);
       // Preserve only the device bound to our signed OAuth cookie. This lets a
       // canceled Google flow fall back to password login and client approval.
       const query = new URLSearchParams({error: 'google'});
       if (state?.typ === 'google' && /^[A-Za-z0-9_-]{32,64}$/.test(state.device || '')) query.set('device', state.device);
       return new Response(null, {status: 302, headers: {'Location': '/account?' + query, 'Set-Cookie': clear, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}});
     };
-    if (!googleEnabled || !state || state.typ !== 'google' || !await safeEqual(stateText || '', state.state) || !url.searchParams.get('code') || url.searchParams.has('error')) return failure();
+    if (!googleEnabled) return failure('not_configured');
+    if (!state) return failure(stateCookie ? 'state_cookie_invalid' : 'state_cookie_missing');
+    if (state.typ !== 'google') return failure('state_type');
+    if (!await safeEqual(stateText || '', state.state)) return failure('state_mismatch');
+    if (url.searchParams.has('error')) return failure('provider_denied');
+    if (!url.searchParams.get('code')) return failure('missing_code');
+    let stage = 'identity_exchange';
     try {
-      const identity = await (dependencies.googleIdentity || googleIdentity)(url.searchParams.get('code'), state.verifier, state.nonce, url.origin + path, env, fetchImpl);
+      const identity = await (dependencies.googleIdentity || googleIdentity)(url.searchParams.get('code'), state.verifier, state.nonce, url.origin + path, env, fetchImpl, value => {
+        if (GOOGLE_DIAGNOSTIC_STAGES.has(value)) stage = value;
+      });
+      stage = 'identity_profile';
       const email = emailValue(identity.email);
-      if (!email || typeof identity.sub !== 'string' || !/^[A-Za-z0-9_-]{1,255}$/.test(identity.sub)) return failure();
+      if (!email || typeof identity.sub !== 'string' || !/^[A-Za-z0-9_-]{1,255}$/.test(identity.sub)) return failure(stage);
       const grant = await makeGrant('web'), newId = crypto.randomUUID();
+      stage = 'storage_transaction';
       const profile = await store.transaction(async tx => {
         const index = cleanIndex(await tx.read('users/_index.json', emptyAccountIndex()));
         const existing = own(index.google, identity.sub) || own(index.emails, email);
@@ -134,7 +157,7 @@ export async function handleAccount(request, env, dependencies = {}) {
         if (existing) {
           profile = await tx.read(userPath(existing, 'profile'));
           credentials = await tx.read(userPath(existing, 'credentials'));
-          if (!profile || !credentials || profile.email !== email || (credentials.googleSub && credentials.googleSub !== identity.sub)) throw new Error('Google identity conflict');
+          if (!profile || !credentials || profile.email !== email || (credentials.googleSub && credentials.googleSub !== identity.sub)) { stage = 'storage_identity_conflict'; throw new Error('Google identity conflict'); }
           profile.providers = Array.from(new Set([...(profile.providers || []), 'google']));
           credentials.googleSub = identity.sub;
         } else {
@@ -149,13 +172,15 @@ export async function handleAccount(request, env, dependencies = {}) {
         index.google[identity.sub] = profile.id;
         addGrant(credentials, grant);
         tx.write('users/_index.json', index); tx.write(userPath(profile.id, 'profile'), profile); tx.write(userPath(profile.id, 'credentials'), credentials);
+        stage = 'storage_commit';
         return profile;
       });
+      stage = 'session_cookie';
       const response = await grantResponse(profile, grant, env);
       const headers = new Headers({'Location': '/account' + (state.device ? '?device=' + encodeURIComponent(state.device) : ''), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'});
       headers.append('Set-Cookie', response.headers.get('Set-Cookie')); headers.append('Set-Cookie', clear);
       return new Response(null, {status: 302, headers});
-    } catch { return failure(); }
+    } catch { return failure(stage); }
   }
 
   if (path === '/api/account/device/poll' && request.method === 'GET') {
