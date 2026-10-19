@@ -17,6 +17,7 @@ const { electronUpdateFetch } = require('./electron-update-fetch.cjs');
 const { createMacInstaller } = require('./mac-installer.cjs');
 const { createWindowsInstaller } = require('./windows-installer.cjs');
 const { isLocalDocument } = require('./trusted-url.cjs');
+const { createAccountClient } = require('./account.cjs');
 
 app.setName('Brclio');
 app.setPath('userData', process.env.BRCLIO_USER_DATA
@@ -41,6 +42,8 @@ const pendingOpenURLs = [];
 const indexPath = path.join(__dirname, '..', 'web', 'index.html');
 const indexURL = pathToFileURL(indexPath).href;
 const settings = createSettingsStore(app.getPath('userData'));
+const account = createAccountClient({ directory: app.getPath('userData'),
+  fetch: (url, options) => net.fetch(url, options), openExternal: url => shell.openExternal(url) });
 const copySelection = createSelectionCopier({
   copyPaths: paths => copyFromMenu(paths, { exitWhenIdle: false }),
   onError: async error => {
@@ -154,7 +157,7 @@ function createWindow() {
   mainWindow.on('blur', resumeRecordingShortcut);
   mainWindow.webContents.on('did-start-loading', resumeRecordingShortcut);
   mainWindow.webContents.on('render-process-gone', resumeRecordingShortcut);
-  mainWindow.on('closed', () => { mainWindow = null; rendererReady = false; resumeRecordingShortcut(); });
+  mainWindow.on('closed', () => { account.cancelGoogle(); mainWindow = null; rendererReady = false; resumeRecordingShortcut(); });
   mainWindow.loadFile(indexPath);
   return mainWindow;
 }
@@ -170,6 +173,9 @@ function handle(channel, callback) {
 }
 
 function registerIPC() {
+  handle('brclio:account:request', input => account.request(input));
+  handle('brclio:account:google', () => account.google());
+  handle('brclio:account:google:cancel', () => account.cancelGoogle());
   handle('brclio:ready', () => { rendererReady = true; void acknowledgeUpdate(); return { ready: true }; });
   handle('brclio:platform', () => ({ platform: process.platform, version: app.getVersion(),
     capabilities: { filePicker: true, folderPicker: true, systemIntegration: ['darwin', 'win32'].includes(process.platform), globalShortcut: shortcuts.status().supported },
@@ -312,6 +318,6 @@ if (!gotLock) {
     } else createWindow();
   }).catch(error => { console.error(error); app.quit(); });
   app.on('activate', () => createWindow());
-  app.on('will-quit', () => { shortcuts.dispose(); void updateProxy.close(); });
+  app.on('will-quit', () => { account.close(); shortcuts.dispose(); void updateProxy.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

@@ -2,6 +2,10 @@ import adminHTML from './admin.html';
 import adminJS from './admin-client.txt';
 import homeHTML from './home.html';
 import homeJS from './home-client.txt';
+import accountHTML from './account.html';
+import accountJS from './account-client.txt';
+import accountCSS from './account-style.txt';
+import {handleAccount} from './accounts.js';
 import {handleAdmin} from './admin.js';
 import {json, securityHeaders} from './http.js';
 import {modules} from './modules/index.js';
@@ -17,6 +21,14 @@ export async function handle(request, env, dependencies = {}, ctx) {
     // Retain the transport field for clients using the original health contract.
     return json({ok: true, service: service.id, proxyProtocol: 'vless-tls-websocket'});
   }
+  if (path === '/account' && request.method === 'GET') return new Response(accountHTML, {headers: {
+    ...securityHeaders, 'Content-Type': 'text/html; charset=utf-8',
+    'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+  }});
+  if (path === '/account.js' && request.method === 'GET') return new Response(accountJS, {headers: {...securityHeaders, 'Content-Type': 'text/javascript; charset=utf-8'}});
+  if (path === '/account.css' && request.method === 'GET') return new Response(accountCSS, {headers: {...securityHeaders, 'Content-Type': 'text/css; charset=utf-8'}});
+  const account = await handleAccount(request, env, dependencies);
+  if (account) return account;
   if ((path === '/' || path === '/admin') && request.method === 'GET') {
     return new Response(path === '/' ? homeHTML : adminHTML, {headers: {
       ...securityHeaders,

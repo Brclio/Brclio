@@ -43,6 +43,10 @@ try {
     window.__peakSaves = 0;
     window.__readyCalls = 0;
     window.brclio = {
+      accountRequest: async ({ path, method = 'GET' }) => {
+        if (path === '/api/account/session' && method === 'GET') return { user: null, csrf: null, googleEnabled: false };
+        throw new Error(`Unhandled account fixture operation: ${method} ${path}`);
+      },
       reportReady: async () => { window.__readyCalls++; },
       getPlatform: async () => ({ platform: 'darwin', packaged: true, capabilities: { systemIntegration: true } }),
       getSettings: async () => ({ quoteMode: 'single', separator: 'forward', launchAtLogin: true }),
@@ -110,6 +114,10 @@ try {
     window.__shortcutAvailable = false;
     const status = () => ({ supported: true, accelerator: window.__shortcutSettings.copyShortcut, registered: window.__shortcutAvailable && !window.__shortcutSuspended, error: window.__shortcutAvailable ? null : '默认快捷键暂时被其他应用占用。' });
     window.brclio = {
+      accountRequest: async ({ path, method = 'GET' }) => {
+        if (path === '/api/account/session' && method === 'GET') return { user: null, csrf: null, googleEnabled: false };
+        throw new Error(`Unhandled account fixture operation: ${method} ${path}`);
+      },
       getPlatform: async () => ({ platform: 'darwin', capabilities: { globalShortcut: true } }),
       getSettings: async () => window.__shortcutSettings,
       getIntegrationStatus: async () => ({ supported: false }),
@@ -200,6 +208,10 @@ try {
   observe(windowsShortcut);
   await windowsShortcut.addInitScript(() => {
     window.brclio = {
+      accountRequest: async ({ path, method = 'GET' }) => {
+        if (path === '/api/account/session' && method === 'GET') return { user: null, csrf: null, googleEnabled: false };
+        throw new Error(`Unhandled account fixture operation: ${method} ${path}`);
+      },
       getPlatform: async () => ({ platform: 'win32', capabilities: { globalShortcut: true } }),
       getSettings: async () => ({ copyShortcut: 'Super+P' }),
       getIntegrationStatus: async () => ({ supported: false }),
@@ -221,6 +233,10 @@ try {
   await failed.addInitScript(() => {
     window.__readyCalls = 0;
     window.brclio = {
+      accountRequest: async ({ path, method = 'GET' }) => {
+        if (path === '/api/account/session' && method === 'GET') return { user: null, csrf: null, googleEnabled: false };
+        throw new Error(`Unhandled account fixture operation: ${method} ${path}`);
+      },
       getPlatform: async () => ({ platform: 'darwin', version: '0.1.3', capabilities: {} }),
       getSettings: async () => { throw new Error('隔离初始化失败'); },
       getIntegrationStatus: async () => ({ supported: false }),
@@ -240,6 +256,10 @@ try {
   await updating.addInitScript(() => {
     window.__updateCalls = [];
     window.brclio = {
+      accountRequest: async ({ path, method = 'GET' }) => {
+        if (path === '/api/account/session' && method === 'GET') return { user: null, csrf: null, googleEnabled: false };
+        throw new Error(`Unhandled account fixture operation: ${method} ${path}`);
+      },
       getPlatform: async () => ({ platform: 'android', version: '0.1.3', capabilities: {} }),
       getSettings: async () => ({}), getIntegrationStatus: async () => ({ supported: false }),
       onPaths: () => () => {},
@@ -280,6 +300,10 @@ try {
       else next.resolve(state);
     };
     window.brclio = {
+      accountRequest: async ({ path, method = 'GET' }) => {
+        if (path === '/api/account/session' && method === 'GET') return { user: null, csrf: null, googleEnabled: false };
+        throw new Error(`Unhandled account fixture operation: ${method} ${path}`);
+      },
       getPlatform: async () => ({ platform: 'darwin', version: '0.1.3', capabilities: {} }),
       getSettings: async () => ({}), getIntegrationStatus: async () => ({ supported: false }),
       getUpdateState: async () => ({ status: 'idle' }),
@@ -436,6 +460,10 @@ try {
         window.__nativeRequests.push(request);
         const reply = (result, error = null) => queueMicrotask(() => window.__brclioResolve(request.id, { result, error }));
         switch (request.method) {
+          case 'accountRequest':
+            if (request.payload.path === '/api/account/session' && request.payload.method === 'GET') reply({ user: null, csrf: null, googleEnabled: false });
+            else reply(null, `Unhandled account fixture operation: ${request.payload.method} ${request.payload.path}`);
+            break;
           case 'getPlatform': reply({ platform: 'android', capabilities: { filePicker: true, folderPicker: true, systemIntegration: false } }); break;
           case 'getSettings': window.__finishSettings = () => reply(window.__androidSaved); break;
           case 'getIntegrationStatus': reply({ supported: false, installed: false }); break;
