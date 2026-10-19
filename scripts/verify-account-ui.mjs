@@ -9,9 +9,12 @@ const context = await browser.newContext({ viewport: { width: 1440, height: 1060
 const page = await context.newPage();
 page.setDefaultTimeout(15000);
 const errors = [];
+const expectedNetworkErrorURLs = new Set();
 page.on('pageerror', error => errors.push(error.message));
-page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+page.on('console', message => { if (message.type() === 'error' && !expectedNetworkErrorURLs.has(message.location().url)) errors.push(message.text()); });
 let user = null;
+let passwordEnabled = false;
+let mockPassword = 'test-password-123';
 let cloud = { preferences: {}, updatedAt: '2026-10-19T05:00:00Z' };
 const calls = [];
 let googleStartURL;
@@ -22,13 +25,28 @@ await context.route('**/api/account/**', async route => {
   const body = request.postDataJSON();
   calls.push({ pathname, method: request.method(), body, csrf: request.headers()['x-csrf-token'] });
   let result = {};
+  async function reject(status, error, code) {
+    expectedNetworkErrorURLs.add(request.url());
+    await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ error, ...(code ? { code } : {}) }) });
+  }
   if (pathname.endsWith('/google/start')) {
     googleStartURL = request.url();
     await route.fulfill({ status: 200, contentType: 'text/html', body: '<p>Google OAuth provider handoff</p>' });
     return;
   }
-  if (pathname.endsWith('/session')) result = { user, csrf: 'test-csrf', googleEnabled: true };
-  else if (pathname.endsWith('/register') || pathname.endsWith('/login')) { user = { id: 'test-user', username: 'brclio_test', email: 'test@example.com' }; result = { user }; }
+  if ((pathname.endsWith('/code') || pathname.endsWith('/register')) && body?.email === 'exists@example.com') {
+    await reject(409, '该邮箱已注册，请登录后在账号设置中设置昵称、账号和密码', pathname.endsWith('/code') ? 'EMAIL_EXISTS' : undefined); return;
+  }
+  if (pathname.endsWith('/session')) result = { user, csrf: 'test-csrf', googleEnabled: true, passwordEnabled };
+  else if (pathname.endsWith('/register') || pathname.endsWith('/login')) { user = { id: 'test-user', nickname: '', username: 'brclio_test', email: 'test@example.com', providers: ['password'] }; passwordEnabled = true; result = { user }; }
+  else if (pathname.endsWith('/profile')) {
+    if (body.username === 'occupied_account') { await reject(409, '该账号已被使用，请换一个账号'); return; }
+    user = { ...user, nickname: body.nickname, username: body.username }; result = { user };
+  }
+  else if (pathname.endsWith('/password')) {
+    if (passwordEnabled && body.currentPassword !== mockPassword) { await reject(400, '当前密码不正确，请重试'); return; }
+    mockPassword = body.newPassword; passwordEnabled = true; result = { ok: true, passwordEnabled: true };
+  }
   else if (pathname.endsWith('/logout')) user = null;
   else if (pathname.endsWith('/data')) {
     if (switchOnData) { user = switchOnData; switchOnData = null; }
@@ -126,11 +144,109 @@ try {
   await page.locator('#account-google').click();
   await page.waitForURL('**/api/account/google/start?device=*');
   assert.equal(new URL(googleStartURL).searchParams.get('device'), device, 'Google handoff must retain device approval context');
-  user = { id: 'google-user', username: 'Google 用户', email: 'google@example.com', providers: ['google'] };
+  user = { id: 'google-user', nickname: 'Google 用户', username: 'google_user', email: 'google@example.com', providers: ['google'] }; passwordEnabled = false;
   await page.goto(url + '/account?device=' + device);
   await page.locator('#account-profile-name').filter({ hasText: 'Google 用户' }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get('device'), device, 'Google callback must retain device approval context');
   assert.equal(await page.locator('#account-device-approve').isVisible(), true, 'Google callback must still require explicit device approval');
+  assert.equal(await page.locator('#account-google-onboarding').isVisible(), true);
+  assert.equal(await page.locator('#account-settings').evaluate(element => element.open), true);
+  assert.equal(await page.locator('#account-current-password-field').isVisible(), false);
+  await page.locator('#account-nickname').fill('我的新昵称');
+  await page.locator('#account-edit-username').fill('my_google_account');
+  await page.locator('#account-refresh').click();
+  await page.locator('#account-message').filter({ hasText: '账号与云端偏好已刷新' }).waitFor();
+  assert.equal(await page.locator('#account-nickname').inputValue(), '我的新昵称', 'session refresh must preserve a profile draft');
+  assert.equal(await page.locator('#account-edit-username').inputValue(), 'my_google_account');
+  await page.locator('#account-edit-username').fill('occupied_account');
+  await page.locator('#account-profile-form button[type="submit"]').click();
+  await page.locator('#account-message').filter({ hasText: '该账号已被使用' }).waitFor();
+  assert.equal(await page.locator('#account-nickname').inputValue(), '我的新昵称', 'failed saves must preserve profile edits');
+  assert.equal(await page.locator('#account-edit-username').inputValue(), 'occupied_account');
+  await page.locator('#account-edit-username').fill('my_google_account');
+  await page.locator('#account-profile-form button[type="submit"]').click();
+  await page.locator('#account-message').filter({ hasText: '个人资料已更新' }).waitFor();
+  assert.equal(await page.locator('#account-profile-name').innerText(), '我的新昵称');
+  assert.equal(await page.locator('#account-profile-username').innerText(), '账号：my_google_account');
+  assert.equal(calls.findLast(call => call.pathname.endsWith('/profile')).csrf, 'test-csrf');
+  await page.locator('#account-new-password').fill('google-first-password-123');
+  await page.locator('#account-confirm-password').fill('different-password');
+  const beforeMismatch = calls.filter(call => call.pathname.endsWith('/password')).length;
+  await page.locator('#account-save-password').click();
+  assert.equal(await page.locator('#account-confirm-password').evaluate(element => element.validity.valid), false);
+  assert.equal(calls.filter(call => call.pathname.endsWith('/password')).length, beforeMismatch, 'mismatched passwords must not reach the API');
+  await page.locator('#account-confirm-password').fill('google-first-password-123');
+  await page.locator('#account-save-password').click();
+  await page.locator('#account-message').filter({ hasText: '密码已设置' }).waitFor();
+  assert.deepEqual(calls.findLast(call => call.pathname.endsWith('/password')).body, { newPassword: 'google-first-password-123' });
+  assert.equal(await page.locator('#account-google-onboarding').isVisible(), false);
+  assert.equal(await page.locator('#account-current-password').getAttribute('required'), '');
+  assert.equal(await page.locator('#account-current-password-field').isVisible(), true);
+  for (const id of ['current-password', 'new-password', 'confirm-password']) assert.equal(await page.locator('#account-' + id).inputValue(), '');
+  await page.locator('#account-current-password').fill('wrong-current-password');
+  await page.locator('#account-new-password').fill('google-updated-password-456');
+  await page.locator('#account-confirm-password').fill('google-updated-password-456');
+  await page.locator('#account-save-password').click();
+  await page.locator('#account-message').filter({ hasText: '当前密码不正确' }).waitFor();
+  for (const id of ['current-password', 'new-password', 'confirm-password']) assert.equal(await page.locator('#account-' + id).inputValue(), '', 'password fields must clear after failed mutation');
+  await page.locator('#account-current-password').fill('google-first-password-123');
+  await page.locator('#account-new-password').fill('google-updated-password-456');
+  await page.locator('#account-confirm-password').fill('google-updated-password-456');
+  await page.locator('#account-save-password').click();
+  await page.locator('#account-message').filter({ hasText: '密码已修改' }).waitFor();
+  assert.deepEqual(calls.findLast(call => call.pathname.endsWith('/password')).body, { currentPassword: 'google-first-password-123', newPassword: 'google-updated-password-456' });
+  for (const width of [1440, 900, 390, 320]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, `account settings page overflow at ${width}`);
+  }
+  await page.screenshot({ path: path.resolve('artifacts/account-settings-320.png'), fullPage: true });
+  const googleProfile = user;
+  await page.locator('#account-nickname').fill('不能写入其他账号的草稿');
+  await page.locator('#account-edit-username').fill('wrong_user_draft');
+  const beforeSwitch = calls.filter(call => call.pathname.endsWith('/profile')).length;
+  user = { id: 'second-user', nickname: '第二位用户', username: 'second_user', email: 'second@example.com', providers: ['password'] };
+  await page.locator('#account-profile-form button[type="submit"]').click();
+  await page.locator('#account-message').filter({ hasText: '账号状态已变化' }).waitFor();
+  assert.equal(calls.filter(call => call.pathname.endsWith('/profile')).length, beforeSwitch, 'cross-tab account changes must abort profile writes');
+  assert.equal(await page.locator('#account-nickname').inputValue(), '第二位用户');
+  assert.equal(await page.locator('#account-edit-username').inputValue(), 'second_user');
+  user = googleProfile;
+  await page.goto(url);
+  await page.locator('body[data-ready="true"]').waitFor();
+  await page.locator('#account-button').click();
+  await page.locator('#account-profile-name').filter({ hasText: '我的新昵称' }).waitFor();
+  assert.equal(await page.locator('#account-button span').innerText(), '我的新昵称', 'app header must prefer the saved nickname');
+  await page.locator('#account-settings summary').click();
+  await page.locator('#account-new-password').fill('cleared-on-close');
+  await page.locator('.account-close').click();
+  await page.waitForFunction(() => document.getElementById('account-new-password').value === '');
+  assert.equal(await page.locator('#account-new-password').inputValue(), '');
+  for (const width of [1440, 900, 390, 320]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.locator('#account-button').click();
+    await page.locator('#account-profile-name').filter({ hasText: '我的新昵称' }).waitFor();
+    assert.equal(await page.locator('#account-dialog').evaluate(element => element.scrollWidth > element.clientWidth), false, `account settings dialog overflow at ${width}`);
+    await page.locator('.account-close').click();
+  }
+  user = null; passwordEnabled = false;
+  await page.goto(url + '/account?device=' + device);
+  await page.locator('#account-google:not(:disabled)').waitFor();
+  await page.locator('#account-register-tab').click();
+  await page.locator('#account-email').fill('exists@example.com');
+  await page.locator('#account-send-code').click();
+  await page.locator('#account-message').filter({ hasText: '该邮箱已注册' }).waitFor();
+  await page.locator('#account-existing-login').click();
+  assert.equal(await page.locator('#account-identifier').inputValue(), 'exists@example.com');
+  assert.equal(await page.locator('#account-login-tab').getAttribute('aria-selected'), 'true');
+  await page.locator('#account-register-tab').click();
+  await page.locator('#account-username').fill('exists_account');
+  await page.locator('#account-code').fill('123456');
+  await page.locator('#account-register-password').fill('test-password-123');
+  await page.locator('#account-register-form button[type="submit"]').click();
+  await page.locator('#account-message').filter({ hasText: '该邮箱已注册' }).waitFor();
+  await page.locator('#account-existing-login').click();
+  assert.equal(await page.locator('#account-identifier').inputValue(), 'exists@example.com', 'duplicate registration fallback must work even when native errors have no code');
+  assert.equal(await page.locator('#account-register-password').inputValue(), '');
   user = null;
   await page.goto(url + '/account?error=google&device=' + device);
   await page.locator('#account-message').filter({ hasText: 'Google 登录未完成' }).waitFor();
@@ -141,5 +257,5 @@ try {
   await page.locator('#account-device-approve').click();
   await page.locator('#account-device-detail').filter({ hasText: '已确认客户端登录' }).waitFor();
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: ['email code and registration', 'password fields cleared after login', 'email password login and logout', 'portable preference upload and apply preserve local base folder', 'cross-tab account changes and in-flight response identity cannot silently apply another account data', 'CSRF protected mutations', 'standalone account preference editor', 'explicit authenticated device approval', 'Google browser handoff and callback retain device context', 'canceled Google flow can complete client login with password fallback', '1440 / 900 / 390 / 320 layout'], consoleErrors: errors }, null, 2));
+  console.log(JSON.stringify({ passed: ['email code and registration', 'password fields cleared after login', 'email password login and logout', 'portable preference upload and apply preserve local base folder', 'cross-tab account changes and in-flight response identity cannot silently apply another account data', 'CSRF protected mutations', 'standalone account preference editor', 'explicit authenticated device approval', 'Google browser handoff and callback retain device context', 'Google accounts can edit nickname and username with draft preservation', 'first password setup, current password validation, password confirmation and secret field clearing', 'cross-tab identity changes abort profile edits and clear drafts', 'duplicate email gives a prefilled login action', 'nickname preferred in shared app header', 'canceled Google flow can complete client login with password fallback', '1440 / 900 / 390 / 320 settings layout'], consoleErrors: errors }, null, 2));
 } finally { await context.close(); await browser.close(); }
