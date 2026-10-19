@@ -33,6 +33,7 @@ try {
   await check('anonymous_data', '/api/account/data', {expected: 401});
   await check('foreign_origin', '/api/account/login', {method: 'POST', headers: {'Content-Type': 'application/json', Origin: 'https://invalid.example'}, body: {identifier: 'test', password: 'not-a-real-password'}, expected: 403});
   await check('native_with_foreign_origin', '/api/account/code', {method: 'POST', headers: {'Content-Type': 'application/json', Origin: 'https://invalid.example', 'X-Brclio-Client': 'native'}, body: {email: 'nobody@example.com'}, expected: 403});
+  if (args.includes('--ready')) await check('private_repository_read', '/api/account/login', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Brclio-Client': 'native'}, body: {identifier: '__brclio_readiness_invalid__', password: 'not-a-real-password'}, expected: 401});
   if (sendIndex >= 0) {
     const email = args[sendIndex + 1];
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('invalid_test_recipient');
