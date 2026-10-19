@@ -76,11 +76,17 @@ jobs:
       - name: Install native client validation dependencies
         run: npm ci --prefix ..
       - run: npm ci
-      - name: Verify production account service and provider configuration
-        run: node scripts/verify-account-live.mjs --ready
       - name: Install the real Electron runtime system dependencies
         working-directory: .
         run: npx playwright install-deps chromium
+      - name: Verify the real Electron account gate against offline fixtures
+        working-directory: .
+        run: xvfb-run -a node scripts/verify-account-runtime.mjs
+      - name: Verify production account service and provider configuration through real Electron
+        working-directory: .
+        run: |
+          mkdir -p artifacts
+          xvfb-run -a node desktop/account-service-live.cjs > artifacts/production-account-electron.json
       - name: Verify production metadata, manifest, and the complete small installer
         run: |
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
@@ -93,7 +99,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: production-update-verification
-          path: artifacts/production-update-*.json
+          path: |
+            artifacts/production-update-*.json
+            artifacts/production-account-*.json
           if-no-files-found: ignore
           retention-days: 14
 

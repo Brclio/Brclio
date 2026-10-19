@@ -32,11 +32,11 @@ try {
     if (results[name].cfMitigated === 'challenge') { await response.body?.cancel(); throw new Error('edge_challenge'); }
     if (response.status !== expected) { await response.body?.cancel(); throw new Error('unexpected_http_status'); }
     if (results[name].contentType !== 'application/json') { await response.body?.cancel(); throw new Error('unexpected_response_type'); }
-    if (inspect) {
-      const content = await response.text();
-      if (content.length > 16384) throw new Error('unexpected_response_size');
-      inspect(JSON.parse(content), response);
-    } else await response.body?.cancel();
+    const content = await response.text();
+    if (content.length > 16384) throw new Error('unexpected_response_size');
+    const value = JSON.parse(content);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('unexpected_json_response');
+    if (inspect) inspect(value, response);
   }
   await check('session', '/api/account/session', {inspect(value, response) {
     if (value.user !== null || value.csrf !== null || typeof value.googleEnabled !== 'boolean' || response.headers.get('Access-Control-Allow-Origin')) throw new Error('invalid_anonymous_session');
@@ -55,7 +55,7 @@ try {
   }
   console.log(JSON.stringify({ok: true, results}, null, 2));
 } catch (error) {
-  const allowed = ['invalid_origin', 'invalid_version', 'edge_challenge', 'unexpected_http_status', 'unexpected_response_type', 'unexpected_response_size', 'invalid_anonymous_session', 'invalid_test_recipient', 'email_not_accepted', 'providers_not_configured'];
+  const allowed = ['invalid_origin', 'invalid_version', 'edge_challenge', 'unexpected_http_status', 'unexpected_response_type', 'unexpected_response_size', 'unexpected_json_response', 'invalid_anonymous_session', 'invalid_test_recipient', 'email_not_accepted', 'providers_not_configured'];
   const errorEnum = allowed.includes(error?.message) ? error.message : ['TimeoutError', 'AbortError'].includes(error?.name) ? 'timeout' : 'network_or_response_failure';
   console.error(JSON.stringify({ok: false, stage, errorEnum, results}, null, 2));
   process.exitCode = 1;
