@@ -78,7 +78,15 @@ async function launch() {
   try {
     const env = {...process.env, BRCLIO_ACCOUNT_GATE_DIRECTORY: directory};
     delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_OPTIONS;
-    const code = await new Promise(resolve => execFile(require('electron'), [...(process.platform === 'linux' ? ['--no-sandbox'] : []), __filename, '--electron-entry', '--origin=' + origin],
+    // Electron 44 resolves/downloads its binary lazily and may print installation
+    // progress. Keep that output outside the gate's JSON-only reporting channel.
+    const binaryFile = path.join(directory, 'binary.txt');
+    await new Promise((resolve, reject) => execFile(process.execPath,
+      ['-e', 'require("node:fs").writeFileSync(process.argv[1], require("electron"))', binaryFile],
+      {cwd: path.resolve(__dirname, '..'), env, timeout: 120000, maxBuffer: 262144}, error => error ? reject(error) : resolve()));
+    const binary = await fs.readFile(binaryFile, 'utf8');
+    if (!path.isAbsolute(binary)) throw Error('invalid_electron_binary');
+    const code = await new Promise(resolve => execFile(binary, [...(process.platform === 'linux' ? ['--no-sandbox'] : []), __filename, '--electron-entry', '--origin=' + origin],
       {env, timeout: 300000, maxBuffer: 262144}, error => resolve(error ? typeof error.code === 'number' ? error.code : 1 : 0)));
     report = JSON.parse(await fs.readFile(path.join(directory, 'report.json'), 'utf8'));
     report.processExitCode = code;

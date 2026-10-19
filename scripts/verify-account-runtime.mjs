@@ -49,7 +49,13 @@ for (const mode of ['ready', 'challenge', 'invalid-json', 'redirect']) {
       assert.equal(result.code, 0); assert.equal(report.passed, true);
       assert.deepEqual(Object.fromEntries(Object.entries(report.verifier.results).map(([name, value]) => [name, value.status])), statuses);
       assert.equal(requests.length, 6);
+      assert.deepEqual(requests.map(value => [value.method, value.path]), [
+        ['GET', '/api/account/session'], ['GET', '/api/account/session'], ['GET', '/api/account/data'],
+        ['POST', '/api/account/login'], ['POST', '/api/account/code'], ['POST', '/api/account/login'],
+      ]);
       assert.ok(requests.slice(3, 5).every(value => value.origin === 'https://invalid.example' && value.method === 'POST'));
+      assert.deepEqual(requests[3].value, {identifier: 'test', password: 'not-a-real-password'});
+      assert.deepEqual(requests[4].value, {email: 'nobody@example.com'});
       assert.equal(requests[4].native, 'native');
       assert.equal(requests[5].origin, undefined); assert.equal(requests[5].native, 'native');
     } else {
