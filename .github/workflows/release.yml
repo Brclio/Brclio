@@ -1,4 +1,4 @@
-name: Temporary production account readiness validation
+name: Temporary native account readiness validation
 
 on:
   workflow_dispatch:
@@ -14,9 +14,9 @@ permissions:
 
 jobs:
   diagnostics:
-    name: Official account ready verifier on Ubuntu
+    name: Official account verifier through Node and real Electron
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,16 +24,73 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Run the unmodified official ready verifier with its product identity
+          cache: npm
+      - name: Install existing Electron diagnostic dependencies
+        run: npm ci
+      - name: Install the existing real Electron system dependencies
+        run: npx playwright install-deps chromium
+      - name: Run the official verifier through Node
         shell: bash
         run: |
           set -o pipefail
           node cloudflare/scripts/verify-account-live.mjs --ready 2>&1 | tee "$RUNNER_TEMP/account-runner-official-ready-safe.json"
+      - name: Run the same official verifier once through real Electron net.fetch
+        if: always()
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/account-ready-electron.cjs" <<'JS'
+          const {app,net}=require('electron');
+          const fs=require('node:fs');
+          const {pathToFileURL}=require('node:url');
+          app.setPath('userData',process.env.BRCLIO_ACCOUNT_DIAGNOSTIC_DATA);
+          function save(message){
+            try{
+              const value=JSON.parse(message);
+              if(typeof value.ok==='boolean' && value.results && typeof value.results==='object'){
+                fs.writeFileSync(process.env.BRCLIO_ACCOUNT_DIAGNOSTIC_REPORT,JSON.stringify({...value,
+                  transport:'electron.net.fetch',electronVersion:process.versions.electron,isolatedUserData:true,formalVerifier:true},null,2)+'\n',{mode:0o600});
+              }
+            }catch{}
+          }
+          console.log=save;
+          console.error=save;
+          app.whenReady().then(async()=>{
+            globalThis.fetch=(...args)=>net.fetch(...args);
+            process.argv=[process.argv[0],process.env.BRCLIO_ACCOUNT_DIAGNOSTIC_VERIFIER,'--ready'];
+            await import(pathToFileURL(process.env.BRCLIO_ACCOUNT_DIAGNOSTIC_VERIFIER).href);
+            app.exit(process.exitCode || 0);
+          }).catch(()=>app.exit(1));
+          JS
+          xvfb-run -a node <<'JS'
+          const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),{spawnSync}=require('node:child_process');
+          const directory=fs.mkdtempSync(path.join(os.tmpdir(),'brclio-account-electron-'));
+          const userData=path.join(directory,'user-data');fs.mkdirSync(userData);
+          const reportFile=path.join(process.env.RUNNER_TEMP,'account-runner-electron-ready-safe.json');
+          let report;
+          try{
+            const environment={...process.env,BRCLIO_ACCOUNT_DIAGNOSTIC_DATA:userData,
+              BRCLIO_ACCOUNT_DIAGNOSTIC_REPORT:reportFile,BRCLIO_ACCOUNT_DIAGNOSTIC_VERIFIER:path.resolve('cloudflare/scripts/verify-account-live.mjs')};
+            delete environment.ELECTRON_RUN_AS_NODE;delete environment.NODE_OPTIONS;
+            const result=spawnSync(require('electron'),['--no-sandbox',path.join(process.env.RUNNER_TEMP,'account-ready-electron.cjs')],
+              {cwd:process.cwd(),env:environment,encoding:'utf8',maxBuffer:256*1024,timeout:270000});
+            // Chromium stderr may contain network details. Only the official verifier's safe JSON is retained.
+            try{report=JSON.parse(fs.readFileSync(reportFile,'utf8'));}
+            catch{report={ok:false,stage:'electron_launcher',errorEnum:'missing_safe_report',transport:'electron.net.fetch',isolatedUserData:true};}
+            report.processExitCode=result.status;
+            if(result.status!==0 && report.ok){report.ok=false;report.errorEnum='electron_process_failure';}
+            process.exitCode=report.ok && result.status===0 ? 0 : 1;
+          }catch{report={ok:false,stage:'electron_launcher',errorEnum:'launcher_failure',transport:'electron.net.fetch',isolatedUserData:true};process.exitCode=1;}
+          finally{fs.rmSync(directory,{recursive:true,force:true});}
+          fs.writeFileSync(reportFile,JSON.stringify(report,null,2)+'\n',{mode:0o600});
+          console.log(JSON.stringify(report,null,2));
+          JS
       - name: Save sanitized readiness results only
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: account-runner-official-ready-safe
-          path: ${{ runner.temp }}/account-runner-official-ready-safe.json
+          name: account-runner-native-ready-safe
+          path: |
+            ${{ runner.temp }}/account-runner-official-ready-safe.json
+            ${{ runner.temp }}/account-runner-electron-ready-safe.json
           if-no-files-found: error
           retention-days: 7
