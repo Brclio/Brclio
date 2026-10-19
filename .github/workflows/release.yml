@@ -76,6 +76,8 @@ jobs:
       - name: Install native client validation dependencies
         run: npm ci --prefix ..
       - run: npm ci
+      - name: Verify production account service and provider configuration
+        run: node scripts/verify-account-live.mjs --ready
       - name: Install the real Electron runtime system dependencies
         working-directory: .
         run: npx playwright install-deps chromium

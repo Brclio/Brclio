@@ -3,6 +3,9 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('brclio', Object.freeze({
+  accountRequest: input => ipcRenderer.invoke('brclio:account:request', input),
+  accountGoogle: () => ipcRenderer.invoke('brclio:account:google'),
+  accountCancelGoogle: () => ipcRenderer.invoke('brclio:account:google:cancel'),
   reportReady: () => ipcRenderer.invoke('brclio:ready'),
   getPlatform: () => ipcRenderer.invoke('brclio:platform'),
   getSettings: () => ipcRenderer.invoke('brclio:settings:get'),

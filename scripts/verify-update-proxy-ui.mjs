@@ -21,6 +21,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1100, height: 1000 } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   await page.addInitScript(() => {
     let enabled = true;
     window.__proxyCalls = [];
@@ -30,6 +31,10 @@ try {
     window.__probeError = null;
     const proxyState = () => ({ enabled, supported: true, route: window.__systemProxy ? 'system' : enabled ? 'builtin' : 'direct', error: window.__probeError });
     window.brclio = {
+      accountRequest: async ({ path, method = 'GET' }) => {
+        if (path === '/api/account/session' && method === 'GET') return { user: null, csrf: null, googleEnabled: false };
+        throw new Error(`Unhandled account fixture operation: ${method} ${path}`);
+      },
       getPlatform: async () => ({ platform: 'darwin', version: '0.1.8', capabilities: {} }),
       getSettings: async () => ({}),
       saveSettings: async settings => { window.__saveCalls.push(settings); return settings; },

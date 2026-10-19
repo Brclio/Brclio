@@ -3,3 +3,5 @@ node_modules/
 .dev.vars
 .env*
 dist/
+src/account-client.txt
+src/account-style.txt

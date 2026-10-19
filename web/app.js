@@ -406,7 +406,7 @@
     const percent = Math.max(0, Math.min(100, Number(updateState.progress) || 0));
     const version = updateState.version ? `v${updateState.version}` : '新版本';
     const titles = { idle: '保持顺手，也保持最新。', checking: '正在检查 GitHub 最新版本…', 'up-to-date': '已经是最新版本。', available: `${version} 已经准备好。`, downloading: `正在下载 ${version}…`, downloaded: '安装包已下载，校验通过。', preparing: '正在准备覆盖安装…', restarting: '正在更新，Brclio 即将重新打开…', installed: '更新完成，欢迎回来。', error: '这次更新未完成，可以重试。', unsupported: '请在客户端中检查和安装更新。', installing: '请在系统安装界面中继续。' };
-    const details = { idle: platform.platform === 'android' ? '检查新版本后，下载安装包并确认系统安装。完成后如未自动返回，请点击系统“打开”。' : '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.9'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
+    const details = { idle: platform.platform === 'android' ? '检查新版本后，下载安装包并确认系统安装。完成后如未自动返回，请点击系统“打开”。' : '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.10'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
     const detail = updateState.requiresPermission ? '请在系统设置中允许 Brclio 安装应用，然后返回并再次点击安装。' : status === 'error' ? updateState.error || '网络连接失败，请检查网络后重试。' : updateState.message || details[status] || details.idle;
     // Both entry points reflect the same native update without changing views.
     ['update', 'about-update'].forEach(prefix => {
@@ -462,6 +462,19 @@
   });
 
   host.onPaths(paths => acceptPaths(paths, '已导入'));
+  // Only portable format preferences are synced; local paths and host behavior stay local.
+  const portablePreferenceKeys = ['pathMode', 'quoteMode', 'separator', 'trailingSlash', 'joinWith'];
+  window.BrclioPreferences = {
+    read: async () => { await saveQueue; return Object.fromEntries(portablePreferenceKeys.map(key => [key, settings[key]])); },
+    apply: async preferences => {
+      await saveQueue;
+      const portable = Object.fromEntries(portablePreferenceKeys.filter(key => preferences?.[key] !== undefined).map(key => [key, preferences[key]]));
+      settings = engine.normalizeSettings({ ...settings, ...portable });
+      applyControls();
+      const result = await savePreferences();
+      if (result.error) throw result.error;
+    },
+  };
   async function init() {
     try {
       const [info, saved, status, update] = await Promise.all([host.getPlatform(), host.getSettings(), host.getIntegrationStatus(), host.getUpdateState?.()]);
@@ -471,12 +484,12 @@
         catch (error) { shortcutStatus = { supported: true, accelerator: settings.copyShortcut, registered: false, error: error.message }; }
       }
       if (samples[platform.platform]) { samplePlatform = platform.platform; $$('[data-sample]').forEach(button => button.classList.toggle('active', button.dataset.sample === samplePlatform)); }
-      $$('.version').forEach(item => { item.textContent = `v${platform.version || '0.1.9'}`; });
-      $('#current-version').textContent = `v${platform.version || '0.1.9'}`;
-      $('#about-dialog .subtle-tag').textContent = `VERSION ${platform.version || '0.1.9'}`;
+      $$('.version').forEach(item => { item.textContent = `v${platform.version || '0.1.10'}`; });
+      $('#current-version').textContent = `v${platform.version || '0.1.10'}`;
+      $('#about-dialog .subtle-tag').textContent = `VERSION ${platform.version || '0.1.10'}`;
       $('#update-platform-hint').textContent = platform.platform === 'darwin' ? '下载校验后自动覆盖当前安装并重新打开。尚未公证，首次运行可能需要在系统设置中允许打开。' : platform.platform === 'android' ? '需确认系统安装；系统限制自动打开时，请点击安装器的“打开”。' : platform.platform === 'browser' ? '浏览器仅提供界面预览；在线更新在 Windows、macOS 和安卓客户端中使用。' : '下载校验后覆盖当前安装并自动打开，保留设置和右键菜单。';
       $('#platform-label').textContent = platformNames[platform.platform] || platform.platform;
-      $('#environment-detail').textContent = `${platformNames[platform.platform] || platform.platform} · v${platform.version || '0.1.9'}`;
+      $('#environment-detail').textContent = `${platformNames[platform.platform] || platform.platform} · v${platform.version || '0.1.10'}`;
       if (platform.platform === 'browser' || platform.platform === 'android' || platform.packaged === false) {
         $('#launch-at-login').disabled = true;
         $('#login-hint').textContent = platform.platform === 'android' ? '安卓端无需常驻，按需打开即可。' : platform.packaged === false ? '开机启动可在安装版客户端中设置。' : '开机启动可在桌面客户端中设置。';

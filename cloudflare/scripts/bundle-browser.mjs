@@ -18,6 +18,7 @@ const result = await build({
   loader: {'.html': 'text', '.txt': 'text'},
   plugins: [{name: 'workers-node-builtins', setup(builder) {
     builder.onResolve({filter: /^crypto$/}, () => ({path: 'node:crypto', external: true}));
+    builder.onResolve({filter: /^cloudflare:/}, args => ({path: args.path, external: true}));
   }}]
 });
 const bundle = result.outputFiles[0].contents;
@@ -43,11 +44,16 @@ const manifest = {
   keepVars: true,
   dashboardVariableType: 'plain_text',
   environmentVariables: ['ADMIN_EMAIL', 'ADMIN_PASSWORD', 'SESSION_SECRET', 'GITHUB_TOKEN', 'GITHUB_DATA_REPOSITORY', 'PROXY_SUBSCRIPTION_URL'],
+  accountEnvironmentVariables: ['SMTP_EMAIL', 'SMTP_APP_PASSWORD', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'],
   rateLimits: [
     {name: 'LOGIN_LIMITER', namespaceId: '1001', limit: 8, period: 60},
     {name: 'LOGIN_GLOBAL_LIMITER', namespaceId: '1002', limit: 30, period: 60},
     {name: 'UPDATE_LIMITER', namespaceId: '1003', limit: 120, period: 60},
-    {name: 'CLIENT_CONFIG_LIMITER', namespaceId: '1005', limit: 30, period: 60}
+    {name: 'CLIENT_CONFIG_LIMITER', namespaceId: '1005', limit: 30, period: 60},
+    {name: 'ACCOUNT_LIMITER', namespaceId: '1006', limit: 120, period: 60},
+    {name: 'ACCOUNT_AUTH_LIMITER', namespaceId: '1007', limit: 10, period: 60},
+    {name: 'ACCOUNT_EMAIL_LIMITER', namespaceId: '1008', limit: 5, period: 60},
+    {name: 'ACCOUNT_EMAIL_GLOBAL_LIMITER', namespaceId: '1009', limit: 30, period: 60}
   ]
 };
 await writeFile(new URL('manifest.json', output), JSON.stringify(manifest, null, 2) + '\n');

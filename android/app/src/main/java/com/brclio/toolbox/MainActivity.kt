@@ -36,6 +36,7 @@ class MainActivity : Activity() {
     private var pendingPickerKind = "file"
     private var incomingPaths = JSONArray()
     private var updater: AndroidUpdater? = null
+    private var account: AndroidAccount? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -137,6 +138,9 @@ class MainActivity : Activity() {
         val payload = request.optJSONObject("payload") ?: JSONObject()
         try {
             when (request.optString("method")) {
+                "accountRequest" -> account().request(payload) { result, error -> resolve(id, result, error) }
+                "accountGoogle" -> account().google { result, error -> resolve(id, result, error) }
+                "accountCancelGoogle" -> resolve(id, account().cancelGoogle())
                 "getPlatform" -> resolve(id, JSONObject()
                     .put("platform", "android")
                     .put("version", BuildConfig.VERSION_NAME)
@@ -182,6 +186,8 @@ class MainActivity : Activity() {
             .getOrDefault(JSONObject())
         return Settings.normalize(saved)
     }
+
+    private fun account(): AndroidAccount = account ?: AndroidAccount(this).also { account = it }
 
     private fun updater(): AndroidUpdater = updater ?: AndroidUpdater(this) { state ->
         if (pageReady) webView.evaluateJavascript(
@@ -348,6 +354,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        account?.close()
         updater?.close()
         if (::webView.isInitialized) {
             webView.stopLoading()

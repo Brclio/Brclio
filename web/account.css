@@ -1,0 +1,85 @@
+/* Brclio Design System · template-app, app-input and CTA 18.
+   © 2026 Brclio · CC BY-NC-SA 4.0 */
+.account-trigger {display:inline-flex;align-items:center;gap:7px;max-width:168px;min-height:32px;padding:5px 9px;border:1px solid var(--border,rgba(40,40,45,.11));border-radius:7px;font:11px var(--sans,sans-serif);color:var(--ink,#1A1A2E);background:var(--cream,#fefcf6);cursor:pointer}
+.account-trigger:hover {background:rgba(43,127,216,.07)}
+.account-trigger svg {width:17px;height:17px;fill:none;stroke:var(--blue,#2B7FD8);stroke-width:1.6;flex-shrink:0}
+.account-trigger span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.account-dialog {width:min(480px,calc(100vw - 28px));max-height:calc(100dvh - 48px);margin:auto;padding:0;border:1px solid var(--border,rgba(40,40,45,.11));border-radius:14px;background:var(--cream,#fefcf6);color:var(--ink,#1A1A2E);overflow:auto;box-shadow:0 20px 80px rgba(26,26,46,.17)}
+.account-dialog::backdrop {background:rgba(26,26,46,.38)}
+.account-root {--account-blue:#2B7FD8;--account-ink:#1A1A2E;--account-muted:#62626c;--account-border:rgba(40,40,45,.14);padding:clamp(22px,4vw,34px);font:14px/1.65 'Noto Sans SC',-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:var(--account-ink);text-align:left}
+.account-root * {box-sizing:border-box}
+.account-root [hidden] {display:none!important}
+.account-heading {display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:23px}
+.account-eyebrow {font-size:9px;letter-spacing:.14em;color:var(--account-blue)}
+.account-heading h2 {font-family:'Noto Serif SC','Songti SC',serif;font-size:22px;line-height:1.4;margin:5px 0 0}
+.account-close {border:0;background:transparent;width:32px;height:32px;display:grid;place-items:center;font-size:25px;color:var(--account-muted);cursor:pointer;border-radius:50%;flex-shrink:0}
+.account-close:hover {background:rgba(43,127,216,.08)}
+.account-tabs {display:flex;border-bottom:1px solid var(--account-border);gap:24px;margin-bottom:23px}
+.account-tabs button {padding:8px 2px 11px;margin-bottom:-1px;border:0;border-bottom:2px solid transparent;background:transparent;font:inherit;font-size:14px;color:var(--account-muted);cursor:pointer}
+.account-tabs button[aria-selected="true"] {color:var(--account-blue);border-bottom-color:var(--account-blue);font-weight:600}
+.account-form {display:grid;gap:16px;margin:0}
+.account-field {display:grid;gap:6px;min-width:0}
+.account-field>label {font-size:12px;font-weight:500}
+.account-input,.account-select {width:100%;min-width:0;padding:11px 12px;border:1px solid var(--account-border);border-radius:7px;background:#fffdf8;color:var(--account-ink);font:inherit;font-size:14px;line-height:1.5;transition:border-color .16s}
+.account-input::placeholder {color:#888892;font-size:12px}
+.account-input:focus,.account-select:focus {outline:none;border-color:var(--account-blue);box-shadow:0 0 0 3px rgba(43,127,216,.09)}
+.account-field small,.account-note {font-size:11px;line-height:1.8;color:var(--account-muted);margin:0}
+.account-code-row {display:flex;gap:9px}
+.account-code-row .account-input {flex:1;width:0}
+.account-button {display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:42px;padding:10px 16px;border:1px solid var(--account-blue);border-radius:7px;background:var(--account-blue);color:#fefcf6;font:inherit;font-size:13px;line-height:1.5;font-weight:500;text-decoration:none;cursor:pointer;transition:background .16s}
+.account-button:hover {background:#2365ac}
+.account-button:disabled {opacity:.55;cursor:not-allowed}
+.account-button-secondary {background:transparent;color:var(--account-blue)}
+.account-button-secondary:hover {background:rgba(43,127,216,.07)}
+.account-button-small {font-size:11px;min-height:40px;padding:8px 11px;white-space:nowrap}
+.account-google {width:100%;background:#fffdf8;color:var(--account-ink);border-color:var(--account-border);margin-top:20px}
+.account-google:hover {background:#faf6eb}
+.account-google-mark {font-family:Georgia,serif;font-size:20px;font-weight:700;color:var(--account-blue);line-height:1}
+.account-divider {display:flex;align-items:center;gap:13px;font-size:10px;color:var(--account-muted);margin-top:21px}
+.account-divider::before,.account-divider::after {content:"";height:1px;background:var(--account-border);flex:1}
+.account-footnote {margin:20px 0 0;font-size:10px;line-height:1.85;color:var(--account-muted)}
+.account-message {margin:0 0 19px;padding:10px 12px;background:rgba(43,127,216,.07);border-radius:6px;font-size:12px;line-height:1.75;overflow-wrap:anywhere;color:var(--account-blue)}
+.account-message[data-error="true"] {background:rgba(232,74,95,.06);color:#b82b40}
+.account-message a {color:inherit;text-underline-offset:3px}
+.account-profile {display:flex;gap:13px;align-items:center;padding-bottom:22px;border-bottom:1px solid var(--account-border);margin-bottom:22px}
+.account-avatar {width:45px;height:45px;background:#F4D758;color:var(--account-ink);border-radius:14px;display:grid;place-items:center;font-family:'Noto Serif SC','Songti SC',serif;font-size:21px;flex-shrink:0}
+.account-identity {min-width:0;flex:1}
+.account-identity strong {font-size:15px;overflow-wrap:anywhere}
+.account-identity p {margin:3px 0 0;color:var(--account-muted);font-size:11px;overflow-wrap:anywhere}
+.account-profile button {border:0;padding:5px;background:transparent;font:inherit;font-size:11px;color:var(--account-muted);white-space:nowrap;cursor:pointer}
+.account-profile button:hover {color:#b82b40}
+.account-sync-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.account-sync-heading h3 {font:600 14px 'Noto Serif SC','Songti SC',serif;margin:0}
+.account-cloud-state {font-size:10px;color:var(--account-blue)}
+.account-sync-actions {display:flex;flex-wrap:wrap;gap:9px;margin-top:18px}
+.account-sync-actions .account-button {flex:1;font-size:12px}
+.account-sync-time {color:var(--account-muted);font-size:10px;margin-top:12px;min-height:18px}
+.account-cloud-form {margin-top:20px}
+.account-check {display:flex;gap:9px;align-items:center;font-size:12px}
+.account-check input {appearance:none;width:17px;height:17px;min-width:17px;border:1px solid var(--account-border);border-radius:4px;background:#fffdf8;margin:0;cursor:pointer}
+.account-check input:checked {background:var(--account-blue);border-color:var(--account-blue)}
+.account-check input:checked::after {content:"✓";color:#fefcf6;display:block;text-align:center;font-size:12px;line-height:15px}
+.account-device {padding:16px;background:#faf6eb;border-radius:8px;margin-bottom:20px}
+.account-device strong {font-family:'Noto Serif SC','Songti SC',serif;font-size:14px}
+.account-device p {font-size:12px;margin:6px 0 12px;color:var(--account-muted);line-height:1.8}
+.account-device .account-button {width:100%}
+.account-cancel {display:block;border:0;background:transparent;color:var(--account-muted);font:inherit;font-size:11px;padding:9px 0 0;margin:auto;cursor:pointer}
+.account-root button:focus-visible,.account-root a:focus-visible,.account-root input:focus-visible,.account-root select:focus-visible,.account-trigger:focus-visible {outline:2px solid #2B7FD8;outline-offset:3px}
+.account-page {margin:0;background:#fefcf6;color:#1A1A2E;font:14px/1.65 'Noto Sans SC',-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;-webkit-font-smoothing:antialiased}
+.account-page *, .account-page *::before,.account-page *::after {box-sizing:border-box}
+.account-page ::selection {background:#F4D758;color:#1A1A2E}
+.account-page-header {position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px clamp(22px,5vw,64px);border-bottom:1px solid rgba(40,40,45,.11);background:#fefcf6;z-index:1}
+.account-page-brand {text-decoration:none;color:inherit;font:700 24px Georgia,serif}
+.account-page-back {font-size:12px;text-decoration:none;color:#62626c}
+.account-page-back:hover {text-decoration:underline;text-decoration-color:#F4D758;text-underline-offset:4px}
+.account-page-main {max-width:1000px;margin:clamp(35px,7vw,80px) auto;padding:0 clamp(20px,4vw,40px);display:grid;grid-template-columns:1fr minmax(330px,450px);gap:clamp(30px,6vw,80px);align-items:start}
+.account-page-intro {padding-top:26px}
+.account-page-intro>span {font-size:10px;color:#2B7FD8;letter-spacing:.15em}
+.account-page-intro h1 {font:700 clamp(28px,4vw,42px)/1.5 'Noto Serif SC','Songti SC',serif;letter-spacing:.02em;margin:15px 0 20px}
+.account-page-intro h1 em {font-style:normal;background:linear-gradient(transparent 65%,#F4D758 65%)}
+.account-page-intro p {max-width:330px;font-size:13px;color:#62626c;line-height:2;margin:0}
+.account-page-surface {background:#fffdf8;border:1px solid rgba(40,40,45,.11);border-radius:14px;min-width:0}
+.account-page-footer {padding:0 24px 24px;text-align:center;font-size:10px;color:#7e7e85;line-height:1.9}
+@media(max-width:900px){.account-page-main {grid-template-columns:1fr;max-width:500px;margin-top:24px;gap:26px}.account-page-intro {padding-top:0}.account-page-intro h1 {font-size:28px;line-height:1.5;margin:7px 0 10px}.account-page-intro p {max-width:none;font-size:12px}.account-page-intro h1 br {display:none}}
+@media(max-width:600px){.account-trigger {font-size:10px;max-width:104px;min-height:29px;padding:4px 6px;gap:5px}.account-trigger svg {width:15px;height:15px}.account-dialog {max-height:calc(100dvh - 24px)}.account-root {padding:22px}.account-heading {margin-bottom:18px}.account-heading h2 {font-size:20px}.account-page-main {padding-inline:16px}.account-page-header {padding:13px 20px}.account-page-brand {font-size:22px}.account-page-back {font-size:11px}.account-page-intro {padding-inline:6px}.account-page-intro h1 {font-size:25px}.account-sync-actions {flex-direction:column}.account-sync-actions .account-button {width:100%}}
+@media(prefers-reduced-motion:reduce){.account-root *,.account-trigger {animation:none!important;transition:none!important}}

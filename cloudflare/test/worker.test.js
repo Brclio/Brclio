@@ -5,7 +5,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL,fileURLToPath} from 'node:url';
-const built=await build({entryPoints:[fileURLToPath(new URL('../src/worker.js',import.meta.url))],bundle:true,write:false,format:'esm',platform:'node',banner:{js:"import {createRequire} from 'node:module';const require=createRequire(import.meta.url);"},loader:{'.html':'text','.txt':'text'}});
+const built=await build({entryPoints:[fileURLToPath(new URL('../src/worker.js',import.meta.url))],bundle:true,write:false,format:'esm',platform:'node',external:['cloudflare:sockets'],banner:{js:"import {createRequire} from 'node:module';const require=createRequire(import.meta.url);"},loader:{'.html':'text','.txt':'text'}});
 const dir=await mkdtemp(join(tmpdir(),'brclio-worker-test-'));const filename=join(dir,'worker.mjs');await writeFile(filename,built.outputFiles[0].contents);const {handle}=await import(pathToFileURL(filename));after(()=>rm(dir,{recursive:true,force:true}));
 const origin='https://updates.example';
 const env={ADMIN_EMAIL:'admin@example.com',ADMIN_PASSWORD:'test-password',SESSION_SECRET:'test-session-secret-at-least-32-characters'};

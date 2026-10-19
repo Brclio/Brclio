@@ -107,6 +107,7 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:4173/ > /dev/null
           node scripts/verify-ui.mjs
+          node scripts/verify-account-ui.mjs
       - run: node scripts/verify-host-contracts.mjs
       - run: node scripts/verify-update-proxy-ui.mjs
       - name: Verify native updater TLS, local proxy, node selection, and cancellation
