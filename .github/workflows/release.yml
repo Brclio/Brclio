@@ -27,6 +27,8 @@ jobs:
           node --input-type=module <<'JS'
           import {spawnSync} from 'node:child_process';
           import {writeFile} from 'node:fs/promises';
+          import {mkdtempSync,readFileSync,rmSync} from 'node:fs';
+          import {tmpdir} from 'node:os';
           import path from 'node:path';
           const origin = 'https://tools.brclio.com';
           const paths = ['/api/health', '/api/account/session'];
@@ -73,15 +75,20 @@ jobs:
             return {status:response.status,...headers,...classify(body,headers)};
           }
           function curlRequest(target, explicit) {
+            const directory=mkdtempSync(path.join(tmpdir(),'account-diagnostic-'));
+            const headerFile=path.join(directory,'headers');
+            try {
             const request=spawnSync('curl',['--silent','--show-error','--max-time','30','--max-redirs','0','--max-filesize','65536',
-              '--dump-header','/dev/stderr','--header','Accept: application/json',...(explicit ? ['--user-agent','Brclio/0.1.10'] : []),origin+target],
+              '--dump-header',headerFile,'--header','Accept: application/json',...(explicit ? ['--user-agent','Brclio/0.1.10'] : []),origin+target],
               {encoding:'utf8',maxBuffer:128*1024,timeout:35000});
-            const blocks=(request.stderr || '').split(/\r?\n\r?\n/).filter(value=>/^HTTP\/\S+\s+\d{3}/.test(value));
+            const rawHeaders=(()=>{try{return readFileSync(headerFile,'utf8');}catch{return '';}})();
+            const blocks=rawHeaders.split(/\r?\n\r?\n/).filter(value=>/^HTTP\/\S+\s+\d{3}/.test(value));
             const header=blocks.at(-1)||'';
             const status=Number(/^HTTP\/\S+\s+(\d{3})/.exec(header)?.[1] || 0);
             const values=new Map(header.split(/\r?\n/).slice(1).map(line=>[line.slice(0,line.indexOf(':')).toLowerCase(),line.slice(line.indexOf(':')+1).trim()]));
             const headers=safeHeaders(name=>values.get(name));
             return {status,...headers,curlExit:request.status,errorType:request.error ? 'process_or_timeout' : null,...classify(request.stdout || '',headers)};
+            } finally {rmSync(directory,{recursive:true,force:true});}
           }
           for(const client of ['undici','curl'])for(const explicit of [false,true])for(const target of paths){
             const record={observedAt:new Date().toISOString(),client,userAgentMode:explicit?'Brclio/0.1.10':'default',path:target};
