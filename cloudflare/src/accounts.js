@@ -4,16 +4,29 @@ import {createAccountStore, emptyAccountIndex, userPath} from './account-store.j
 import {random, digest, seal, unseal, hashPassword, checkPassword} from './accounts-crypto.js';
 import {googleIdentity} from './accounts-google.js';
 import {sendRegistrationCode} from './mail.js';
+import {handleAccountSettings} from './account-settings.js';
 
 const COOKIE = '__Host-brclio_user', OAUTH_COOKIE = '__Host-brclio_oauth';
 const WEB_LIFETIME = 7 * 86400, NATIVE_LIFETIME = 30 * 86400;
 const CODE_LIFETIME = 600000, DEVICE_LIFETIME = 300000;
+const GOOGLE_DIAGNOSTIC_STAGES = new Set([
+  'not_configured', 'state_cookie_missing', 'state_cookie_invalid', 'state_type', 'state_mismatch', 'provider_denied', 'missing_code',
+  'identity_exchange', 'token_exchange', 'token_invalid_grant', 'token_invalid_client', 'token_unauthorized_client', 'token_invalid_request', 'token_redirect_mismatch', 'token_rejected', 'token_response',
+  'identity_header', 'identity_keys', 'identity_signature', 'identity_issuer', 'identity_audience', 'identity_nonce', 'identity_expiration', 'identity_subject', 'identity_email', 'identity_profile',
+  'storage_transaction', 'storage_identity_conflict', 'storage_commit', 'session_cookie', 'unknown'
+]);
+function googleDiagnostic(dependencies, stage) {
+  // Only locally defined finite stages can reach logs. Never include request URLs,
+  // provider bodies, exception messages, identity claims, cookies, or credentials.
+  const event = {event: 'account_google_callback_failed', stage: GOOGLE_DIAGNOSTIC_STAGES.has(stage) ? stage : 'unknown'};
+  try { (dependencies.accountDiagnostic || (value => console.warn(JSON.stringify(value))))(event); } catch {}
+}
 const own = (object, key) => Object.hasOwn(object, key) ? object[key] : undefined;
 const seconds = () => Math.floor(Date.now() / 1000);
 const cookie = (name, value, maxAge) => `${name}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
 const cookieValue = (request, name) => (request.headers.get('cookie') || '').split(';').map(item => item.trim()).find(item => item.startsWith(name + '='))?.slice(name.length + 1);
 const native = request => request.headers.get('X-Brclio-Client') === 'native' && !request.headers.has('Origin');
-const publicUser = profile => ({id: profile.id, username: profile.username, email: profile.email, avatarUrl: profile.avatarUrl || null, providers: profile.providers || []});
+const publicUser = profile => ({id: profile.id, username: profile.username, nickname: profile.nickname || '', email: profile.email, avatarUrl: profile.avatarUrl || null, providers: profile.providers || []});
 const errorResult = (error, status = 400) => ({error, status});
 const fail = result => json({error: result.error}, result.status);
 function emailValue(value) {
@@ -60,7 +73,7 @@ async function authenticate(request, env, store) {
   const sessionKey = await digest(session.sid);
   if (!credentials || credentials.sessions?.[sessionKey]?.exp !== session.exp || credentials.sessions[sessionKey].mode !== session.mode) return null;
   const profile = await state.read(userPath(session.id, 'profile'));
-  return profile ? {...session, sessionKey, profile, isBearer} : null;
+  return profile ? {...session, sessionKey, profile, isBearer, passwordEnabled: Boolean(credentials.password)} : null;
 }
 function preferencesValue(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -91,7 +104,7 @@ export async function handleAccount(request, env, dependencies = {}) {
 
   if (path === '/api/account/session' && request.method === 'GET') {
     const session = await authenticate(request, env, store);
-    return json({user: session ? publicUser(session.profile) : null, csrf: session?.csrf || null, googleEnabled, emailEnabled: Boolean(env.SMTP_EMAIL && env.SMTP_APP_PASSWORD)});
+    return json({user: session ? publicUser(session.profile) : null, csrf: session?.csrf || null, passwordEnabled: session?.passwordEnabled || false, googleEnabled, emailEnabled: Boolean(env.SMTP_EMAIL && env.SMTP_APP_PASSWORD)});
   }
 
   if (path === '/api/account/google/start' && request.method === 'GET') {
@@ -112,21 +125,32 @@ export async function handleAccount(request, env, dependencies = {}) {
   }
 
   if (path === '/api/account/google/callback' && request.method === 'GET') {
-    const stateText = url.searchParams.get('state'), state = await unseal(cookieValue(request, OAUTH_COOKIE), env.SESSION_SECRET);
+    const stateText = url.searchParams.get('state'), stateCookie = cookieValue(request, OAUTH_COOKIE), state = await unseal(stateCookie, env.SESSION_SECRET);
     const clear = cookie(OAUTH_COOKIE, '', 0);
-    const failure = () => {
+    const failure = stage => {
+      googleDiagnostic(dependencies, stage);
       // Preserve only the device bound to our signed OAuth cookie. This lets a
       // canceled Google flow fall back to password login and client approval.
       const query = new URLSearchParams({error: 'google'});
       if (state?.typ === 'google' && /^[A-Za-z0-9_-]{32,64}$/.test(state.device || '')) query.set('device', state.device);
       return new Response(null, {status: 302, headers: {'Location': '/account?' + query, 'Set-Cookie': clear, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}});
     };
-    if (!googleEnabled || !state || state.typ !== 'google' || !await safeEqual(stateText || '', state.state) || !url.searchParams.get('code') || url.searchParams.has('error')) return failure();
+    if (!googleEnabled) return failure('not_configured');
+    if (!state) return failure(stateCookie ? 'state_cookie_invalid' : 'state_cookie_missing');
+    if (state.typ !== 'google') return failure('state_type');
+    if (!await safeEqual(stateText || '', state.state)) return failure('state_mismatch');
+    if (url.searchParams.has('error')) return failure('provider_denied');
+    if (!url.searchParams.get('code')) return failure('missing_code');
+    let stage = 'identity_exchange';
     try {
-      const identity = await (dependencies.googleIdentity || googleIdentity)(url.searchParams.get('code'), state.verifier, state.nonce, url.origin + path, env, fetchImpl);
+      const identity = await (dependencies.googleIdentity || googleIdentity)(url.searchParams.get('code'), state.verifier, state.nonce, url.origin + path, env, fetchImpl, value => {
+        if (GOOGLE_DIAGNOSTIC_STAGES.has(value)) stage = value;
+      });
+      stage = 'identity_profile';
       const email = emailValue(identity.email);
-      if (!email || typeof identity.sub !== 'string' || !/^[A-Za-z0-9_-]{1,255}$/.test(identity.sub)) return failure();
+      if (!email || typeof identity.sub !== 'string' || !/^[A-Za-z0-9_-]{1,255}$/.test(identity.sub)) return failure(stage);
       const grant = await makeGrant('web'), newId = crypto.randomUUID();
+      stage = 'storage_transaction';
       const profile = await store.transaction(async tx => {
         const index = cleanIndex(await tx.read('users/_index.json', emptyAccountIndex()));
         const existing = own(index.google, identity.sub) || own(index.emails, email);
@@ -134,7 +158,7 @@ export async function handleAccount(request, env, dependencies = {}) {
         if (existing) {
           profile = await tx.read(userPath(existing, 'profile'));
           credentials = await tx.read(userPath(existing, 'credentials'));
-          if (!profile || !credentials || profile.email !== email || (credentials.googleSub && credentials.googleSub !== identity.sub)) throw new Error('Google identity conflict');
+          if (!profile || !credentials || profile.email !== email || (credentials.googleSub && credentials.googleSub !== identity.sub)) { stage = 'storage_identity_conflict'; throw new Error('Google identity conflict'); }
           profile.providers = Array.from(new Set([...(profile.providers || []), 'google']));
           credentials.googleSub = identity.sub;
         } else {
@@ -149,13 +173,15 @@ export async function handleAccount(request, env, dependencies = {}) {
         index.google[identity.sub] = profile.id;
         addGrant(credentials, grant);
         tx.write('users/_index.json', index); tx.write(userPath(profile.id, 'profile'), profile); tx.write(userPath(profile.id, 'credentials'), credentials);
+        stage = 'storage_commit';
         return profile;
       });
+      stage = 'session_cookie';
       const response = await grantResponse(profile, grant, env);
       const headers = new Headers({'Location': '/account' + (state.device ? '?device=' + encodeURIComponent(state.device) : ''), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'});
       headers.append('Set-Cookie', response.headers.get('Set-Cookie')); headers.append('Set-Cookie', clear);
       return new Response(null, {status: 302, headers});
-    } catch { return failure(); }
+    } catch { return failure(stage); }
   }
 
   if (path === '/api/account/device/poll' && request.method === 'GET') {
@@ -213,6 +239,7 @@ export async function handleAccount(request, env, dependencies = {}) {
       return {existing: false};
     });
     if (result.error) return fail(result);
+    if (result.existing) return json({error: '该邮箱已注册，请登录后在账号设置中设置昵称、账号和密码', code: 'EMAIL_EXISTS'}, 409);
     if (!result.existing) {
       try { await (dependencies.sendRegistrationCode || sendRegistrationCode)(env, email, code); }
       catch {
@@ -234,6 +261,7 @@ export async function handleAccount(request, env, dependencies = {}) {
     const grant = await makeGrant(isNative ? 'native' : 'web'), id = crypto.randomUUID();
     const result = await store.transaction(async tx => {
       const index = cleanIndex(await tx.read('users/_index.json', emptyAccountIndex())), verification = own(index.verifications, email);
+      if (own(index.emails, email)) return {...errorResult('该邮箱已注册，请登录后在账号设置中设置昵称、账号和密码', 409), code: 'EMAIL_EXISTS'};
       if (!verification || verification.expiresAt <= Date.now() || verification.attempts >= 5) return errorResult('验证码无效或已过期，请重新获取');
       if (!await safeEqual(verification.hash, codeHash)) {
         verification.attempts++; tx.write('users/_index.json', index);
@@ -241,13 +269,13 @@ export async function handleAccount(request, env, dependencies = {}) {
       }
       if (own(index.usernames, username.toLowerCase()) || own(index.emails, email)) return errorResult('账号或邮箱不可用，请直接登录或更换账号');
       const profile = {version: 1, id, username, email, emailVerified: true, avatarUrl: null, providers: ['password'], createdAt: new Date().toISOString()};
-      const credentials = {version: 1, password, sessions: {}, failedAttempts: 0}; addGrant(credentials, grant);
+      const credentials = {version: 1, password, passwordPlaintext: input.password, sessions: {}, failedAttempts: 0}; addGrant(credentials, grant);
       index.usernames[username.toLowerCase()] = id; index.emails[email] = id; delete index.verifications[email];
       tx.write('users/_index.json', index); tx.write(userPath(id, 'profile'), profile); tx.write(userPath(id, 'credentials'), credentials);
       tx.write(userPath(id, 'data'), {version: 1, preferences: {}, updatedAt: new Date().toISOString()});
       return profile;
     });
-    return result.error ? fail(result) : grantResponse(result, grant, env);
+    return result.error ? json({error: result.error, ...(result.code ? {code: result.code} : {})}, result.status) : grantResponse(result, grant, env);
   }
 
   if (path === '/api/account/login' && request.method === 'POST') {
@@ -271,7 +299,7 @@ export async function handleAccount(request, env, dependencies = {}) {
         tx.write(userPath(id, 'credentials'), current);
         return errorResult('账号、邮箱或密码不正确', 401);
       }
-      current.failedAttempts = 0; current.lockedUntil = 0; addGrant(current, grant);
+      current.failedAttempts = 0; current.lockedUntil = 0; current.passwordPlaintext = input.password; addGrant(current, grant);
       tx.write(userPath(id, 'credentials'), current);
       return tx.read(userPath(id, 'profile'));
     });
@@ -281,6 +309,9 @@ export async function handleAccount(request, env, dependencies = {}) {
   const session = await authenticate(request, env, store);
   if (!session) return json({error: '请先登录'}, 401);
   if (request.method !== 'GET' && !session.isBearer && !await safeEqual(request.headers.get('X-CSRF-Token') || '', session.csrf)) return json({error: '页面会话已更新，请刷新后重试'}, 403);
+
+  const settings = await handleAccountSettings({path, request, input, session, store, env, ip, usernameValue, publicUser});
+  if (settings) return settings;
 
   if (path === '/api/account/logout' && request.method === 'POST') {
     await store.transaction(async tx => {
@@ -292,6 +323,9 @@ export async function handleAccount(request, env, dependencies = {}) {
   if (path === '/api/account/device/approve' && request.method === 'POST') {
     if (session.isBearer || !/^[A-Za-z0-9_-]{32,64}$/.test(input.id || '')) return json({error: '客户端登录请求无效'}, 400);
     const result = await store.transaction(async tx => {
+      const credentials = await tx.read(userPath(session.id, 'credentials'));
+      const active = credentials?.sessions?.[session.sessionKey];
+      if (!active || active.exp !== session.exp || active.mode !== session.mode || active.exp <= seconds()) return errorResult('会话已失效，请重新登录', 401);
       const index = cleanIndex(await tx.read('users/_index.json', emptyAccountIndex())), device = own(index.devices, input.id);
       if (!device || device.expiresAt <= Date.now() || (device.userId && device.userId !== session.id)) return errorResult('客户端登录请求已过期');
       device.userId = session.id; tx.write('users/_index.json', index); return {ok: true};

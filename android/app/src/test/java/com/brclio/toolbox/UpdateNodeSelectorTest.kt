@@ -30,15 +30,44 @@ class UpdateNodeSelectorTest {
         override fun getLocalPrincipal():Principal?=null
     }
     @Test fun testsAllSixteenCandidatesConcurrentlyAndChoosesLowestSuccessfulEndToEndLatency(){
-        val nodes=(1..16).map(::node);val allStarted=CountDownLatch(16)
+        val nodes=(1..16).map(::node)
+        val fastest=nodes[6]
+        val otherProbesStarted=CountDownLatch(15)
+        val allStarted=CountDownLatch(16)
+        val fastestMeasured=CountDownLatch(1)
+        val ordered=nodes.filter{it!==fastest}+fastest
+        val submissions=object:AbstractList<UpdateProxyNode>(){
+            override val size get()=ordered.size
+            override fun get(index:Int):UpdateProxyNode{
+                // Do not submit the fastest probe until the other fifteen are all in flight.
+                if(index==ordered.lastIndex)check(otherProbesStarted.await(5,TimeUnit.SECONDS))
+                return ordered[index]
+            }
+        }
         val calls=AtomicInteger();val closes=AtomicInteger();val bridges=java.util.concurrent.ConcurrentHashMap<NativeUpdateProxy,UpdateProxyNode>()
         val selector=UpdateNodeSelector({node,deadline->NativeUpdateProxy(listOf(node),deadline).also{bridges[it]=node}},{bridge->
             val id=bridges[bridge]!!.uuid.leastSignificantBits.toInt()
-            Response({calls.incrementAndGet();allStarted.countDown();check(allStarted.await(2,TimeUnit.SECONDS));Thread.sleep(if(id==7)5 else 100L+id*2);if(id==8)403 else 200},onClose={closes.incrementAndGet()})
+            Response({
+                calls.incrementAndGet();allStarted.countDown()
+                if(id==7)check(allStarted.await(5,TimeUnit.SECONDS))
+                else{
+                    otherProbesStarted.countDown()
+                    check(fastestMeasured.await(5,TimeUnit.SECONDS))
+                }
+                if(id==8)403 else 200
+            },onClose={
+                closes.incrementAndGet()
+                // disconnect follows the selector's elapsed-time measurement. Every other
+                // probe starts before this one and finishes afterwards, regardless of scheduling.
+                if(id==7)fastestMeasured.countDown()
+            })
         })
-        val chosen=selector.select(nodes,System.currentTimeMillis()+8000)
-        assertSame(nodes[6],chosen);assertEquals(16,calls.get());assertEquals(16,closes.get())
-        bridges.keys.forEach{bridge->val addr=bridge.proxy.address() as java.net.InetSocketAddress;assertTrue(runCatching{java.net.Socket(addr.address,addr.port)}.isFailure)}
+        selector.use{
+            val chosen=it.select(submissions,System.currentTimeMillis()+8000)
+            assertSame(fastest,chosen);assertEquals(16,calls.get());assertEquals(16,closes.get())
+        }
+        // @After verifies our actual listener/probe/deadline threads stop. Released ephemeral
+        // ports may already belong to another process, so reconnecting cannot verify ownership.
     }
     @Test fun rejectsRedirectsAndChallengeEvenIfStatusIs200WithoutSilentDirectFallback(){
         for((status,challenge) in listOf(302 to null,403 to null,200 to " Challenge ")){

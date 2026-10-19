@@ -8,7 +8,8 @@ const ORIGIN = 'https://tools.brclio.com';
 const MAX_BYTES = 128 * 1024;
 const ROUTES = { '/api/account/session': ['GET'], '/api/account/code': ['POST'],
   '/api/account/register': ['POST'], '/api/account/login': ['POST'],
-  '/api/account/logout': ['POST'], '/api/account/data': ['GET', 'PUT'] };
+  '/api/account/logout': ['POST'], '/api/account/data': ['GET', 'PUT'],
+  '/api/account/profile': ['PUT'], '/api/account/password': ['POST'] };
 
 function validateAccountRequest(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('账号请求格式无效。');
@@ -112,7 +113,8 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
   async function request(input) {
     const next = validateAccountRequest(input);
     const authChange = ['/api/account/login', '/api/account/register', '/api/account/logout'].includes(next.path);
-    if (authChange) cancelGoogle();
+    // Settings retain the current bearer, but a pending browser login must not replace it.
+    if (authChange || ['/api/account/profile', '/api/account/password'].includes(next.path)) cancelGoogle();
     const version = authChange ? ++authVersion : authVersion;
     try {
       const value = await requestRaw(next.path, next.method, next.body);
@@ -140,6 +142,7 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
       while (now() - started < googleTimeout) {
         await delay(pollInterval, operation.controller.signal);
         const result = await requestRaw(`/api/account/device/poll?id=${encodeURIComponent(session.id)}&verifier=${encodeURIComponent(verifier)}`, 'GET', undefined, operation.controller.signal);
+        if (operation.controller.signal.aborted) throw abortError();
         if (result.pending === true) continue;
         if (typeof result.token !== 'string' || !result.user) throw new Error('谷歌登录尚未完成，请重试。');
         return await accept(result, version);

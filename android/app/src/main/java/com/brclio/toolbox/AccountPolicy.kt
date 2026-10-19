@@ -14,6 +14,7 @@ object AccountPolicy {
         "/api/account/session" to setOf("GET"), "/api/account/code" to setOf("POST"),
         "/api/account/register" to setOf("POST"), "/api/account/login" to setOf("POST"),
         "/api/account/logout" to setOf("POST"), "/api/account/data" to setOf("GET", "PUT"),
+        "/api/account/profile" to setOf("PUT"), "/api/account/password" to setOf("POST"),
     )
     fun validate(input: JSONObject): AccountRequest {
         val path = input.optString("path")
@@ -40,4 +41,8 @@ object AccountPolicy {
     private fun base64(bytes: ByteArray) = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 }
 
-data class AccountRequest(val path: String, val method: String, val body: String?)
+data class AccountRequest(val path: String, val method: String, val body: String?) {
+    val changesAuth: Boolean get() = path in setOf("/api/account/login", "/api/account/register", "/api/account/logout")
+    // Profile/password updates keep this session while canceling another account's pending handoff.
+    val cancelsGoogle: Boolean get() = changesAuth || path in setOf("/api/account/profile", "/api/account/password")
+}

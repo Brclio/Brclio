@@ -16,6 +16,15 @@ function fixture(overrides = {}) {
     openExternal: async url => opened.push(url), ...overrides });
   return { client, calls, opened, saved: () => saved };
 }
+const settingsRequests = [
+  { path: '/api/account/profile', method: 'PUT', body: { username: 'alice', nickname: 'Alice' } },
+  { path: '/api/account/password', method: 'POST', body: { currentPassword: 'old-fixture', password: 'new-fixture' } },
+];
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
 test('renderer requests are confined to account operations and bounded JSON', () => {
   assert.deepEqual(validateAccountRequest({ path: '/api/account/session' }), { path: '/api/account/session', method: 'GET', body: undefined });
   for (const request of [null, { path: 'https://evil.example/api/account/login', method: 'POST' },
@@ -24,6 +33,80 @@ test('renderer requests are confined to account operations and bounded JSON', ()
     { path: '/api/account/session', body: {} }, { path: '/api/account/login', method: 'POST', body: { value: 'x'.repeat(MAX_BYTES) } }]) {
     assert.throws(() => validateAccountRequest(request));
   }
+});
+test('account settings allow only exact methods and bounded object bodies', () => {
+  for (const input of settingsRequests) {
+    assert.deepEqual(validateAccountRequest(input), { ...input, body: JSON.stringify(input.body) });
+    for (const method of ['GET', 'DELETE', 'PATCH', input.method === 'PUT' ? 'POST' : 'PUT', input.method.toLowerCase()]) {
+      assert.throws(() => validateAccountRequest({ ...input, method }));
+    }
+    for (const path of [input.path + '?x=y', input.path + '/', ORIGIN + input.path, input.path.replace('/api/', '//api/'), input.path.replace('/account/', '/account/%2e%2e/')]) {
+      assert.throws(() => validateAccountRequest({ ...input, path }));
+    }
+    for (const body of [null, [], 'fixture', { nickname: '字'.repeat(50000) }]) {
+      assert.throws(() => validateAccountRequest({ ...input, body }));
+    }
+  }
+});
+test('profile and password updates keep the bearer and do not invalidate concurrent session reads', async t => {
+  for (const input of settingsRequests) await t.test(input.path, async () => {
+    const started = deferred(), pendingSession = deferred();
+    const calls = [], writes = [];
+    const user = { id: 'u1', username: 'alice', nickname: 'Alice' };
+    const f = fixture({ store: { read: async () => token, write: async value => writes.push(value) },
+      fetch: async (url, init) => {
+        calls.push({ url, ...init });
+        if (url.endsWith('/session')) { started.resolve(); return pendingSession.promise; }
+        return response({ user });
+      } });
+    const session = f.client.request({ path: '/api/account/session' });
+    await started.promise;
+    assert.deepEqual(await f.client.request({ ...input, headers: { Authorization: 'renderer-value' }, origin: 'https://evil.example' }), { user });
+    pendingSession.resolve(response({ user }));
+    assert.deepEqual(await session, { user });
+    assert.deepEqual(writes, []);
+    assert.equal(calls[1].url, ORIGIN + input.path);
+    assert.equal(calls[1].method, input.method);
+    assert.equal(calls[1].body, JSON.stringify(input.body));
+    assert.equal(calls[1].headers.Authorization, `Bearer ${token}`);
+    assert.equal(calls[1].headers['X-Brclio-Client'], 'native');
+    assert.equal(calls[1].headers.Origin, undefined);
+  });
+});
+test('settings cancel Google handoff and reject a late poll response without replacing the current account', async t => {
+  for (const input of settingsRequests) await t.test(input.path, async () => {
+    const id = 'fixture_device_0123456789';
+    const started = deferred(), pendingPoll = deferred();
+    const writes = [];
+    let pollSignal;
+    const f = fixture({ store: { read: async () => token, write: async value => writes.push(value) }, delay: async () => {},
+      fetch: async (url, init) => {
+        if (url.endsWith('/device/start')) return response({ id, url: `${ORIGIN}/api/account/google/start?device=${id}` });
+        if (url.includes('/device/poll?')) { pollSignal = init.signal; started.resolve(); return pendingPoll.promise; }
+        assert.equal(init.headers.Authorization, `Bearer ${token}`);
+        return response({ user: { id: 'u1' } });
+      } });
+    const handoff = assert.rejects(f.client.google(), /取消/);
+    await started.promise;
+    assert.deepEqual(await f.client.request(input), { user: { id: 'u1' } });
+    assert.equal(pollSignal.aborted, true);
+    // A response that won the network abort race must still never reach the token store.
+    pendingPoll.resolve(response({ token: 'late-google-token-fixture', user: { id: 'u2' } }));
+    await handoff;
+    assert.deepEqual(writes, []);
+  });
+});
+test('duplicate email failures preserve the safe message used by the login fallback', async () => {
+  const message = '该邮箱已注册，请登录后在账号设置中设置昵称、账号和密码';
+  const f = fixture({ fetch: async () => response({ error: message, code: 'EMAIL_EXISTS' }, 409) });
+  for (const path of ['/api/account/code', '/api/account/register']) {
+    await assert.rejects(f.client.request({ path, method: 'POST', body: { email: 'alice@example.com' } }), error => {
+      assert.equal(error.message, message);
+      assert.equal(error.status, 409);
+      return true;
+    });
+  }
+  assert.equal(f.saved(), null);
 });
 test('native sessions persist privately and auth results never expose bearer tokens', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-account-'));
