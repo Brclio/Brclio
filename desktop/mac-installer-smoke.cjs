@@ -119,6 +119,8 @@ async function main() {
         throw new Error('Unexpected update request: ' + url);
       };
       net.fetch = fetch;
+      const load = process.getBuiltinModule('node:module').createRequire(process.cwd() + '/package.json');
+      net.request = load('./test/electron-update-request-fixture.cjs').mockElectronRequest(fetch);
       systemSession.fetch = fetch;
       directSession.fetch = fetch;
       const originalPartition = session.fromPartition.bind(session);

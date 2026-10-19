@@ -106,6 +106,7 @@ function createUpdateProxy(options) {
   const scopes = new Set();
   const publish = options.onState || (() => {});
   const bridgeFactory = options.createBridge || createConnectBridge;
+  const sessionFetch = options.fetchSession || ((value, url, init) => value.fetch(url, init));
   function snapshot() { return { enabled, supported: true, route, busy, error }; }
   function change(next) {
     if ('enabled' in next) enabled = next.enabled;
@@ -129,7 +130,7 @@ function createUpdateProxy(options) {
       native: usesProxy(await available.native.resolveProxy(url)), system: usesProxy(await available.system.resolveProxy(url)),
     }))), signal);
     if (resolutions.some(value => value.native)) return { route: 'system', fetch: options.netFetch };
-    if (resolutions.some(value => value.system)) return { route: 'system', fetch: (url, init) => available.system.fetch(url, init) };
+    if (resolutions.some(value => value.system)) return { route: 'system', fetch: (url, init) => sessionFetch(available.system, url, init) };
     return enabled ? { route: 'builtin', available } : { route: 'direct', fetch: options.netFetch };
   }
   async function state() {
@@ -171,7 +172,7 @@ function createUpdateProxy(options) {
       let response;
       for (const endpoint of [CONFIG_URL, CONFIG_FALLBACK_URL]) {
         try {
-          response = await selected.available.direct.fetch(endpoint, { signal: init.signal, redirect: 'manual', credentials: 'omit', cache: 'no-store', headers: {
+          response = await sessionFetch(selected.available.direct, endpoint, { signal: init.signal, redirect: 'manual', credentials: 'omit', cache: 'no-store', headers: {
             Accept: 'application/json', 'Cache-Control': 'no-store, no-cache', 'User-Agent': new Headers(init.headers).get('user-agent') || 'Brclio-Updater/1.0',
           } });
         } catch (failure) {
@@ -215,7 +216,7 @@ function createUpdateProxy(options) {
           if (candidate.signal.aborted) { close(); return; }
           const started = performance.now();
           try {
-            const checked = await builtin.fetch(PROBE_URL, { method: 'HEAD', signal: candidate.signal, redirect: 'manual', credentials: 'omit', cache: 'no-store',
+            const checked = await sessionFetch(builtin, PROBE_URL, { method: 'HEAD', signal: candidate.signal, redirect: 'manual', credentials: 'omit', cache: 'no-store',
               headers: { Accept: 'application/vnd.github+json', 'User-Agent': new Headers(init.headers).get('user-agent') || 'Brclio-Updater/1.0' } });
             const elapsed = performance.now() - started;
             const valid = checked.status === 200 && !checked.redirected && (!checked.url || checked.url === PROBE_URL) && !requestBlockMessage(checked);
@@ -242,7 +243,7 @@ function createUpdateProxy(options) {
       } finally { clearTimeout(totalTimer); init.signal?.removeEventListener('abort', stop); }
     })();
     await abortable(scope.initializing, init.signal);
-    return (url, options) => scope.builtin.fetch(url, options);
+    return (url, options) => sessionFetch(scope.builtin, url, options);
   }
   async function fetch(url, init = {}) {
     const scope = operation || { targets: [url] };

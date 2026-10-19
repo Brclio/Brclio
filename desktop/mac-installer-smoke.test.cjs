@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { electronUpdateFetch } = require('./electron-update-fetch.cjs');
 
 // Exercise the actual fixture installed into the release smoke's main process.
 // It must intercept current-source isolated sessions as well as older net.fetch
@@ -30,7 +31,7 @@ test('macOS native replacement fixture intercepts isolated proxy sessions withou
     if (!sessions.has(name)) sessions.set(name, {});
     return sessions.get(name);
   } };
-  const context = { Response, URL, Headers };
+  const context = { Response, URL, Headers, process };
   const inject = vm.runInNewContext(`(${callback})`, context);
   inject({ net, session }, { version: '0.2.0', architecture: 'arm64', size: bytes.length, expected: 'a'.repeat(64), fileURL });
   assert.equal(await session.defaultSession.resolveProxy('https://api.github.com/'), 'DIRECT');
@@ -46,6 +47,9 @@ test('macOS native replacement fixture intercepts isolated proxy sessions withou
   assert.equal((await (await builtin.fetch(metadataURL)).json()).tag_name, 'v0.2.0');
   assert.deepEqual(Buffer.from(await (await builtin.fetch(assetURL)).arrayBuffer()), bytes);
   assert.deepEqual(nativeCalls, [{ url: fileURL, range: null }]);
+  assert.equal((await (await electronUpdateFetch(net.request, builtin, metadataURL)).json()).tag_name, 'v0.2.0');
+  assert.deepEqual(Buffer.from(await (await electronUpdateFetch(net.request, builtin, assetURL)).arrayBuffer()), bytes);
+  assert.deepEqual(nativeCalls, [{ url: fileURL, range: null }, { url: fileURL, range: null }]);
   await assert.rejects(builtin.fetch('https://unrecognized.example/'), /Unexpected update request/);
 
 });

@@ -13,6 +13,7 @@ const { getCopyPaths } = require('./arguments.cjs');
 const { getCopyPathsFromURL, getCopyPathsFromURLs } = require('./deep-link.cjs');
 const { createUpdater } = require('./updater.cjs');
 const { createUpdateProxy } = require('./update-proxy.cjs');
+const { electronUpdateFetch } = require('./electron-update-fetch.cjs');
 const { createMacInstaller } = require('./mac-installer.cjs');
 const { createWindowsInstaller } = require('./windows-installer.cjs');
 const { isLocalDocument } = require('./trusted-url.cjs');
@@ -72,7 +73,8 @@ const installer = process.platform === 'darwin' ? createMacInstaller(installerOp
   : process.platform === 'win32' ? createWindowsInstaller(installerOptions) : null;
 const updateProxy = createUpdateProxy({ whenReady: () => app.whenReady(),
   fromPartition: (name, options) => session.fromPartition(name, options), defaultSession: () => session.defaultSession,
-  netFetch: (url, options) => net.fetch(url, options),
+  fetchSession: (value, url, options) => electronUpdateFetch(options => net.request(options), value, url, options),
+  netFetch: (url, options) => electronUpdateFetch(options => net.request(options), session.defaultSession, url, options),
 });
 const updater = createUpdater({ currentVersion: app.getVersion(), directory: path.join(app.getPath('userData'), 'updates'),
   fetch: (url, options, context) => updateProxy.fetch(url, options, context),

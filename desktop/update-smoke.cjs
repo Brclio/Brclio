@@ -65,6 +65,8 @@ async function main() {
         return new Response(stream, {headers:{'content-length':String(body.length)}});
       };
       net.fetch = fetch;
+      const load = process.getBuiltinModule('node:module').createRequire(process.cwd() + '/package.json');
+      net.request = load('./test/electron-update-request-fixture.cjs').mockElectronRequest(fetch);
       systemSession.fetch = fetch;
       directSession.fetch = fetch;
       const originalPartition = session.fromPartition.bind(session);

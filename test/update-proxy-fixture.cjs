@@ -6,10 +6,11 @@ const dir=path.join(__dirname,'fixtures/update-proxy-tls');
 const ca=fs.readFileSync(path.join(dir,'ca.pem'));
 const credential=name=>({key:fs.readFileSync(path.join(dir,name+'.key')),cert:fs.readFileSync(path.join(dir,name+'.pem'))});
 const node={uuid:'12345678-1234-1234-1234-123456789abc',host:'relay.example.com',dialAddress:'1.1.1.1',port:443,path:'/tunnel',servername:'relay.example.com',wsHost:'relay.example.com'};
-async function startRelay({body=Buffer.from('official fixture'),originCertificate='origin',trustOuter=true,redirect=false,slow=false,respond}={}){
+async function startRelay({body=Buffer.from('official fixture'),originCertificate='origin',trustOuter=true,redirect=false,slow=false,respond,http2=false}={}){
  const sockets=new Set(),requests=[],destinations=[];let connections=0;
- const origin=https.createServer(credential(originCertificate),(req,res)=>{
-  requests.push({method:req.method,url:req.url,range:req.headers.range});if(respond){respond(req,res);return;}res.writeHead(200,{'Content-Length':body.length});
+ const makeOrigin=http2?require('node:http2').createSecureServer:https.createServer;
+ const origin=makeOrigin({...credential(originCertificate),...(http2?{allowHTTP1:true}:{})},(req,res)=>{
+  requests.push({method:req.method,url:req.url,range:req.headers.range,httpVersion:req.httpVersion});if(respond){respond(req,res);return;}res.writeHead(200,{'Content-Length':body.length});
   if(req.method==='HEAD'){res.end();return;}
   if(!slow){res.end(body);return;}
   let offset=0;const timer=setInterval(()=>{if(offset>=body.length){clearInterval(timer);res.end();return;}res.write(body.subarray(offset,offset+1024));offset+=1024;},5);res.on('close',()=>clearInterval(timer));
