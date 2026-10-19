@@ -1,339 +1,102 @@
-name: Release installers
+name: Temporary account runner diagnosis
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version X.Y.Z matching package.json and Android versionName'
+        description: Diagnostic client version; no build or publication
         required: true
+        default: '0.1.10'
         type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
-  cancel-in-progress: false
-
 jobs:
-  metadata:
-    name: Validate the release version and source
+  diagnostics:
+    name: Read-only Ubuntu account access diagnosis
     runs-on: ubuntu-24.04
-    outputs:
-      version: ${{ steps.release.outputs.version }}
-      tag: ${{ steps.release.outputs.tag }}
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - id: release
-        env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+      - name: Compare curl and Node user agents without credentials
+        shell: bash
         run: |
           node --input-type=module <<'JS'
-          import fs from 'node:fs';
-          import { execFileSync } from 'node:child_process';
-          const version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
-          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) throw new Error('package.json version must be X.Y.Z.');
-          const requested = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' ? process.env.REQUESTED_VERSION : process.env.GITHUB_REF_NAME.replace(/^v/, '');
-          if (requested !== version) throw new Error('Requested/tag version differs from package.json.');
-          const android = fs.readFileSync('android/app/build.gradle', 'utf8').match(/versionName\s+['"]([^'"]+)['"]/);
-          if (!android || android[1] !== version) throw new Error('Android versionName differs from package.json.');
-          const tag = `v${version}`;
-          let existing;
-          try { existing = execFileSync('git', ['rev-parse', '--verify', `${tag}^{commit}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
-          if (existing && existing !== process.env.GITHUB_SHA) throw new Error('The release tag already points to a different commit.');
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=${tag}\n`);
+          import {spawnSync} from 'node:child_process';
+          import {writeFile} from 'node:fs/promises';
+          import path from 'node:path';
+          const origin = 'https://tools.brclio.com';
+          const paths = ['/api/health', '/api/account/session'];
+          const knownKeys = new Set(['ok','service','proxyProtocol','user','csrf','passwordEnabled','googleEnabled','emailEnabled','error','message']);
+          const results = [];
+          function safeHeaders(get) {
+            const server = get('server')?.toLowerCase();
+            const type = get('content-type')?.split(';')[0].trim().toLowerCase();
+            const ray = get('cf-ray');
+            return {server: server === 'cloudflare' ? 'cloudflare' : server ? 'other' : null,
+              contentType: ['application/json','text/html','text/plain'].includes(type) ? type : type ? 'other' : null,
+              cfMitigated: get('cf-mitigated')?.trim().toLowerCase() === 'challenge' ? 'challenge' : get('cf-mitigated') ? 'other' : null,
+              cfRay: /^[a-f0-9]{16,}-[A-Z]{3}$/.test(ray || '') ? ray : null};
+          }
+          function classify(body, headers) {
+            if (headers.contentType === 'application/json') {
+              try {
+                const value = JSON.parse(body);
+                if (!value || typeof value !== 'object' || Array.isArray(value)) return {bodyClass:'json_non_object'};
+                const keys = Object.keys(value);
+                const applicationError = new Map([
+                  ['请求来源无效','origin_denied'],['请先登录','authentication_required'],
+                  ['账号服务暂不可用','service_unavailable'],['请求过于频繁，请稍后重试','rate_limited']
+                ]).get(value.error) || (value.error ? 'other_application_error' : null);
+                return {bodyClass:'json', jsonKeys:keys.filter(key=>knownKeys.has(key)).sort(),
+                  otherJsonKeyCount:keys.filter(key=>!knownKeys.has(key)).length,applicationError};
+              } catch { return {bodyClass:'invalid_json'}; }
+            }
+            const title = /<title[^>]*>([\s\S]{0,500}?)<\/title>/i.exec(body)?.[1]?.toLowerCase() || '';
+            if (headers.cfMitigated === 'challenge' || title.includes('just a moment') || body.includes('/cdn-cgi/challenge-platform/')) return {bodyClass:'cloudflare_challenge',titleClass:'challenge'};
+            if (title.includes('attention required') || title.includes('access denied') || body.includes('Cloudflare Ray ID')) return {bodyClass:'cloudflare_block',titleClass:'block'};
+            return {bodyClass:body.trim() ? /<html/i.test(body) ? 'other_html' : 'other_text' : 'empty',titleClass:title ? 'other' : 'absent'};
+          }
+          async function nodeRequest(target, explicit) {
+            const response = await fetch(origin + target,{headers:{Accept:'application/json',...(explicit ? {'User-Agent':'Brclio/0.1.10'} : {})},
+              credentials:'omit',redirect:'manual',cache:'no-store',signal:AbortSignal.timeout(30000)});
+            const headers = safeHeaders(name=>response.headers.get(name));
+            let body='',size=0;
+            const reader=response.body?.getReader(),decoder=new TextDecoder();
+            try {
+              if(reader)while(true){const item=await reader.read();if(item.done)break;size+=item.value.byteLength;if(size>65536)return {status:response.status,...headers,bodyClass:'over_limit'};body+=decoder.decode(item.value,{stream:true});}
+              body+=decoder.decode();
+            } finally {await reader?.cancel().catch(()=>{});}
+            return {status:response.status,...headers,...classify(body,headers)};
+          }
+          function curlRequest(target, explicit) {
+            const request=spawnSync('curl',['--silent','--show-error','--max-time','30','--max-redirs','0','--max-filesize','65536',
+              '--dump-header','/dev/stderr','--header','Accept: application/json',...(explicit ? ['--user-agent','Brclio/0.1.10'] : []),origin+target],
+              {encoding:'utf8',maxBuffer:128*1024,timeout:35000});
+            const blocks=(request.stderr || '').split(/\r?\n\r?\n/).filter(value=>/^HTTP\/\S+\s+\d{3}/.test(value));
+            const header=blocks.at(-1)||'';
+            const status=Number(/^HTTP\/\S+\s+(\d{3})/.exec(header)?.[1] || 0);
+            const values=new Map(header.split(/\r?\n/).slice(1).map(line=>[line.slice(0,line.indexOf(':')).toLowerCase(),line.slice(line.indexOf(':')+1).trim()]));
+            const headers=safeHeaders(name=>values.get(name));
+            return {status,...headers,curlExit:request.status,errorType:request.error ? 'process_or_timeout' : null,...classify(request.stdout || '',headers)};
+          }
+          for(const client of ['undici','curl'])for(const explicit of [false,true])for(const target of paths){
+            const record={observedAt:new Date().toISOString(),client,userAgentMode:explicit?'Brclio/0.1.10':'default',path:target};
+            try{Object.assign(record,client==='undici'?await nodeRequest(target,explicit):curlRequest(target,explicit));}
+            catch(error){record.errorType=['AbortError','TimeoutError'].includes(error?.name)?'timeout':'network_or_response_failure';}
+            results.push(record);console.log(JSON.stringify(record));
+          }
+          await writeFile(path.join(process.env.RUNNER_TEMP,'account-runner-diagnostics-safe.json'),JSON.stringify({readOnly:true,runId:process.env.GITHUB_RUN_ID,
+            sourceRef:process.env.GITHUB_REF,runner:'ubuntu-24.04',nodeVersion:process.version,requests:results},null,2)+'\n');
           JS
-
-  tests:
-    name: Required checks
-    needs: metadata
-    uses: ./.github/workflows/ci.yml
-
-  production-service:
-    name: Verify production native proxy downloads
-    needs: metadata
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: cloudflare
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            cloudflare/package-lock.json
-      - name: Install native client validation dependencies
-        run: npm ci --prefix ..
-      - run: npm ci
-      - name: Verify production account service and provider configuration
-        run: node scripts/verify-account-live.mjs --ready
-      - name: Install the real Electron runtime system dependencies
-        working-directory: .
-        run: npx playwright install-deps chromium
-      - name: Verify production metadata, manifest, and the complete small installer
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          node scripts/verify-live.mjs > "$GITHUB_WORKSPACE/artifacts/production-update-standard.json"
-      - name: Verify the complete large installer through real Electron and the native proxy
-        working-directory: .
-        run: xvfb-run -a node desktop/native-proxy-live.cjs > artifacts/production-update-electron-large.json
-      - name: Save production download verification
+      - name: Save sanitized diagnostic results only
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: production-update-verification
-          path: artifacts/production-update-*.json
-          if-no-files-found: ignore
-          retention-days: 14
-
-  desktop:
-    name: ${{ matrix.name }}
-    needs: metadata
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Windows x64
-            runner: windows-2022
-            platform: win
-            arch: x64
-          - name: macOS Apple silicon
-            runner: macos-15
-            platform: mac
-            arch: arm64
-          - name: macOS Intel
-            runner: macos-15-intel
-            platform: mac
-            arch: x64
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-      - run: npm ci
-      - run: npm test
-      - run: npm run sync
-      - name: Verify the real Electron native TLS proxy bridge and continuous downloads
-        run: npm run test:native-proxy
-      - name: Check the full Xcode toolchain for FinderSync
-        if: matrix.platform == 'mac'
-        run: |
-          xcodebuild -version
-          xcrun --sdk macosx --show-sdk-path
-          xcrun swiftc --version
-      - name: Build Windows installer without publishing
-        if: matrix.platform == 'win'
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --win --${{ matrix.arch }} --publish never
-      - name: Verify the actual packaged Windows identity, signatures, native dependencies, and key exclusion
-        if: matrix.platform == 'win'
-        env:
-          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-        run: node scripts/windows-verify-package.cjs --dir release/win-unpacked --version "$env:RELEASE_VERSION" --report artifacts/windows-package.json
-      - name: Verify peer trust and tamper rejection on the actual Windows release files
-        if: matrix.platform == 'win'
-        env:
-          BRCLIO_ALLOW_SHELL_TRUST_SMOKE: '1'
-        run: |
-          Remove-Item Env:PSModulePath -ErrorAction SilentlyContinue
-          & "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native/windows/TrustSmoke.ps1 -Directory release/win-unpacked/resources/windows-shell
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Verify installation, update, launch acknowledgement, preservation, and rollback of the actual Windows release
-        if: matrix.platform == 'win'
-        env:
-          BRCLIO_ALLOW_INSTALL_SMOKE: '1'
-          BRCLIO_WINDOWS_BASELINE_VERSION: '0.1.2'
-          BRCLIO_WINDOWS_BASELINE_READ_TOKEN: ${{ github.token }}
-        run: node desktop/windows-installer-smoke.cjs
-      - name: Verify the packaged Windows client, real clipboard, second instance, and cold-launch copying
-        if: matrix.platform == 'win'
-        env:
-          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-          BRCLIO_ALLOW_SELECTION_SMOKE: '1'
-        run: |
-          $env:BRCLIO_SMOKE_EXECUTABLE = (Resolve-Path 'release/win-unpacked/Brclio.exe').Path
-          $env:BRCLIO_SMOKE_VERSION = $env:RELEASE_VERSION
-          node desktop/smoke.cjs
-      - name: Save Windows release verification reports
-        if: always() && matrix.platform == 'win'
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-release-verification
-          path: |
-            artifacts/windows-package.json
-            artifacts/windows-update-smoke.json
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Build and sign macOS installers without publishing
-        if: matrix.platform == 'mac'
-        shell: bash
-        env:
-          BUILD_ARCH: ${{ matrix.arch }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --mac --"$BUILD_ARCH" --publish never --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false --config.forceCodeSigning=true
-      - name: Verify final macOS packages and launch the packaged client
-        if: matrix.platform == 'mac'
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-          RELEASE_ARCH: ${{ matrix.arch }}
-        run: |
-          node scripts/verify-mac-package.mjs --dir release --version "$RELEASE_VERSION" --arch "$RELEASE_ARCH" --smoke --report "artifacts/mac-package-$RELEASE_ARCH.json"
-      - name: Save macOS package verification report
-        if: always() && matrix.platform == 'mac'
-        uses: actions/upload-artifact@v4
-        with:
-          name: mac-package-verification-${{ matrix.arch }}
-          path: artifacts/mac-package-${{ matrix.arch }}.json
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Build a private older-version macOS update fixture
-        if: matrix.platform == 'mac'
-        shell: bash
-        env:
-          BUILD_ARCH: ${{ matrix.arch }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --mac --dir --"$BUILD_ARCH" --publish never --config.extraMetadata.version=0.1.2 --config.directories.output=artifacts/update-old --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false --config.forceCodeSigning=true
-      - name: Verify real macOS replacement and automatic launch
-        if: matrix.platform == 'mac'
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-          RELEASE_ARCH: ${{ matrix.arch }}
-        run: node desktop/mac-installer-smoke.cjs --version "$RELEASE_VERSION" --report "artifacts/mac-update-$RELEASE_ARCH.json"
-      - name: Save macOS native update verification report
-        if: always() && matrix.platform == 'mac'
-        uses: actions/upload-artifact@v4
-        with:
-          name: mac-update-verification-${{ matrix.arch }}
-          path: artifacts/mac-update-${{ matrix.arch }}.json
-          if-no-files-found: ignore
-          retention-days: 14
-      - uses: actions/upload-artifact@v4
-        with:
-          name: installer-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            release/Brclio-${{ needs.metadata.outputs.version }}-windows-${{ matrix.arch }}.exe
-            release/Brclio-${{ needs.metadata.outputs.version }}-mac-${{ matrix.arch }}.dmg
-            release/Brclio-${{ needs.metadata.outputs.version }}-mac-${{ matrix.arch }}.zip
+          name: account-runner-diagnostics-safe
+          path: ${{ runner.temp }}/account-runner-diagnostics-safe.json
           if-no-files-found: error
-          retention-days: 14
-
-  android:
-    name: Signed Android APK
-    needs: metadata
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
-      - name: Set up Android SDK and the exact build packages
-        uses: android-actions/setup-android@v3
-        with:
-          # Command-line tools 16.0 supports the JDK 17 used by this project.
-          cmdline-tools-version: '12266719'
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
-          log-accepted-android-sdk-licenses: 'false'
-      - name: Load required release signing key
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
-          ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
-          ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
-        run: |
-          for secret in ANDROID_KEYSTORE_BASE64 ANDROID_SIGNING_STORE_PASSWORD ANDROID_SIGNING_KEY_ALIAS ANDROID_SIGNING_KEY_PASSWORD; do
-            if [ -z "${!secret}" ]; then echo "Missing required signing secret: $secret" >&2; exit 1; fi
-          done
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/brclio-release.jks"
-          chmod 600 "$RUNNER_TEMP/brclio-release.jks"
-      - name: Build and verify signed release
-        working-directory: android
-        env:
-          ANDROID_SIGNING_STORE_FILE: ${{ runner.temp }}/brclio-release.jks
-          ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
-          ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
-          ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
-        run: |
-          bash gradlew --no-daemon testDebugUnitTest lintRelease assembleRelease
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
-      - name: Name the release APK
-        env:
-          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-        run: |
-          mkdir -p release
-          cp android/app/build/outputs/apk/release/app-release.apk "release/Brclio-$RELEASE_VERSION-android.apk"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: installer-android
-          path: release/Brclio-${{ needs.metadata.outputs.version }}-android.apk
-          if-no-files-found: error
-          retention-days: 14
-      - name: Remove the signing key
-        if: always()
-        run: rm -f "$RUNNER_TEMP/brclio-release.jks"
-
-  publish:
-    name: Publish only the complete verified release
-    needs: [metadata, tests, production-service, desktop, android]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: installer-*
-          path: release-files
-          merge-multiple: true
-      - name: Require all six installers and create SHA-256 manifest
-        run: |
-          node scripts/checksums.mjs release-files --version "$RELEASE_VERSION"
-          node scripts/checksums.mjs release-files --version "$RELEASE_VERSION" --verify
-      - name: Stage a draft release
-        run: |
-          if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/brclio-release.json" 2>/dev/null; then
-            node --input-type=module -e 'import fs from "node:fs"; if (!JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/brclio-release.json", "utf8")).isDraft) throw new Error("This version is already public; do not replace published updater assets. Release a new version.");'
-          else
-            NOTES_FILE="docs/releases/$RELEASE_TAG.md"
-            if [ -f "$NOTES_FILE" ]; then
-              gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "Brclio $RELEASE_VERSION" --draft --notes-file "$NOTES_FILE"
-            else
-              gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "Brclio $RELEASE_VERSION" --draft --generate-notes
-            fi
-          fi
-          gh release upload "$RELEASE_TAG" release-files/* --clobber
-      - name: Verify uploaded files before publication
-        run: |
-          gh release download "$RELEASE_TAG" --dir verify-release
-          node scripts/checksums.mjs verify-release --version "$RELEASE_VERSION" --verify
-          cmp release-files/SHA256SUMS.txt verify-release/SHA256SUMS.txt
-      - name: Publish complete release
-        run: gh release edit "$RELEASE_TAG" --draft=false --latest
+          retention-days: 7
