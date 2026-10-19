@@ -42,10 +42,19 @@ function fixture() {
     const value = await response.json(); assert.equal(response.status, 200, JSON.stringify(value));
     return {...value, cookie: response.headers.get('Set-Cookie')?.split(';')[0]};
   }
-  return {store, env, dependencies, sent, call, register};
+  async function googleSignIn() {
+    const start = await call('google/start');
+    const state = new URL(start.headers.get('Location')).searchParams.get('state');
+    const completed = await call('google/callback?state=' + state + '&code=valid', 'GET', undefined, {headers: {Cookie: start.headers.get('Set-Cookie').split(';')[0]}});
+    assert.equal(completed.headers.get('Location'), '/account');
+    const cookie = completed.headers.getSetCookie().find(value => value.startsWith('__Host-brclio_user=')).split(';')[0];
+    const session = await (await call('session', 'GET', undefined, {headers: {Cookie: cookie}})).json();
+    return {...session, cookie};
+  }
+  return {store, env, dependencies, sent, call, register, googleSignIn};
 }
 
-test('registration persists readable independent user folders, hashes secrets, consumes code, and signs cookie', async () => {
+test('registration persists independent readable user folders, plaintext password and hash, consumes code, and signs cookie', async () => {
   const f = fixture(), signed = await f.register();
   assert.match(signed.cookie, /^__Host-brclio_user=/);
   assert.equal(signed.token, undefined);
@@ -53,7 +62,12 @@ test('registration persists readable independent user folders, hashes secrets, c
   const records = [...f.store.files];
   assert.deepEqual(records.filter(([path]) => path.startsWith('users/' + signed.user.id + '/')).map(([path]) => path.split('/').at(-1)).sort(), ['credentials.json', 'data.json', 'profile.json']);
   const stored = JSON.stringify(records);
-  assert.ok(!stored.includes('my correct password'));
+  const credentials = f.store.files.get('users/' + signed.user.id + '/credentials.json');
+  assert.equal(credentials.passwordPlaintext, 'my correct password');
+  assert.equal(credentials.password.algorithm, 'PBKDF2-SHA256');
+  assert.equal(await checkPassword(credentials.passwordPlaintext, credentials.password), true);
+  assert.ok(!JSON.stringify(signed).includes('my correct password'), 'plaintext password stays outside public responses');
+  assert.ok(Object.keys(credentials.sessions).every(key => /^[A-Za-z0-9_-]{43}$/.test(key)));
   assert.ok(!stored.includes(signed.cookie));
   assert.ok(!stored.includes('"code":'));
   assert.equal(f.store.files.get('users/_index.json').verifications['alice@example.com'], undefined);
@@ -118,6 +132,144 @@ test('origin and CSRF protect mutations; logout revokes signed token; data is sc
   assert.equal((await f.call('logout', 'POST', {}, {headers: {Cookie: alice.cookie, 'X-CSRF-Token': alice.csrf}})).status, 200);
   assert.equal((await (await f.call('session', 'GET', undefined, {headers: {Cookie: alice.cookie}})).json()).user, null);
   assert.equal((await f.call('register', 'POST', {}, {headers: {Origin: 'https://evil.example', 'X-Brclio-Client': 'native'}})).status, 403);
+});
+
+test('profile settings rename the signed account without changing its ID, email or another user', async () => {
+  const f = fixture(), alice = await f.register(), bob = await f.register('bobby', 'bob@example.com');
+  const beforeBob = structuredClone(f.store.files.get('users/' + bob.user.id + '/profile.json'));
+  const beforePaths = [...f.store.files.keys()].sort();
+  const response = await f.call('profile', 'PUT', {username:'Alice-Renamed', nickname:'  新昵称  ', userId:bob.user.id}, {headers:{Cookie:alice.cookie, 'X-CSRF-Token':alice.csrf}});
+  assert.equal(response.status, 200);
+  const value = await response.json();
+  assert.equal(value.user.id, alice.user.id);
+  assert.equal(value.user.username, 'Alice-Renamed');
+  assert.equal(value.user.nickname, '新昵称');
+  assert.equal(value.user.email, 'alice@example.com');
+  assert.equal(value.token, undefined); assert.equal(response.headers.get('Set-Cookie'), null);
+  assert.deepEqual(f.store.files.get('users/' + bob.user.id + '/profile.json'), beforeBob);
+  assert.deepEqual([...f.store.files.keys()].sort(), beforePaths);
+  const index = f.store.files.get('users/_index.json');
+  assert.equal(index.usernames.alice, undefined);
+  assert.equal(index.usernames['alice-renamed'], alice.user.id);
+  assert.equal(index.emails['alice@example.com'], alice.user.id);
+  assert.equal((await f.call('login', 'POST', {identifier:'alice', password:'my correct password'})).status, 401);
+  assert.equal((await f.call('login', 'POST', {identifier:'ALICE-RENAMED', password:'my correct password'})).status, 200);
+  const session = await (await f.call('session', 'GET', undefined, {headers:{Cookie:alice.cookie}})).json();
+  assert.equal(session.user.id, alice.user.id); assert.equal(session.user.nickname, '新昵称'); assert.equal(session.csrf, alice.csrf);
+});
+
+test('concurrent profile changes reserve one case-insensitive username atomically', async () => {
+  const f = fixture(), alice = await f.register(), bob = await f.register('bobby', 'bob@example.com');
+  const results = await Promise.all([alice, bob].map((account, i) => f.call('profile', 'PUT', {username:i ? 'reserved-name' : 'Reserved-Name', nickname:'Nickname'}, {headers:{Cookie:account.cookie, 'X-CSRF-Token':account.csrf}})));
+  assert.deepEqual(results.map(response => response.status).sort(), [200, 409]);
+  const winner = await results.find(response => response.status === 200).json();
+  const index = f.store.files.get('users/_index.json');
+  assert.equal(index.usernames['reserved-name'], winner.user.id);
+  assert.equal(Object.keys(index.usernames).length, 2);
+  for (const account of [alice,bob]) {
+    const profile = f.store.files.get('users/' + account.user.id + '/profile.json');
+    assert.equal(index.usernames[profile.username.toLowerCase()], account.user.id);
+  }
+});
+
+test('profile and password settings require authentication, same origin and web CSRF', async () => {
+  const f = fixture(), signed = await f.register();
+  for (const [path, method, body] of [['profile','PUT',{username:'renamed-user',nickname:'Nickname'}], ['password','POST',{currentPassword:'my correct password',newPassword:'my new password'}]]) {
+    assert.equal((await f.call(path, method, body)).status, 401);
+    assert.equal((await f.call(path, method, body, {headers:{Cookie:signed.cookie}})).status, 403);
+    assert.equal((await f.call(path, method, body, {headers:{Cookie:signed.cookie,'X-CSRF-Token':'wrong'}})).status, 403);
+    assert.equal((await f.call(path, method, body, {headers:{Cookie:signed.cookie,'X-CSRF-Token':signed.csrf,Origin:'https://evil.example'}})).status, 403);
+  }
+  for (const body of [{username:'renamed-user',nickname:'x'.repeat(41)}, {username:'renamed-user',nickname:'bad\nname'}, {username:'x',nickname:'Nickname'}]) {
+    assert.equal((await f.call('profile','PUT',body,{headers:{Cookie:signed.cookie,'X-CSRF-Token':signed.csrf}})).status,400);
+  }
+});
+
+test('password changes verify the old password, synchronize plaintext and hash, retain current bearer and revoke every other session', async () => {
+  const f = fixture(), signed = await f.register('alice','alice@example.com',true);
+  const webResponse = await f.call('login','POST',{identifier:'alice',password:'my correct password'});
+  const webCookie = webResponse.headers.get('Set-Cookie').split(';')[0];
+  const other = await (await f.call('login','POST',{identifier:'alice@example.com',password:'my correct password'},{native:true})).json();
+  const bob = await f.register('bobby','bob@example.com');
+  const bobCredentials = structuredClone(f.store.files.get('users/' + bob.user.id + '/credentials.json'));
+  const path = 'users/' + signed.user.id + '/credentials.json';
+  const before = structuredClone(f.store.files.get(path));
+  const bearer = {native:true,headers:{Authorization:'Bearer ' + signed.token}};
+  for (const currentPassword of [undefined, 'wrong password']) {
+    const body = {newPassword:'brand new password', ...(currentPassword === undefined ? {} : {currentPassword})};
+    assert.equal((await f.call('password','POST',body,bearer)).status,401);
+    assert.deepEqual(f.store.files.get(path),before);
+  }
+  const changed = await f.call('password','POST',{currentPassword:'my correct password',newPassword:'brand new password',userId:bob.user.id},bearer);
+  assert.equal(changed.status,200); assert.equal(changed.headers.get('Set-Cookie'),null);
+  const value = await changed.json();
+  assert.deepEqual(value,{ok:true,passwordEnabled:true});
+  assert.ok(!JSON.stringify(value).includes('brand new password'));
+  const credentials = f.store.files.get(path);
+  assert.equal(credentials.passwordPlaintext,'brand new password');
+  assert.equal(await checkPassword('brand new password',credentials.password),true);
+  assert.equal(await checkPassword('my correct password',credentials.password),false);
+  assert.equal(Object.keys(credentials.sessions).length,1);
+  assert.ok(!JSON.stringify(credentials).includes(signed.token));
+  assert.deepEqual(f.store.files.get('users/' + bob.user.id + '/credentials.json'),bobCredentials);
+  const retained = await (await f.call('session','GET',undefined,bearer)).json();
+  assert.equal(retained.user.id,signed.user.id); assert.equal(retained.csrf,signed.csrf); assert.equal(retained.passwordEnabled,true);
+  assert.equal((await (await f.call('session','GET',undefined,{headers:{Cookie:webCookie}})).json()).user,null);
+  assert.equal((await (await f.call('session','GET',undefined,{native:true,headers:{Authorization:'Bearer ' + other.token}})).json()).user,null);
+  assert.equal((await f.call('login','POST',{identifier:'alice',password:'my correct password'})).status,401);
+  assert.equal((await f.call('login','POST',{identifier:'alice@example.com',password:'brand new password'})).status,200);
+});
+
+test('Google-only accounts set nickname, username and their first password while preserving Google identity and current web session', async () => {
+  const f = fixture(), signed = await f.googleSignIn();
+  assert.equal(signed.passwordEnabled,false);
+  const path = 'users/' + signed.user.id + '/credentials.json';
+  assert.equal(f.store.files.get(path).password,null);
+  const auth = {headers:{Cookie:signed.cookie,'X-CSRF-Token':signed.csrf}};
+  const renamed = await f.call('profile','PUT',{username:'google-custom',nickname:'谷歌昵称'},auth);
+  assert.equal(renamed.status,200); assert.equal((await renamed.json()).user.id,signed.user.id);
+  const response = await f.call('password','POST',{newPassword:'my first password'},auth);
+  assert.equal(response.status,200); assert.equal(response.headers.get('Set-Cookie'),null);
+  assert.deepEqual(await response.json(),{ok:true,passwordEnabled:true});
+  const credentials = f.store.files.get(path);
+  assert.equal(credentials.googleSub,'google-test-sub');
+  assert.equal(credentials.passwordPlaintext,'my first password');
+  assert.equal(await checkPassword('my first password',credentials.password),true);
+  const session = await (await f.call('session','GET',undefined,{headers:{Cookie:signed.cookie}})).json();
+  assert.equal(session.user.id,signed.user.id); assert.equal(session.user.username,'google-custom'); assert.equal(session.user.nickname,'谷歌昵称');
+  assert.deepEqual(session.user.providers.sort(),['google','password']); assert.equal(session.passwordEnabled,true); assert.equal(session.csrf,signed.csrf);
+  assert.equal((await f.call('login','POST',{identifier:'google-custom',password:'my first password'})).status,200);
+  assert.equal((await f.call('login','POST',{identifier:'google@example.com',password:'my first password'})).status,200);
+});
+
+test('a successful legacy password login backfills plaintext without changing its existing hash or exposing it publicly', async () => {
+  const f = fixture(), signed = await f.register();
+  const path = 'users/' + signed.user.id + '/credentials.json';
+  delete f.store.files.get(path).passwordPlaintext;
+  const previousHash = f.store.files.get(path).password.hash;
+  assert.equal((await f.call('login','POST',{identifier:'alice',password:'wrong password'})).status,401);
+  assert.equal(f.store.files.get(path).passwordPlaintext,undefined);
+  const success = await f.call('login','POST',{identifier:'alice',password:'my correct password'});
+  assert.equal(success.status,200); assert.ok(!JSON.stringify(await success.json()).includes('my correct password'));
+  assert.equal(f.store.files.get(path).password.hash,previousHash);
+  assert.equal(f.store.files.get(path).passwordPlaintext,'my correct password');
+});
+
+test('both Google and password emails return EMAIL_EXISTS409 for code requests and repeated registration without sending mail', async () => {
+  for (const provider of ['google','password']) {
+    const f = fixture();
+    const account = provider === 'google' ? await f.googleSignIn() : await f.register();
+    const beforeIndex = structuredClone(f.store.files.get('users/_index.json'));
+    const sentCount = f.sent.length;
+    for (const [path,body] of [['code',{email:account.user.email}],['register',{username:'another-user',email:account.user.email,code:'123456',password:'other valid password'}]]) {
+      const response = await f.call(path,'POST',body);
+      assert.equal(response.status,409,provider + ':' + path);
+      const value = await response.json(); assert.equal(value.code,'EMAIL_EXISTS'); assert.match(value.error,/账号设置/);
+      assert.ok(!JSON.stringify(value).includes('other valid password'));
+    }
+    assert.equal(f.sent.length,sentCount);
+    assert.deepEqual(f.store.files.get('users/_index.json'),beforeIndex);
+  }
 });
 
 test('Google authorization verifies state cookie and creates a Google identity with readable profile', async () => {
@@ -214,6 +366,82 @@ test('device polling requires its verifier, explicit authenticated approval, and
   const bearer = {native: true, headers: {Authorization: 'Bearer ' + token.token}};
   assert.equal((await f.call('logout', 'POST', {}, bearer)).status, 200);
   assert.equal((await (await f.call('session', 'GET', undefined, bearer)).json()).user, null, 'native logout must revoke the issued bearer');
+});
+
+test('password changes revoke approved device grants while preserving other users and unapproved requests', async () => {
+  const f = fixture(), alice = await f.register(), bob = await f.register('bobby', 'bob@example.com');
+  const login = await f.call('login', 'POST', {identifier: 'alice', password: 'my correct password'});
+  assert.equal(login.status, 200);
+  const oldAlice = {headers: {Cookie: login.headers.get('Set-Cookie').split(';')[0], 'X-CSRF-Token': (await login.json()).csrf}};
+  const bobAuth = {headers: {Cookie: bob.cookie, 'X-CSRF-Token': bob.csrf}};
+  async function device(auth) {
+    const verifier = random();
+    const started = await (await f.call('device/start', 'POST', {challenge: await digest(verifier)}, {native: true})).json();
+    if (auth) assert.equal((await f.call('device/approve', 'POST', {id: started.id}, auth)).status, 200);
+    return {...started, poll: 'device/poll?id=' + started.id + '&verifier=' + verifier};
+  }
+  const approvedAlice = await device(oldAlice), approvedBob = await device(bobAuth), pending = await device();
+  const beforeDevices = structuredClone(f.store.files.get('users/_index.json').devices);
+  const bobRecords = () => [...f.store.files].filter(([path]) => path.startsWith('users/' + bob.user.id + '/'));
+  const beforeBob = structuredClone(bobRecords());
+  const changed = await f.call('password', 'POST', {currentPassword: 'my correct password', newPassword: 'new correct password'},
+    {headers: {Cookie: alice.cookie, 'X-CSRF-Token': alice.csrf}});
+  assert.equal(changed.status, 200);
+  assert.deepEqual(await changed.json(), {ok: true, passwordEnabled: true});
+  assert.equal((await (await f.call('session', 'GET', undefined, oldAlice)).json()).user, null);
+  const current = await (await f.call('session', 'GET', undefined, {headers: {Cookie: alice.cookie}})).json();
+  assert.equal(current.user.id, alice.user.id);
+  assert.equal(current.csrf, alice.csrf);
+  const afterDevices = f.store.files.get('users/_index.json').devices;
+  assert.equal(afterDevices[approvedAlice.id], undefined);
+  assert.deepEqual(afterDevices[approvedBob.id], beforeDevices[approvedBob.id]);
+  assert.deepEqual(afterDevices[pending.id], beforeDevices[pending.id]);
+  assert.deepEqual(bobRecords(), beforeBob);
+  const rejected = await f.call(approvedAlice.poll, 'GET', undefined, {native: true});
+  assert.equal(rejected.status, 400);
+  assert.equal((await rejected.json()).token, undefined);
+  assert.deepEqual(await (await f.call(pending.poll, 'GET', undefined, {native: true})).json(), {pending: true});
+  const bobGrant = await f.call(approvedBob.poll, 'GET', undefined, {native: true});
+  assert.equal(bobGrant.status, 200);
+  assert.equal((await bobGrant.json()).user.id, bob.user.id);
+});
+
+test('device approval rechecks a revoked session when a password change commits after authentication', {timeout: 5000}, async () => {
+  const f = fixture(), alice = await f.register();
+  const login = await f.call('login', 'POST', {identifier: 'alice', password: 'my correct password'});
+  assert.equal(login.status, 200);
+  const oldAlice = {headers: {Cookie: login.headers.get('Set-Cookie').split(';')[0], 'X-CSRF-Token': (await login.json()).csrf}};
+  const verifier = random();
+  const device = await (await f.call('device/start', 'POST', {challenge: await digest(verifier)}, {native: true})).json();
+  const beforeDevice = structuredClone(f.store.files.get('users/_index.json').devices[device.id]);
+  const transaction = f.store.transaction.bind(f.store);
+  let pauseNext = true, entered, release;
+  const paused = new Promise(resolve => { entered = resolve; });
+  const resume = new Promise(resolve => { release = resolve; });
+  f.store.transaction = async mutate => {
+    if (pauseNext) { pauseNext = false; entered(); await resume; }
+    return transaction(mutate);
+  };
+  // Pause after authenticate succeeds, before the approval transaction reads current credentials.
+  const approving = f.call('device/approve', 'POST', {id: device.id}, oldAlice);
+  try {
+    await paused;
+    const changed = await f.call('password', 'POST', {currentPassword: 'my correct password', newPassword: 'new correct password'},
+      {headers: {Cookie: alice.cookie, 'X-CSRF-Token': alice.csrf}});
+    assert.equal(changed.status, 200);
+    assert.equal((await (await f.call('session', 'GET', undefined, oldAlice)).json()).user, null);
+    release();
+    const rejected = await approving;
+    assert.equal(rejected.status, 401);
+    assert.deepEqual(f.store.files.get('users/_index.json').devices[device.id], beforeDevice);
+    const polled = await f.call('device/poll?id=' + device.id + '&verifier=' + verifier, 'GET', undefined, {native: true});
+    assert.equal(polled.status, 200);
+    assert.deepEqual(await polled.json(), {pending: true});
+  } finally {
+    release();
+    await approving.catch(() => {});
+    f.store.transaction = transaction;
+  }
 });
 
 test('failed Google callbacks preserve only the device bound to a valid signed OAuth cookie', async () => {

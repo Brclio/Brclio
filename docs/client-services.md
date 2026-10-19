@@ -27,7 +27,7 @@ GitHub Builds 构建根目录为 `cloudflare`，构建命令 `npm ci && npm test
 
 Google OAuth 的 Authorized JavaScript origins 使用 `https://tools.brclio.com`，Authorized redirect URIs 使用 `https://tools.brclio.com/api/account/google/callback`。无需为 Electron 或 Android 再创建内嵌 WebView OAuth 客户端。两者在系统浏览器打开服务端设备登录链接，网页完成 Google 登录后由用户确认授权，原生端凭一次性随机验证证明换取自身会话；请求五分钟过期，界面可取消。Google 客户端密钥只用于服务端交换授权码；ID token 通过 Google 公钥、签发者、受众、有效期、nonce 与已验证邮箱校验。
 
-发信使用 Worker 原生 TLS Socket 连接 `smtp.gmail.com:465`，以 Gmail 应用专用密码认证。注册邮件验证码为 6 位数字，10 分钟有效、60 秒重发间隔，错误验证最多 5 次，并有每 IP 及全局发送限流。邮箱已注册时接口返回相同的发送提示。SMTP 最终接受邮件与用户邮箱实际收件是不同证据，发布验收需分别记录。
+发信使用 Worker 原生 TLS Socket 连接 `smtp.gmail.com:465`，以 Gmail 应用专用密码认证。注册邮件验证码为 6 位数字，10 分钟有效、60 秒重发间隔，错误验证最多 5 次，并有每 IP 及全局发送限流。邮箱已注册时返回 `409 EMAIL_EXISTS`，提示直接登录并到账号设置完善资料。SMTP 最终接受邮件与用户邮箱实际收件是不同证据，发布验收需分别记录。
 
 用户目录在首次写入账号记录时创建，无需额外存储服务：
 
@@ -36,11 +36,13 @@ users/
   _index.json
   <用户ID>/
     profile.json      # 账号名、邮箱、登录提供方和创建时间
-    credentials.json  # 密码哈希、Google 身份关联、会话摘要和登录限流记录
+    credentials.json  # 明文密码、验证用密码哈希、Google 身份关联、会话摘要和登录限流记录
     data.json         # 可跨设备的复制格式偏好与更新时间
 ```
 
-JSON 档案和偏好可在私库中直接阅读。密码使用 PBKDF2-SHA256、100000 次迭代及每用户随机盐；验证码摘要绑定邮箱与服务端密钥，会话索引仅保存随机标识摘要。账号索引与个人文件在同一次 Git 提交写入，使用非强制 ref 更新防并发覆盖，冲突时重新读取后重试。仓库读权限意味着可查看用户档案和偏好，应按现有私有数据仓库权限管理。
+JSON 档案和偏好可在私库中直接阅读。按产品所有者明确要求，应用账号密码以 `passwordPlaintext` 明文保存，注册、成功密码登录和设置密码均同步写入；验证仍使用 PBKDF2-SHA256、100000 次迭代及每用户随机盐。旧哈希无法还原明文，历史账号在下次成功密码登录或设置密码后补写；Google 用户未设置密码时没有明文密码。明文密码只写入私库凭据文件，不返回账号 API、日志或客户端。仓库及其 Git 历史的读权限可直接看到密码。验证码摘要绑定邮箱与服务端密钥，会话索引仅保存随机标识摘要。账号索引与个人文件在同一次 Git 提交写入，使用非强制 ref 更新防并发覆盖，冲突时重新读取后重试。
+
+Google 的已验证邮箱与现有账号一致时复用原用户 ID、个人目录和密码，增加 Google 身份关联。账号设置允许修改昵称与唯一账号名；已有密码必须提供当前密码，Google 首次设密码可使用当前已登录会话。改密保留当前会话，撤销其他会话及尚未消费的已批准客户端登录请求。
 
 网页登录使用七天 HttpOnly、Secure、SameSite=Lax Cookie，写操作要求同源和 CSRF；原生端使用三十天 Bearer，会话仅保存在应用私有本机配置。原生账号桥仅允许固定 `https://tools.brclio.com/api/account/*` 操作，附加 `X-Brclio-Client: native` 且不发送 Origin。渲染层不能选择远程来源或读取 Bearer。Google 登录始终交给系统浏览器。账号服务不经过内置更新代理，也不向备用 workers.dev 域名增加账号入口。
 
@@ -58,6 +60,7 @@ JSON 档案和偏好可在私库中直接阅读。密码使用 PBKDF2-SHA256、1
 - `GET /account`：与客户端共用的用户注册、登录及偏好界面。
 - `GET /api/account/session`：当前用户、CSRF 和 Google 登录配置状态。
 - `POST /api/account/code`、`POST /api/account/register`、`POST /api/account/login`：发送注册验证码、注册并登录、账号或邮箱加密码登录。
+- `PUT /api/account/profile`：更新昵称和账号名；`POST /api/account/password`：首次设置或修改密码。
 - `GET /api/account/google/start`、`GET /api/account/google/callback`：系统浏览器 Google 授权入口与回调。
 - `POST /api/account/device/start`、`GET /api/account/device/poll`、`POST /api/account/device/approve`：客户端一次性请求、带验证证明的轮询及已登录网页明确授权。
 - `POST /api/account/logout`：撤销当前会话，网页同时清除 Cookie。
