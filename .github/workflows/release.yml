@@ -73,14 +73,19 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             cloudflare/package-lock.json
-      - name: Install the native proxy bridge production dependency
-        run: npm ci --omit=dev --prefix ..
+      - name: Install native client validation dependencies
+        run: npm ci --prefix ..
       - run: npm ci
-      - name: Verify published metadata, manifest, and complete small and large installers through production
+      - name: Install the real Electron runtime system dependencies
+        working-directory: .
+        run: npx playwright install-deps chromium
+      - name: Verify production metadata, manifest, and the complete small installer
         run: |
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
           node scripts/verify-live.mjs > "$GITHUB_WORKSPACE/artifacts/production-update-standard.json"
-          node scripts/verify-live.mjs --large > "$GITHUB_WORKSPACE/artifacts/production-update-large.json"
+      - name: Verify the complete large installer through real Electron and the native proxy
+        working-directory: .
+        run: xvfb-run -a node desktop/native-proxy-live.cjs > artifacts/production-update-electron-large.json
       - name: Save production download verification
         if: always()
         uses: actions/upload-artifact@v4
@@ -92,7 +97,7 @@ jobs:
 
   desktop:
     name: ${{ matrix.name }}
-    needs: [metadata, tests]
+    needs: metadata
     strategy:
       fail-fast: false
       matrix:
@@ -229,7 +234,7 @@ jobs:
 
   android:
     name: Signed Android APK
-    needs: [metadata, tests]
+    needs: metadata
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

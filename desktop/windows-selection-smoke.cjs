@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { execFile } = require('node:child_process');
+const { execFile, spawn: nodeSpawn } = require('node:child_process');
 const { promisify } = require('node:util');
 const { getWindowsSelectedPaths } = require('./windows-selection.cjs');
 
@@ -222,6 +222,69 @@ $stdout.Write($bytes, 0, $bytes.Length)
 $stdout.Flush()
 `;
 
+// A hosted runner can open an unrelated WSL window while the native reader
+// compiles its interop. Keep only our disposable fixture in the foreground for
+// one positive read; never change foreground-lock policy or retry the reader.
+const FOCUS_LEASE_SCRIPT = `$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+${SELECTION_FIXTURE_SCRIPT.match(/Add-Type -TypeDefinition @'\n([\s\S]*?)\n'@/)[1]}
+'@
+$handle = [IntPtr][Int64]$env:BRCLIO_SELECTION_FIXTURE_WINDOW
+if (-not [BrclioExplorerFixture]::IsWindow($handle)) { throw 'Fixture window no longer exists.' }
+$deadline = [DateTime]::UtcNow.AddSeconds(15)
+$buffer = New-Object byte[] 1
+$stop = [Console]::OpenStandardInput().ReadAsync($buffer, 0, 1)
+$restorations = 0
+[BrclioExplorerFixture]::Activate($handle)
+if ([BrclioExplorerFixture]::GetForegroundWindow() -ne $handle) { throw 'Fixture focus lease could not activate its window.' }
+[Console]::Out.WriteLine('READY')
+[Console]::Out.Flush()
+while (-not $stop.IsCompleted -and [DateTime]::UtcNow -lt $deadline) {
+  if (-not [BrclioExplorerFixture]::IsWindow($handle)) { throw 'Fixture window closed during its focus lease.' }
+  if ([BrclioExplorerFixture]::GetForegroundWindow() -ne $handle) {
+    [BrclioExplorerFixture]::Activate($handle)
+    $restorations += 1
+  }
+  Start-Sleep -Milliseconds 25
+}
+if (-not $stop.IsCompleted) { throw 'Fixture focus lease expired.' }
+[Console]::Out.WriteLine($restorations)
+[Console]::Out.Flush()
+`;
+
+async function withFixtureFocus({ powershell, window, operation, metrics, spawn = nodeSpawn }) {
+  if (!Number.isSafeInteger(window) || window <= 0 || typeof operation !== 'function') throw new Error('Invalid fixture focus lease.');
+  if (spawn === nodeSpawn && (process.platform !== 'win32' || process.env.CI !== 'true' || process.env.BRCLIO_ALLOW_SELECTION_SMOKE !== '1')) throw new Error('Fixture focus lease requires opted-in disposable Windows CI.');
+  const child = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', Buffer.from(FOCUS_LEASE_SCRIPT, 'utf16le').toString('base64')], {
+    windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, BRCLIO_SELECTION_FIXTURE_WINDOW: String(window) }
+  });
+  let readyResolve, readyReject, output = '', readySeen = false, readyTimer;
+  const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  const closed = new Promise(resolve => child.once('close', code => { if (!readySeen) readyReject(new Error('Fixture focus lease ended before readiness.')); resolve(code); }));
+  child.stdin.on('error', () => {});
+  child.stderr.on('data', () => {});
+  child.once('error', () => readyReject(new Error('Fixture focus lease could not start.')));
+  child.stdout.on('data', chunk => {
+    output += chunk.toString('utf8');
+    if (output.length > 1024) { child.kill(); readyReject(new Error('Fixture focus lease output exceeded its limit.')); return; }
+    if (!readySeen && (output.startsWith('READY\n') || output.startsWith('READY\r\n'))) { readySeen = true; readyResolve(); }
+  });
+  readyTimer = setTimeout(() => { child.kill(); readyReject(new Error('Fixture focus lease startup timed out.')); }, 10000);
+  try {
+    await ready; clearTimeout(readyTimer);
+    if (metrics) metrics.leases += 1;
+    return await operation();
+  } finally {
+    clearTimeout(readyTimer); child.stdin.end();
+    let stopTimer;
+    const code = await Promise.race([closed, new Promise(resolve => { stopTimer = setTimeout(() => { child.kill(); resolve(null); }, 5000); })]);
+    clearTimeout(stopTimer);
+    if (code !== 0) throw new Error('Fixture focus lease failed to finish safely.');
+    const restorations = Number(output.trim().split(/\r?\n/).at(-1));
+    if (metrics && Number.isSafeInteger(restorations) && restorations >= 0) metrics.restorations += restorations;
+  }
+}
+
 async function createWindowsSelectionFixture() {
   if (process.platform !== 'win32' || process.env.CI !== 'true' || process.env.BRCLIO_ALLOW_SELECTION_SMOKE !== '1') {
     throw new Error('Real Explorer selection verification requires an opted-in disposable Windows CI runner (CI=true, BRCLIO_ALLOW_SELECTION_SMOKE=1).');
@@ -255,6 +318,7 @@ async function createWindowsSelectionFixture() {
     empty: []
   };
   const windows = new Set();
+  const focusStats = { leases: 0, restorations: 0 };
   let cleaned = false;
   const cleanup = async () => {
     if (cleaned) return;
@@ -267,7 +331,7 @@ async function createWindowsSelectionFixture() {
     await Promise.all([...paths.first.filter(filename => filename !== selectedFolder), ...paths.second].map(filename => fs.writeFile(filename, 'isolated Explorer selection fixture\n')));
   } catch (error) { await cleanup(); throw error; }
   return {
-    paths, metadata,
+    paths, metadata, focusStats,
     async activate(name) {
       if (!Object.hasOwn(directories, name)) throw new Error('Unknown Explorer fixture view.');
       const result = await execute({ action: 'activate', directory: directories[name], paths: paths[name] });
@@ -285,6 +349,10 @@ async function createWindowsSelectionFixture() {
     },
     previousTab: window => execute({ action: 'previousTab', window, path: paths.first[0] }),
     inspect: () => execute({ action: 'inspect' }),
+    withFocus(window, operation) {
+      if (!windows.has(window)) throw new Error('Cannot focus a window outside this temporary fixture.');
+      return withFixtureFocus({powershell, window, operation, metrics: focusStats});
+    },
     restoreForeground: () => execute({ action: 'restoreForeground', originalWindow: metadata.originalWindow }),
     cleanup
   };
@@ -293,33 +361,38 @@ async function createWindowsSelectionFixture() {
 async function main() {
   const reportPath = path.join(__dirname, '..', 'artifacts', 'windows-selection-smoke.json');
   const report = { platform: process.platform, realExplorer: true, checks: [], passed: false, stage: 'fixture_setup' };
-  let fixture;
+  let fixture, lastNativeDiagnostics;
   try {
     fixture = await createWindowsSelectionFixture();
     report.environment = fixture.metadata;
-    const readSelection = () => getWindowsSelectedPaths({ diagnostics: true });
+    report.fixtureFocus = fixture.focusStats;
+    const readSelection = async () => {
+      try { return await getWindowsSelectedPaths({ diagnostics: true }); }
+      catch (error) { lastNativeDiagnostics = error.selectionDiagnostics; throw error; }
+    };
+    const readFocused = window => fixture.withFocus(window, readSelection);
     const equalPaths = (actual, expected) => assert.deepEqual([...actual].sort(), [...expected].sort());
     report.stage = 'first_selection';
-    await fixture.activate('first');
-    equalPaths(await readSelection(), fixture.paths.first);
+    const first = await fixture.activate('first');
+    equalPaths(await readFocused(first.window), fixture.paths.first);
     report.checks.push('foreground Unicode and literal-symbol file-and-folder multi-selection');
     report.stage = 'second_selection';
-    await fixture.activate('second');
-    equalPaths(await readSelection(), fixture.paths.second);
+    const second = await fixture.activate('second');
+    equalPaths(await readFocused(second.window), fixture.paths.second);
     report.checks.push('foreground single-selection excludes saved background-window selection');
     report.stage = 'empty_selection';
-    await fixture.activate('empty');
-    await assert.rejects(readSelection(), /先在资源管理器中选中/);
+    const empty = await fixture.activate('empty');
+    await assert.rejects(readFocused(empty.window), /先在资源管理器中选中/);
     report.checks.push('empty selection rejects instead of copying the current folder');
     if (fixture.metadata.productType === 1 && fixture.metadata.build >= 22621) {
       report.stage = 'new_tab_focus';
       const tab = await fixture.createTab();
       report.stage = 'new_tab_selection';
-      equalPaths(await readSelection(), fixture.paths.second);
+      equalPaths(await readFocused(tab.window), fixture.paths.second);
       report.stage = 'previous_tab_focus';
       await fixture.previousTab(tab.window);
       report.stage = 'previous_tab_selection';
-      equalPaths(await readSelection(), fixture.paths.first);
+      equalPaths(await readFocused(tab.window), fixture.paths.first);
       report.checks.push('Windows 11 active-tab selection and switching exclude hidden-tab selection');
       report.windows11Tabs = 'passed';
     } else {
@@ -335,7 +408,7 @@ async function main() {
     report.stage = 'complete';
   } catch (error) {
     report.error = error.message;
-    if (error.selectionDiagnostics) report.selectionDiagnostics = error.selectionDiagnostics;
+    if (error.selectionDiagnostics || lastNativeDiagnostics) report.selectionDiagnostics = error.selectionDiagnostics || lastNativeDiagnostics;
     if (fixture) {
       try { report.foregroundAfterFailure = await fixture.inspect(); }
       catch { report.foregroundInspectionFailed = true; }
@@ -349,7 +422,7 @@ async function main() {
   console.log(`PASS real Explorer selection: ${report.checks.join('; ')}. Report: ${reportPath}`);
 }
 
-module.exports = { createWindowsSelectionFixture, SELECTION_FIXTURE_SCRIPT };
+module.exports = { createWindowsSelectionFixture, SELECTION_FIXTURE_SCRIPT, FOCUS_LEASE_SCRIPT, withFixtureFocus };
 if (require.main === module) main().catch(error => {
   console.error(error.stack);
   if (error.selectionDiagnostics) console.error('Native selection diagnostics:', JSON.stringify(error.selectionDiagnostics));

@@ -20,6 +20,7 @@
     "test:desktop": "npm run sync && node desktop/smoke.cjs",
     "test:updates": "npm run sync && node desktop/update-smoke.cjs",
     "test:native-proxy": "node desktop/native-proxy-smoke.cjs",
+    "test:native-proxy-live": "node desktop/native-proxy-live.cjs",
     "test:proxy-ui": "npm run sync && node scripts/verify-update-proxy-ui.mjs",
     "test:cloudflare": "npm --prefix cloudflare test"
   },

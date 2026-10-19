@@ -5,8 +5,10 @@ const assert = require('node:assert/strict');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const path = require('node:path');
+const {EventEmitter} = require('node:events');
+const {PassThrough} = require('node:stream');
 const { getWindowsSelectedPaths, WINDOWS_SELECTION_SCRIPT } = require('./windows-selection.cjs');
-const { createWindowsSelectionFixture, SELECTION_FIXTURE_SCRIPT } = require('./windows-selection-smoke.cjs');
+const { createWindowsSelectionFixture, SELECTION_FIXTURE_SCRIPT, FOCUS_LEASE_SCRIPT, withFixtureFocus } = require('./windows-selection-smoke.cjs');
 
 const selected = (paths, handler) => getWindowsSelectedPaths({ execFile: async (...args) => {
   if (handler) handler(...args);
@@ -125,9 +127,37 @@ test('Explorer fixture refuses an unapproved machine before opening any window',
   await assert.rejects(createWindowsSelectionFixture(), /opted-in disposable Windows CI/);
 });
 
+test('disposable focus lease reads once and always stops its bounded foreground controller', async () => {
+  const metrics={leases:0,restorations:0};let reads=0,stops=0;
+  const spawn=(program,args,options)=>{
+    assert.equal(program,'fixture-powershell');assert.equal(options.windowsHide,true);assert.equal(options.env.BRCLIO_SELECTION_FIXTURE_WINDOW,'123');
+    assert.equal(Buffer.from(args.at(-1),'base64').toString('utf16le'),FOCUS_LEASE_SCRIPT);
+    const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();
+    child.kill=()=>{child.emit('close',1);};
+    child.stdin.once('finish',()=>{stops++;child.stdout.end('2\n');child.emit('close',0);});
+    process.nextTick(()=>child.stdout.write('READY\n'));return child;
+  };
+  assert.deepEqual(await withFixtureFocus({powershell:'fixture-powershell',window:123,metrics,spawn,operation:async()=>{reads++;return ['fixture-result'];}}),['fixture-result']);
+  const refusal=Error('native focus changed');
+  await assert.rejects(withFixtureFocus({powershell:'fixture-powershell',window:123,metrics,spawn,operation:async()=>{reads++;throw refusal;}}),error=>error===refusal);
+  assert.equal(reads,2);assert.equal(stops,2);assert.deepEqual(metrics,{leases:2,restorations:4});
+  assert.match(FOCUS_LEASE_SCRIPT,/AddSeconds\(15\)/);assert.match(FOCUS_LEASE_SCRIPT,/\$stop.IsCompleted/);
+  assert.doesNotMatch(FOCUS_LEASE_SCRIPT,/Stop-Process|Set-ItemProperty|SelectedItems|SendKeys/);
+});
+
+test('failed fixture focus activation never calls or retries the product reader', async () => {
+  let reads=0;
+  const spawn=()=>{
+    const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>{};
+    process.nextTick(()=>child.emit('close',1));return child;
+  };
+  await assert.rejects(withFixtureFocus({powershell:'fixture-powershell',window:123,spawn,operation:async()=>{reads++;}}),/focus lease/);
+  assert.equal(reads,0);
+});
+
 test('fixed scripts parse and their native interop types compile in Windows PowerShell without automating Explorer', { skip: process.platform !== 'win32' }, async () => {
   const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  for (const script of [WINDOWS_SELECTION_SCRIPT, SELECTION_FIXTURE_SCRIPT]) {
+  for (const script of [WINDOWS_SELECTION_SCRIPT, SELECTION_FIXTURE_SCRIPT, FOCUS_LEASE_SCRIPT]) {
     const encodedScript = Buffer.from(script, 'utf16le').toString('base64');
     const nativeSource = script.match(/Add-Type -TypeDefinition @'\n([\s\S]*?)\n'@/)[1];
     const encodedNative = Buffer.from(nativeSource, 'utf16le').toString('base64');

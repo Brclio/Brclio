@@ -14,7 +14,7 @@
 
 节点配置采用版本 1、最多 32 KiB，只包含 UUID、TLS DNS 名称、端口、路径、SNI、HTTP Host 和 `dialAddress`。不同优选 IP 线路完整保留，超过 16 个有效候选会明确报不支持，不静默截断。DNS 认证名称保持 `host == servername == wsHost`；实际 TCP 连接可使用独立的规范公网 IPv4 或严格公网 DNS `dialAddress`。拒私网、回环、链路本地、保留地址、本地名称与 IPv6。优选 IP 不改变证书认证名称。
 
-外层 WSS 和内层 GitHub HTTPS 均使用原生证书/主机名验证，不接受跳过证书校验的订阅设置。本地监听只存在于更新操作期间，只允许官方 GitHub/CDN 的 443 CONNECT。下载保留官方重定向白名单、长度、完整 SHA-256 与平台安装校验，通过后才进行覆盖安装和自动打开。检查默认 20 秒，下载空闲 45 秒、总计 10 分钟；失败给出错误并清理当前网络/临时文件。
+外层 WSS 和内层 GitHub HTTPS 均使用原生证书/主机名验证，不接受跳过证书校验的订阅设置。本地监听只存在于更新操作期间，只允许官方 GitHub/CDN 的 443 CONNECT。桌面使用 Electron 原生 `net.request` 读取重定向响应，再交给路由逐跳验证 GitHub/CDN 地址；不会自动跟随未经验证的跳转。下载保留官方重定向白名单、长度、完整 SHA-256 与平台安装校验，通过后才进行覆盖安装和自动打开。检查默认 20 秒，下载空闲 45 秒、总计 10 分钟；失败给出错误并清理当前网络/临时文件。
 
 ## 服务端与维护
 
@@ -48,4 +48,4 @@ cd android
 ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
 ```
 
-正式生产 gate 在客户端本地桥中从 GitHub 下载完整小包和大包并核对官方元数据/清单 SHA；Worker 返回 410 不能算下载通过。发布记录分别保留配置服务部署、各平台原生传输、签名构建、公开 Release 和真实覆盖/自动打开结果。
+正式发布生产 gate 用 Node 原生传输下载完整小 APK，再用真实 Electron、原始 updater/router/bridge 下载完整大体积 Windows 安装包，分别核对官方元数据/清单 SHA；不安装下载的历史版本。真实 Electron 工厂中的旧 currentVersion 仅用于触发传输验收，报告同时记录实际应用版本。Worker 返回 410 不能算下载通过。发布记录分别保留配置服务部署、各平台原生传输、签名构建、公开 Release 和真实覆盖/自动打开结果。
