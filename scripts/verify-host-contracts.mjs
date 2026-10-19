@@ -34,6 +34,36 @@ try {
     executablePath: process.env.BRCLIO_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     headless: true,
   });
+  const browserAccounts = await browser.newPage();
+  observe(browserAccounts);
+  const browserAccountCalls = [];
+  await browserAccounts.route('**/api/account/**', async route => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    browserAccountCalls.push({ path: pathname, method: request.method(), body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] });
+    const result = pathname.endsWith('/session') ? { user: null, csrf: 'browser-account-fixture', googleEnabled: false } : { ok: true };
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(result) });
+  });
+  await browserAccounts.goto(url);
+  await browserAccounts.waitForFunction(() => document.body.dataset.ready === 'true');
+  const browserAccountResults = await browserAccounts.evaluate(async () => {
+    await window.BrclioHost.accountRequest({ path: '/api/account/session' });
+    const profile = await window.BrclioHost.accountRequest({ path: '/api/account/profile', method: 'PUT', body: { nickname: 'Browser fixture', username: 'browser_fixture' } });
+    const password = await window.BrclioHost.accountRequest({ path: '/api/account/password', method: 'POST', body: { currentPassword: 'fixture-old', newPassword: 'fixture-new-password' } });
+    const rejected = [];
+    for (const request of [{ path: '/api/account/profile', method: 'POST' }, { path: '/api/account/password', method: 'PUT' }, { path: 'https://invalid.example/api/account/profile', method: 'PUT' }]) {
+      try { await window.BrclioHost.accountRequest(request); rejected.push(false); } catch { rejected.push(true); }
+    }
+    return { profile, password, rejected };
+  });
+  assert.deepEqual(browserAccountResults, { profile: { ok: true }, password: { ok: true }, rejected: [true, true, true] });
+  assert.deepEqual(browserAccountCalls, [
+    { path: '/api/account/session', method: 'GET', body: null, csrf: undefined },
+    { path: '/api/account/profile', method: 'PUT', body: { nickname: 'Browser fixture', username: 'browser_fixture' }, csrf: 'browser-account-fixture' },
+    { path: '/api/account/password', method: 'POST', body: { currentPassword: 'fixture-old', newPassword: 'fixture-new-password' }, csrf: 'browser-account-fixture' },
+  ]);
+  report.push('browser account settings use the allowed method, same-origin transport and session CSRF; invalid methods and external origins never fetch');
+  await browserAccounts.close();
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
   observe(page);
   await page.addInitScript(() => {
