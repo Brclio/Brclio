@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "appId": "brclio",
+  "manifestPurpose": "user-account-data-schema-registration-not-global-program-data",
+  "name": "Brclio",
+  "identityAuthority": "https://tools.brclio.com",
+  "dataPath": "users/{userId}/apps/brclio/data.json",
+  "legacyReadOnlyPath": "users/{userId}/data.json",
+  "api": {
+    "path": "/api/account/data",
+    "methods": ["GET", "PUT"],
+    "requestFields": ["preferences", "revision"],
+    "revision": "optional-for-existing-clients-required-for-new-clients",
+    "merge": "preserve-unknown-envelope-and-preference-fields-merge-preferences",
+    "legacyClientConcurrency": "same-preference-last-successful-writer-wins"
+  },
+  "record": {
+    "version": 1,
+    "revision": 0,
+    "preferences": {},
+    "updatedAt": null
+  },
+  "preferenceValues": {
+    "pathMode": ["absolute", "relative"],
+    "quoteMode": ["none", "double", "single", "auto"],
+    "separator": ["native", "forward", "backward"],
+    "joinWith": ["newline", "space", "comma"],
+    "trailingSlash": "boolean"
+  },
+  "publication": "This manifest describes the integration contract; deployment and installed-client verification are separate evidence."
+}

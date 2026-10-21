@@ -22,9 +22,9 @@
 
 同一 Worker 的固定备用引导域名 `brclio-client-services.aiyuechuang.workers.dev` 仅开放 GET 配置与健康检查。客户端只在主入口网络失败或收到明确 Cloudflare 质询时尝试备用入口，不将 429/502 变成绕过限流的重试。备用入口不开放后台，未关闭整域防护。
 
-节点 UUID 等连接参数是客户端运行内置代理所必需，可从客户端或配置响应提取。订阅原链接、管理员密码、GitHub PAT 和会话密钥仍只保留在服务端环境/私库，不下发完整订阅。
+节点 UUID 等连接参数是客户端运行内置代理所必需，可从客户端或配置响应提取。订阅原链接、管理员密码、GitHub App 私钥、短期安装令牌和会话密钥仍只保留在服务端，不下发完整订阅。
 
-后台使用签名会话 Cookie、同源 Origin 与 CSRF 校验。订阅配置写入现有私库 `BrclioData/BrclioData` 的 `config/update-proxy.json`，带文件 SHA 防止并发覆盖。初始订阅来自环境变量，保存后优先使用私库最新配置。后台修改无需重打包客户端。
+后台使用签名会话 Cookie、同源 Origin 与 CSRF 校验。全局代理配置属于程序资料，固定存放在 `GITHUB_PROGRAM_DATA_REPOSITORY=BrclioData/BrclioData` 的 `config/update-proxy.json`，带文件 SHA 防止并发覆盖。服务端使用仅限该仓库的 GitHub App 短期安装令牌读写；不会把全局配置迁入账号库或在缺少配置时回退账号库。`BrclioData/BrclioUserData` 仅保存账号及用户所属数据，包括个人偏好。初始订阅来自环境变量，保存后优先使用程序资料库最新配置。后台修改无需重打包客户端。
 
 用户要求控制台明文维护，因此六项部署环境变量使用 Cloudflare Text 类型，`keep_vars = true` 保留控制台设置。源码、安装包、测试报告和日志不得保存其值。具体名称与部署步骤见 [客户端服务说明](client-services.md) 和 [后端契约](../cloudflare/README.md)。
 

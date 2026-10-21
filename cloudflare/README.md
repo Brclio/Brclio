@@ -32,16 +32,29 @@ any particular network must still be verified.
 Dashboard-managed **Text** environment variables, at the owner’s explicit
 maintenance preference:
 
-`ADMIN_EMAIL`, `ADMIN_PASSWORD`, `SESSION_SECRET`, `GITHUB_TOKEN`,
-`GITHUB_DATA_REPOSITORY`, `PROXY_SUBSCRIPTION_URL`.
+`ADMIN_EMAIL`, `ADMIN_PASSWORD`, `SESSION_SECRET`, `GITHUB_DATA_REPOSITORY`,
+`GITHUB_PROGRAM_DATA_REPOSITORY`,
+`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `PROXY_SUBSCRIPTION_URL`.
+Store `GITHUB_APP_PRIVATE_KEY` as a Worker Secret. Do not configure a personal
+GitHub token for this integration.
 
 `keep_vars = true` preserves those values across builds. They are absent from
 source, browser bundles, public JSON and logs. `SESSION_SECRET` requires at least
-32 random characters. The GitHub token requires Contents read/write for the
-existing private data repository. The initial subscription comes from the
-environment; a saved `config/update-proxy.json` in that repository takes
+32 random characters. The GitHub App installation requires Contents read/write
+and Metadata read access to both selected private repositories. The server signs a
+short-lived RS256 JWT and exchanges it for an installation token scoped to that
+repository, caching each repository scope separately until shortly before expiry. App credentials never
+enter client code or public responses. The initial subscription comes from the
+environment; a saved `config/update-proxy.json` in the program-data repository takes
 precedence. Administrator reads and each client configuration request fetch that
 file freshly. Writes include its SHA and return 409 on a concurrent edit.
+
+`GITHUB_DATA_REPOSITORY = BrclioData/BrclioUserData` stores accounts and all
+account-owned records, including nicknames, settings and each app's user data.
+`GITHUB_PROGRAM_DATA_REPOSITORY = BrclioData/BrclioData` stores program-wide
+information, including the global `config/update-proxy.json` subscription.
+Both repository bindings are explicit: global configuration never falls back to
+the account repository, and account storage never falls back to program data.
 
 ## Client configuration contract
 
@@ -69,7 +82,7 @@ The response is at most 32 KiB:
 These are illustrative values. Only the seven necessary node fields are
 returned. A client must receive the node UUID and connection parameters to use
 the proxy, so those credentials are extractable from the client/API response.
-The subscription URL, administrator credentials, session key and GitHub token
+The subscription URL, administrator credentials, session key and GitHub App credentials
 remain server-side and are never part of this contract.
 
 Each version check and each download operation performs a new configuration

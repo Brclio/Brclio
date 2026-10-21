@@ -1,11 +1,16 @@
 name = "brclio-client-services"
 account_id = "cacceff607775c81f667b7a951d4639f"
-main = "src/worker.js"
+main = "src/entry.js"
 compatibility_date = "2026-10-18"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 workers_dev = true
 preview_urls = false
 keep_vars = true
+
+[vars]
+GITHUB_DATA_REPOSITORY = "BrclioData/BrclioUserData"
+GITHUB_PROGRAM_DATA_REPOSITORY = "BrclioData/BrclioData"
+DATA_MIGRATION_READ_ONLY = "false"
 
 [[routes]]
 pattern = "tools.brclio.com"
@@ -13,8 +18,10 @@ custom_domain = true
 
 # Dashboard-managed Text environment variables are preserved by keep_vars.
 # The owner requested values remain viewable for maintenance in the console:
-# ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET, GITHUB_TOKEN,
-# GITHUB_DATA_REPOSITORY, PROXY_SUBSCRIPTION_URL.
+# ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET,
+# GITHUB_DATA_REPOSITORY, GITHUB_PROGRAM_DATA_REPOSITORY,
+# GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID,
+# PROXY_SUBSCRIPTION_URL. GITHUB_APP_PRIVATE_KEY is a server-side Secret.
 # No KV, Durable Objects, D1, R2, or paid storage resources are used.
 
 [[rules]]

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {releaseSummary, readReleaseResponse} from '../src/releases.js';
+import {releaseSummary, readReleaseResponse, getOfficialRelease, clearReleaseCache, latestReleaseURL} from '../src/releases.js';
 const repository='https://github.com/Brclio/Brclio';
 export function releaseFixture() {
   return {tag_name:'v0.1.8',draft:false,prerelease:false,published_at:'2026-10-17T00:00:00Z',html_url:repository+'/releases/tag/v0.1.8',body:'private-unrecognized-field',assets:[
@@ -33,4 +33,12 @@ test('release response bounds and cancels malformed or oversized upstream metada
   const body=new ReadableStream({pull(controller){controller.enqueue(new Uint8Array(1024*1024+1));},cancel(){canceled=true;}});
   await assert.rejects(readReleaseResponse(new Response(body)),/too_large/);assert.equal(canceled,true);
   await assert.rejects(readReleaseResponse(new Response('upstream-private-message',{status:403})),/unavailable/);
+});
+test('public release metadata never receives personal or private repository installation credentials', async () => {
+  clearReleaseCache(); let calls = 0;
+  const result = await getOfficialRelease({GITHUB_TOKEN: 'legacy-personal-token', GITHUB_APP_PRIVATE_KEY: 'private-key-not-for-public-releases'}, async (url, options) => {
+    calls++; assert.equal(url, latestReleaseURL); assert.equal(options.headers.Authorization, undefined);
+    assert.equal(options.redirect, 'manual'); return Response.json(releaseFixture());
+  });
+  assert.equal(result.summary.version, '0.1.8'); assert.equal(calls, 1); clearReleaseCache();
 });

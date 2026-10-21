@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "appId": "miniapp",
+  "manifestPurpose": "user-account-data-schema-registration-not-global-program-data",
+  "name": "Brclio 小程序",
+  "identityAuthority": "https://tools.brclio.com",
+  "clientApiOrigin": "https://pocket.bornforthis.cn",
+  "proxyPrefix": "/api/account",
+  "dataPath": "users/{userId}/apps/miniapp/data.json",
+  "api": {
+    "path": "/api/account/apps/miniapp/data",
+    "methods": ["GET", "PUT"],
+    "revisionRequired": true,
+    "maximumDataBytes": 12000,
+    "merge": "recursive-object-merge-array-and-scalar-replacement"
+  },
+  "record": {
+    "version": 1,
+    "revision": 0,
+    "data": {},
+    "updatedAt": null
+  },
+  "dataOwnership": {
+    "duel.preferences": {
+      "targetScore": [1, 3, 5],
+      "haptics": "boolean",
+      "names": "two-nonblank-display-names-without-control-characters-max-16-utf16-code-units-each"
+    },
+    "duel.matches": {
+      "maximumRetained": 20,
+      "fields": {
+        "id": "unique-in-list-1-to-80-characters-matching-[A-Za-z0-9._:-]",
+        "at": "safe-integer-unix-milliseconds-at-least-1577836800000",
+        "names": "two-nonblank-display-names-without-control-characters-max-16-utf16-code-units-each",
+        "winner": "0-or-1",
+        "scores": "two-integers-each-between-0-and-5",
+        "bestMs": "number-between-0-and-5000-or-null"
+      },
+      "winningScore": [1, 3, 5],
+      "winnerScoreGreaterThanOtherPlayer": true
+    },
+    "validation": "identity-service-validates-known-duel-fields-after-merge-and-preserves-unknown-fields"
+  },
+  "publication": "Verify central API, pocket proxy, client deployment and WeChat configuration independently; this manifest does not prove publication."
+}

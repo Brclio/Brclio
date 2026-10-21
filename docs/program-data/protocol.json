@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "repository": "BrclioData/BrclioData",
+  "repositoryRole": "global-program-configuration-and-shared-materials",
+  "visibility": "private",
+  "userRepository": "BrclioData/BrclioUserData",
+  "centralService": "https://tools.brclio.com",
+  "source": {"repository": "Brclio/Brclio", "directory": "cloudflare", "globalConfig": "src/config.js", "accountStore": "src/account-store.js", "appAuthentication": "src/github-app.js"},
+  "configuration": {"programRepositoryVariable": "GITHUB_PROGRAM_DATA_REPOSITORY", "userRepositoryVariable": "GITHUB_DATA_REPOSITORY"},
+  "boundaries": {
+    "allowed": ["global-program-configuration", "shared-public-program-materials", "shared-program-resources"],
+    "userOwnedOrUserIdAssociatedBusinessData": "store-in-user-repository-users/{userId}/apps/{appId}/",
+    "identitiesAndPasswords": "user-repository-only",
+    "accountSchemaRegistry": "user-repository-root-apps/{appId}.json",
+    "accountIntegrationDocumentsSkillsAndAudit": "retain-in-user-repository",
+    "sameDataDualWrites": false,
+    "crossRepositoryRuntimeFallback": false
+  },
+  "storage": {
+    "existingGlobalConfig": {"path": "config/update-proxy.json", "compatibility": "preserve-existing-path-format-and-unknown-fields", "version": 1, "fields": ["version", "subscriptionUrl", "updatedAt", "updatedBy"]},
+    "futureApplicationGlobals": "apps/{appId}/...",
+    "unknownPathsAndFields": "preserve",
+    "publicMeaning": "shared-program-material-not-a-change-to-repository-visibility-or-secret-access"
+  },
+  "githubAuthentication": {
+    "type": "github-app",
+    "owner": "central-service-only",
+    "appId": "5409908",
+    "installationId": "173730859",
+    "installationRepositorySelection": "all-as-explicitly-requested",
+    "configuration": ["GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID"],
+    "secret": "GITHUB_APP_PRIVATE_KEY",
+    "tokenScope": "single-actual-repository-per-operation",
+    "permissions": {"contents": "write", "metadata": "read"},
+    "clientExposure": "forbidden"
+  },
+  "writes": {
+    "existingSingleConfig": "contents-api-with-current-blob-sha",
+    "multipleFiles": "base-tree-incremental-commit-and-non-forced-reference-update",
+    "conflict": "read-latest-head-recompute-without-overwriting-other-fields",
+    "crossRepositoryAtomicity": false,
+    "recovery": "selective-compensating-commit-no-force-push"
+  },
+  "separation": {
+    "status": "deployed-and-current-main-cleanup-verified",
+    "deploymentEvidence": {"workerId": "16cc4a6e83854cf185940a03bdd9182f", "version": "8bc269ab-a742-4459-95f5-9bc5db22212e", "bindings": 22, "moduleSha256": "45a68fafc3188dd8eef14dba26fc79717c8241f87e26f09cc5800fe42ecbfbab"},
+    "cleanupCommits": {"programRepository": "fad81f97b4abd7271f96ed463fa94a6eb2f03aa7", "userRepository": "ad6840ca7dc2eeb35b862d5639350c12db171ba7"},
+    "postSeparationAccountEndToEnd": {"status": "verified-live", "verificationChecks": 262, "checksIncludingCleanup": 692, "fixtureUsers": 2, "deletedFixtureFiles": 7, "removedFixtureIndexEntries": 4, "cleanupSucceeded": true},
+    "accountEndToEndPreviouslyVerified": true,
+    "programMainCleanup": ["users/"],
+    "userMainCleanup": ["config/update-proxy.json"],
+    "prerequisites": ["verified-private-backup", "complete-correct-copy-and-unknown-field-verification", "correct-server-routing", "explicit-path-inventory", "post-change-readback"],
+    "programRepositoryRemainsActive": true,
+    "historicalManifests": "preserve",
+    "historyRewrite": false
+  }
+}

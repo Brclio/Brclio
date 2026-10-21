@@ -22,11 +22,11 @@
 
 设置 → 版本更新 → 检查新版本。更新仅从本仓库的稳定版 Release 获取，用户点击下载后才下载；校验未通过的安装包不会进入安装流程。
 
-v0.1.9 加入内置更新代理：检测到系统代理时优先沿用系统网络；可以在版本更新和关于窗口临时关闭，完全退出后重新启动默认恢复开启。管理员可在综合客户端后台维护订阅，配置保存在现有私有数据仓库，详见[更新代理与后台说明](docs/update-proxy.md)。
+v0.1.9 加入内置更新代理：检测到系统代理时优先沿用系统网络；可以在版本更新和关于窗口临时关闭，完全退出后重新启动默认恢复开启。管理员可在综合客户端后台维护订阅，全局配置保存在私有程序资料仓库 `BrclioData/BrclioData`，详见[更新代理与后台说明](docs/update-proxy.md)。
 
-Brclio 介绍与正式版本下载主页位于 [tools.brclio.com](https://tools.brclio.com)，用户账号位于 [/account](https://tools.brclio.com/account)，管理后台位于 [/admin](https://tools.brclio.com/admin)。`cloudflare/` 提供单一 Worker 的账号与客户端更新服务；服务端凭据留在正确 Cloudflare 账号的环境配置中，用户数据与代理配置存入现有私有数据仓库，详见[客户端服务部署说明](docs/client-services.md)。后端上线、新客户端安装包发布和已安装客户端升级分别验证。
+Brclio 介绍与正式版本下载主页位于 [tools.brclio.com](https://tools.brclio.com)，用户账号位于 [/account](https://tools.brclio.com/account)，管理后台位于 [/admin](https://tools.brclio.com/admin)。`cloudflare/` 提供单一 Worker 的账号与客户端更新服务；服务端凭据留在正确 Cloudflare 账号的环境配置中。账号、昵称、个人设置与用户所属的各程序数据存入 `BrclioData/BrclioUserData`，全局代理配置等程序资料存入 `BrclioData/BrclioData`，详见[客户端服务部署说明](docs/client-services.md)。后端上线、新客户端安装包发布和已安装客户端升级分别验证。
 
-账号注册支持 3–32 位账号名、邮箱验证及 8–128 位密码，验证码 10 分钟有效。Google 已验证邮箱会自动绑定同邮箱的现有账号；首次通过 Google 注册后，可在账号设置中完善昵称、账号和密码。Google 登录在系统浏览器中完成，客户端仅在网页确认授权后取得自己的会话。私库使用 `users/<用户ID>/profile.json`、`credentials.json` 和 `data.json` 保存用户档案、登录凭据记录及复制偏好。按产品所有者要求，账号密码在 `credentials.json` 的 `passwordPlaintext` 字段明文保存，同时保留加盐哈希用于验证；仓库及 Git 历史的读者可直接读取密码。历史账号无法由旧哈希还原密码，将在成功密码登录或设置密码时补写。验证码和会话标识保存摘要。邮件应用密码、Google 客户端密钥和 GitHub 访问令牌不进入仓库或安装包。
+账号注册支持 3–32 位账号名、邮箱验证及 8–128 位密码，验证码 10 分钟有效。Google 已验证邮箱会自动绑定同邮箱的现有账号；首次通过 Google 注册后，可在账号设置中完善昵称、账号和密码。Google 登录在系统浏览器中完成，客户端仅在网页确认授权后取得自己的会话。共享私库目标为 `BrclioData/BrclioUserData`，保持 `users/<用户ID>/profile.json`、`credentials.json` 的统一身份，复制偏好写入 `apps/brclio/data.json`，小程序数据写入 `apps/miniapp/data.json`。旧 `data.json` 保留并仅在新路径缺失时回退读取。按产品所有者要求，账号密码在 `credentials.json` 的 `passwordPlaintext` 字段明文保存，同时保留加盐哈希用于验证；仓库及 Git 历史的读者可直接读取密码。历史账号无法由旧哈希还原密码，将在成功密码登录或设置密码时补写。验证码和会话标识保存摘要。服务端通过 GitHub App 私钥换取单仓库短期安装令牌，不使用个人 Token；App 私钥、安装令牌、邮件和 Google 密钥不进入仓库或安装包。接入规范和可复制 Skill 见 [共享用户数据文档](docs/shared-user-data/README.md)。App 配置、真实数据迁移和生产切换分别验收，不从本地实现推断已上线。
 
 复制快捷键需要 Brclio 正在运行，窗口最小化也可用；macOS 关闭窗口后仍可用，退出软件后停止，Windows 关闭最后一个窗口会退出软件。macOS 首次使用可能请求允许 Brclio 控制 Finder，可在“系统设置 → 隐私与安全性 → 自动化”中管理。Windows 11 通过资源管理器的活动视图和文件列表焦点识别当前标签页；无法确认时，请先点击该页中已选中的文件或文件夹后重试，也可将目标页移到独立窗口，避免复制后台页的选区。未选中有效项目、前台应用不符或无法确认选区时保留原剪贴板并提示。浏览器预览与 Android 不支持此全局快捷键。
 

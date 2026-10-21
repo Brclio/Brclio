@@ -1,6 +1,7 @@
 import {json, readJSON, rateLimit} from './http.js';
 import {sameOrigin, safeEqual} from './auth.js';
-import {createAccountStore, emptyAccountIndex, userPath} from './account-store.js';
+import {createAccountStore, emptyAccountIndex, userPath, appDataPath} from './account-store.js';
+import {handleAccountData} from './account-data.js';
 import {random, digest, seal, unseal, hashPassword, checkPassword} from './accounts-crypto.js';
 import {googleIdentity} from './accounts-google.js';
 import {sendRegistrationCode} from './mail.js';
@@ -168,7 +169,7 @@ export async function handleAccount(request, env, dependencies = {}) {
           profile = {version: 1, id: newId, username, email, emailVerified: true, avatarUrl: identity.picture || null, providers: ['google'], createdAt: new Date().toISOString()};
           credentials = {version: 1, password: null, googleSub: identity.sub, sessions: {}};
           index.usernames[username.toLowerCase()] = newId; index.emails[email] = newId;
-          tx.write(userPath(newId, 'data'), {version: 1, preferences: {}, updatedAt: new Date().toISOString()});
+          tx.write(appDataPath(newId, 'brclio'), {version: 1, revision: 0, preferences: {}, updatedAt: new Date().toISOString()});
         }
         index.google[identity.sub] = profile.id;
         addGrant(credentials, grant);
@@ -272,7 +273,7 @@ export async function handleAccount(request, env, dependencies = {}) {
       const credentials = {version: 1, password, passwordPlaintext: input.password, sessions: {}, failedAttempts: 0}; addGrant(credentials, grant);
       index.usernames[username.toLowerCase()] = id; index.emails[email] = id; delete index.verifications[email];
       tx.write('users/_index.json', index); tx.write(userPath(id, 'profile'), profile); tx.write(userPath(id, 'credentials'), credentials);
-      tx.write(userPath(id, 'data'), {version: 1, preferences: {}, updatedAt: new Date().toISOString()});
+      tx.write(appDataPath(id, 'brclio'), {version: 1, revision: 0, preferences: {}, updatedAt: new Date().toISOString()});
       return profile;
     });
     return result.error ? json({error: result.error, ...(result.code ? {code: result.code} : {})}, result.status) : grantResponse(result, grant, env);
@@ -312,6 +313,8 @@ export async function handleAccount(request, env, dependencies = {}) {
 
   const settings = await handleAccountSettings({path, request, input, session, store, env, ip, usernameValue, publicUser});
   if (settings) return settings;
+  const dataResponse = await handleAccountData({path, request, input, session, store, preferencesValue});
+  if (dataResponse) return dataResponse;
 
   if (path === '/api/account/logout' && request.method === 'POST') {
     await store.transaction(async tx => {
@@ -331,17 +334,6 @@ export async function handleAccount(request, env, dependencies = {}) {
       device.userId = session.id; tx.write('users/_index.json', index); return {ok: true};
     });
     return result.error ? fail(result) : json(result);
-  }
-  if (path === '/api/account/data' && request.method === 'GET') {
-    const state = await store.snapshot(), data = await state.read(userPath(session.id, 'data'), {version: 1, preferences: {}, updatedAt: null});
-    return json({userId: session.id, preferences: data.preferences, updatedAt: data.updatedAt});
-  }
-  if (path === '/api/account/data' && request.method === 'PUT') {
-    const preferences = preferencesValue(input.preferences);
-    if (!preferences) return json({error: '复制偏好格式无效'}, 400);
-    const data = {version: 1, preferences, updatedAt: new Date().toISOString()};
-    await store.transaction(async tx => { tx.write(userPath(session.id, 'data'), data); });
-    return json({userId: session.id, preferences: data.preferences, updatedAt: data.updatedAt});
   }
   return json({error: '未找到账号接口'}, 404);
 }

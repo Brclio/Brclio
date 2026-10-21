@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "repository": "BrclioData/BrclioUserData",
+  "repositoryRole": "shared-identity-and-user-owned-data",
+  "programRepository": "BrclioData/BrclioData",
+  "repositoryConfiguration": {"userData": "GITHUB_DATA_REPOSITORY", "programData": "GITHUB_PROGRAM_DATA_REPOSITORY"},
+  "visibility": "private",
+  "identityAuthority": "https://tools.brclio.com",
+  "identityApiPrefix": "/api/account",
+  "identitySource": {
+    "repository": "Brclio/Brclio",
+    "directory": "cloudflare",
+    "applicationRoutes": "src/account-data.js",
+    "repositoryStore": "src/account-store.js",
+    "appAuthentication": "src/github-app.js",
+    "globalConfig": "src/config.js"
+  },
+  "githubAuthentication": {
+    "type": "github-app",
+    "app": {"id": "5409908", "slug": "brclio-user-data-sync", "owner": "BrclioData", "installationAccount": "BrclioData", "installationId": "173730859", "installationRepositorySelection": "all", "verification": {"app": "verified-live", "installation": "verified-live", "installationRepositorySelection": "verified-all-live", "sourceAndTargetReads": "verified-migration-plan"}},
+    "owner": "central-identity-service-only",
+    "configuration": ["GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID"],
+    "secret": "GITHUB_APP_PRIVATE_KEY",
+    "appJwtAlgorithm": "RS256",
+    "repositoryToken": "short-lived-installation-access-token",
+    "tokenScope": "single-repository-per-operation-user-data-or-program-data",
+    "repositoryPermission": {"contents": "write", "metadata": "read"},
+    "cache": "server-only-until-before-expires-at",
+    "clientExposure": "forbidden",
+    "newApplicationCredentials": "reuse-central-api-no-additional-github-credentials",
+    "migrationTokenEnvironment": ["GITHUB_INSTALLATION_TOKEN", "SOURCE_GITHUB_INSTALLATION_TOKEN"],
+    "deployment": "requires-app-installation-configuration-and-live-verification"
+  },
+  "storage": {
+    "format": "utf-8-json",
+    "encryption": "none",
+    "userId": "immutable-uuid",
+    "index": "users/_index.json",
+    "profile": "users/{userId}/profile.json",
+    "credentials": "users/{userId}/credentials.json",
+    "applicationData": "users/{userId}/apps/{appId}/data.json",
+    "legacyBrclioData": "users/{userId}/data.json",
+    "legacyPolicy": "read-only-fallback-if-namespaced-brclio-data-is-missing",
+    "unknownPathsAndFields": "preserve",
+    "maximumRecordBytes": 2097152
+  },
+  "repositoryBoundaries": {
+    "userData": ["identity", "nickname", "password", "personal-settings", "user-owned-app-records"],
+    "programData": ["global-program-configuration", "shared-public-program-materials", "shared-program-resources"],
+    "userAssociation": "records-owned-by-or-associated-with-a-user-id-belong-to-user-data",
+    "applicationManifests": "user-data-schema-registration-metadata-retained-in-user-repository",
+    "supportMaterials": ["README.md", "protocol.json", "apps/", "skills/", "migrations/"],
+    "globalConfigPath": "config/update-proxy.json",
+    "globalConfigRepository": "BrclioData/BrclioData",
+    "programRepositoryRemainsActive": true,
+    "sameDataDualWrites": false,
+    "crossRepositoryRuntimeFallback": false
+  },
+  "identity": {
+    "version": 1,
+    "indexMaps": ["usernames", "emails", "google", "verifications", "devices"],
+    "identityMaps": ["usernames", "emails", "google"],
+    "identityMapValue": "userId",
+    "credentialOwner": "identity-authority-only",
+    "passwordPlaintext": "retained-as-requested",
+    "password": {
+      "algorithm": "PBKDF2-SHA256",
+      "iterations": 100000,
+      "saltBytes": 24,
+      "derivedKeyBytes": 32,
+      "encoding": "base64url-without-padding"
+    }
+  },
+  "applications": {
+    "brclio": "apps/brclio.json",
+    "miniapp": "apps/miniapp.json"
+  },
+  "applicationDeploymentEvidence": {
+    "miniapp": {"pagesDeployment": "21884f14", "pagesUrl": "https://21884f14.brclio-miniapp-wechat.pages.dev", "productionDomains": ["pocket.bornforthis.cn", "pocket.brclio.com"], "matchedFilePaths": ["/", "/projects/ready-go-duel/", "/projects/ready-go-duel/match/bundle.js"], "nativeAnonymousSessionStatus": 200, "anonymousPrivateDataStatus": 401, "checksPerDomain": 5, "productionChecksPassed": 10, "localTestsPassed": 174, "storageRoundTripFix": "deployed-and-hash-verified", "wechatNativeFreshCompileUploadAndPublication": "not-verified"}
+  },
+  "applicationRegistration": {
+    "appIdPattern": "^[a-z][a-z0-9-]{0,47}$",
+    "reservedAppIds": ["users", "apps", "profile", "credentials", "data", "protocol", "identity", "system"],
+    "requires": ["application-manifest", "identity-service-route-registration", "payload-validation", "isolation-and-conflict-tests"],
+    "manifestPurpose": "account-data-schema-and-integration-registration-not-global-program-material",
+    "manifestAloneEnablesApi": false
+  },
+  "genericApplicationData": {
+    "enabledAppIds": ["miniapp"],
+    "path": "/api/account/apps/{appId}/data",
+    "methods": ["GET", "PUT"],
+    "recordFields": ["version", "revision", "data", "updatedAt"],
+    "version": 1,
+    "initialRevision": 0,
+    "putFields": ["revision", "data"],
+    "userIdSource": "verified-session-only",
+    "revisionRequired": true,
+    "conflictStatus": 409,
+    "conflictCode": "REVISION_CONFLICT",
+    "merge": "recursive-object-merge-array-and-scalar-replacement",
+    "deleteByOmission": false,
+    "maximumDataBytes": 12000,
+    "maximumRequestBytes": 16384,
+    "maximumJsonDepth": 16,
+    "maximumArrayLength": 1000,
+    "forbiddenKeysAtEveryDepth": ["__proto__", "constructor", "prototype"]
+  },
+  "gitTransactions": {
+    "snapshot": "one-branch-head-per-attempt",
+    "tree": "derive-from-current-commit-base-tree",
+    "commit": "one-commit-for-all-related-records",
+    "referenceUpdate": "non-forced-fast-forward-only",
+    "maximumAttempts": 4,
+    "conflictRetry": "read-latest-head-and-recompute-entire-mutation",
+    "recovery": "selective-compensating-commit-on-current-head"
+  },
+  "migration": {
+    "historicalAccountSourceRepository": "BrclioData/BrclioData",
+    "userRuntimeRepository": "BrclioData/BrclioUserData",
+    "programRuntimeRepository": "BrclioData/BrclioData",
+    "requires": ["private-repository-and-permission-check", "freeze-affected-path-writers", "both-heads-and-private-backup", "all-in-scope-blob-sha-and-semantic-verification", "verify-correct-routing-before-copy-removal"],
+    "preserveHistoricalManifest": "migrations/20261021T114651Z-6da923716022.json",
+    "mainCleanup": {"userRepository": ["config/update-proxy.json"], "programRepository": ["users/"], "prerequisites": ["verified-backup", "complete-copy-in-correct-repository", "verified-routing", "explicit-authorized-path-list"], "historyRewrite": false},
+    "globalSeparationDeployment": "deployed-and-current-main-cleanup-verified",
+    "deploymentEvidence": {"workerId": "16cc4a6e83854cf185940a03bdd9182f", "version": "8bc269ab-a742-4459-95f5-9bc5db22212e", "bindings": 22, "moduleSha256": "45a68fafc3188dd8eef14dba26fc79717c8241f87e26f09cc5800fe42ecbfbab"},
+    "cleanupCommits": {"programRepository": "fad81f97b4abd7271f96ed463fa94a6eb2f03aa7", "userRepository": "ad6840ca7dc2eeb35b862d5639350c12db171ba7"},
+    "postSeparationAccountEndToEnd": {"status": "verified-live", "verificationChecks": 262, "checksIncludingCleanup": 692, "fixtureUsers": 2, "deletedFixtureFiles": 7, "removedFixtureIndexEntries": 4, "cleanupSucceeded": true},
+    "finalIntegrity": {"existingUsers": 3, "originalAccountBlobs": 10, "derivedBrclioBlobs": 3, "allAccountAndDerivedBlobShaExact": true, "programGlobalConfigBlobShaExact": true, "postFixtureUserTreeEqualsCleanupCommit": true},
+    "unknownOrInvalidRecords": "stop-without-overwriting",
+    "liveDeploymentStatus": "verify-separately-from-this-manifest"
+  }
+}

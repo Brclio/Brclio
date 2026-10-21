@@ -21,6 +21,13 @@ export async function handle(request, env, dependencies = {}, ctx) {
     // Retain the transport field for clients using the original health contract.
     return json({ok: true, service: service.id, proxyProtocol: 'vless-tls-websocket'});
   }
+  // A short, explicit maintenance window freezes every writer before copying
+  // the repository. Reads remain available and clients keep their local data.
+  if (env.DATA_MIGRATION_READ_ONLY === 'true' &&
+      ((path.startsWith('/api/account/') && (request.method !== 'GET' || ['/api/account/google/callback', '/api/account/device/poll'].includes(path))) ||
+       (path === '/api/admin/config' && request.method === 'PUT'))) {
+    return json({error: '用户数据正在迁移，请稍后重试；本地数据已保留', code: 'DATA_MIGRATION_READ_ONLY'}, 503, {'Retry-After': '120'});
+  }
   if (path === '/account' && request.method === 'GET') return new Response(accountHTML, {headers: {
     ...securityHeaders, 'Content-Type': 'text/html; charset=utf-8',
     'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"

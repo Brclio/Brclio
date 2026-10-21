@@ -82,6 +82,22 @@ test('password verification uses random salts and accepts only the correct passw
   assert.equal(await checkPassword('wrong password', first), false);
 });
 
+test('one shared native account accesses isolated Brclio and miniapp data with revision protection', async () => {
+  const f = fixture(), signed = await f.register('shared-user', 'shared@example.com', true);
+  const headers = {Authorization: 'Bearer ' + signed.token};
+  assert.ok(f.store.files.has('users/' + signed.user.id + '/apps/brclio/data.json'));
+  assert.equal(f.store.files.has('users/' + signed.user.id + '/data.json'), false);
+  assert.equal((await f.call('apps/miniapp/data', 'PUT', {revision: 0, data: {history: []}}, {native: true, headers})).status, 200);
+  assert.equal((await f.call('data', 'PUT', {revision: 0, preferences: {quoteMode: 'auto'}}, {native: true, headers})).status, 200);
+  const app = await (await f.call('apps/miniapp/data', 'GET', undefined, {native: true, headers})).json();
+  assert.equal(app.userId, signed.user.id); assert.deepEqual(app.data, {history: []});
+  const copy = await (await f.call('data', 'GET', undefined, {native: true, headers})).json();
+  assert.deepEqual(copy.preferences, {quoteMode: 'auto'});
+  assert.equal((await f.call('apps/miniapp/data', 'PUT', {revision: 0, data: {history: [1]}}, {native: true, headers})).status, 409);
+  await f.call('logout', 'POST', {}, {native: true, headers});
+  assert.equal((await f.call('apps/miniapp/data', 'GET', undefined, {native: true, headers})).status, 401);
+});
+
 test('OTP cooldown, invalid attempt lock, and expiration are durable', async () => {
   const f = fixture();
   assert.equal((await f.call('code', 'POST', {email: 'alice@example.com'})).status, 200);
@@ -462,13 +478,13 @@ test('failed Google callbacks preserve only the device bound to a valid signed O
 
 test('account storage rejects public repositories before fetching account content', async () => {
   const calls = [];
-  const store = createAccountStore({GITHUB_DATA_REPOSITORY: 'owner/public-repo-test', GITHUB_TOKEN: 'not-real'}, async url => { calls.push(url); return Response.json({private: false, default_branch: 'main'}); });
+  const store = createAccountStore({GITHUB_DATA_REPOSITORY: 'owner/public-repo-test'}, async url => { calls.push(url); return Response.json({private: false, default_branch: 'main'}); }, async () => 'fixture-installation-token');
   await assert.rejects(store.snapshot(), /private repository/); assert.equal(calls.length, 1);
 });
 
 test('Git compare-and-swap retries a concurrent commit before returning a result', async () => {
   let head = 'old', writes = 0, mutations = 0; const patches = [];
-  const store = createAccountStore({GITHUB_DATA_REPOSITORY: 'owner/cas-repo-test', GITHUB_TOKEN: 'not-real'}, async (url, options) => {
+  const store = createAccountStore({GITHUB_DATA_REPOSITORY: 'owner/cas-repo-test'}, async (url, options) => {
     const path = new URL(url).pathname, body = options.body && JSON.parse(options.body);
     if (path.endsWith('/cas-repo-test')) return Response.json({private: true, default_branch: 'main'});
     if (path.endsWith('/git/ref/heads/main')) return Response.json({object: {sha: head}});
@@ -478,7 +494,7 @@ test('Git compare-and-swap retries a concurrent commit before returning a result
     if (path.endsWith('/git/commits')) return Response.json({sha: 'commit-' + (++writes)});
     if (path.endsWith('/git/refs/heads/main')) { patches.push(body); if (patches.length === 1) { head = 'concurrent'; return new Response(null, {status: 422}); } return Response.json({object: {sha: body.sha}}); }
     throw new Error('Unexpected request ' + path);
-  });
+  }, async () => 'fixture-installation-token');
   const result = await store.transaction(async tx => { mutations++; const index = await tx.read('users/_index.json', {version: 1}); tx.write('users/_index.json', index); return 'saved'; });
   assert.equal(result, 'saved'); assert.equal(mutations, 2); assert.deepEqual(patches.map(body => body.force), [false, false]);
 });

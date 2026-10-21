@@ -290,8 +290,9 @@
   $('refresh').addEventListener('click', () => { void run(async () => { await refreshSession(); message('账号与云端偏好已刷新。'); }); });
   $('upload').addEventListener('click', () => { void run(async () => {
     await ensureCurrentUser();
+    if (!state.cloudLoaded) await loadCloud();
     const preferences = portable(await localPreferences().read());
-    state.cloud = await request('/api/account/data', 'PUT', { preferences }); state.cloudLoaded = true;
+    state.cloud = await request('/api/account/data', 'PUT', { preferences, ...(Number.isSafeInteger(state.cloud?.revision) ? { revision: state.cloud.revision } : {}) }); state.cloudLoaded = true;
     if (!state.cloud?.preferences) await loadCloud();
     message('本机的复制格式已保存到你的账号。');
   }); });
@@ -303,8 +304,9 @@
   }); });
   $('cloud-form').addEventListener('submit', event => { event.preventDefault(); void run(async () => {
     await ensureCurrentUser();
+    if (!state.cloudLoaded) await loadCloud();
     const preferences = Object.fromEntries(portableKeys.map(key => [key, key === 'trailingSlash' ? $('pref-' + key).checked : $('pref-' + key).value]));
-    state.cloud = await request('/api/account/data', 'PUT', { preferences }); state.cloudLoaded = true;
+    state.cloud = await request('/api/account/data', 'PUT', { preferences, ...(Number.isSafeInteger(state.cloud?.revision) ? { revision: state.cloud.revision } : {}) }); state.cloudLoaded = true;
     if (!state.cloud?.preferences) await loadCloud();
     message('云端偏好已保存。在客户端登录后，可以手动应用。');
   }); });

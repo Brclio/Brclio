@@ -7,7 +7,7 @@ const output = new URL('../dist/browser/', import.meta.url);
 await mkdir(output, {recursive: true});
 const result = await build({
   absWorkingDir: root,
-  entryPoints: ['src/worker.js'],
+  entryPoints: ['src/entry.js'],
   bundle: true,
   write: false,
   format: 'esm',
@@ -43,7 +43,8 @@ const manifest = {
   compatibilityFlags: ['nodejs_compat', 'global_fetch_strictly_public'],
   keepVars: true,
   dashboardVariableType: 'plain_text',
-  environmentVariables: ['ADMIN_EMAIL', 'ADMIN_PASSWORD', 'SESSION_SECRET', 'GITHUB_TOKEN', 'GITHUB_DATA_REPOSITORY', 'PROXY_SUBSCRIPTION_URL'],
+  environmentVariables: ['ADMIN_EMAIL', 'ADMIN_PASSWORD', 'SESSION_SECRET', 'GITHUB_APP_ID', 'GITHUB_APP_INSTALLATION_ID', 'GITHUB_DATA_REPOSITORY', 'GITHUB_PROGRAM_DATA_REPOSITORY', 'PROXY_SUBSCRIPTION_URL'],
+  secretEnvironmentVariables: ['GITHUB_APP_PRIVATE_KEY'],
   accountEnvironmentVariables: ['SMTP_EMAIL', 'SMTP_APP_PASSWORD', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'],
   rateLimits: [
     {name: 'LOGIN_LIMITER', namespaceId: '1001', limit: 8, period: 60},

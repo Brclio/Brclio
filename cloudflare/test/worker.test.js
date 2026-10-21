@@ -5,6 +5,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL,fileURLToPath} from 'node:url';
+import {readConfig,writeConfig,getNodes,clearConfigCache} from '../src/config.js';
 const built=await build({entryPoints:[fileURLToPath(new URL('../src/worker.js',import.meta.url))],bundle:true,write:false,format:'esm',platform:'node',external:['cloudflare:sockets'],banner:{js:"import {createRequire} from 'node:module';const require=createRequire(import.meta.url);"},loader:{'.html':'text','.txt':'text'}});
 const dir=await mkdtemp(join(tmpdir(),'brclio-worker-test-'));const filename=join(dir,'worker.mjs');await writeFile(filename,built.outputFiles[0].contents);const {handle}=await import(pathToFileURL(filename));after(()=>rm(dir,{recursive:true,force:true}));
 const origin='https://updates.example';
@@ -15,6 +16,14 @@ test('public health and admin shell disclose no credential or subscription value
   const r=await handle(request('/api/health'),env);assert.equal(r.status,200);assert.deepEqual(await r.json(),{ok:true,service:'brclio-client-services',proxyProtocol:'vless-tls-websocket'});
   const html=await handle(request('/admin'),env);assert.match(html.headers.get('content-security-policy'),/frame-ancestors 'none'/);const text=await html.text();assert.ok(!text.includes(env.ADMIN_PASSWORD));assert.ok(!text.includes(env.ADMIN_EMAIL));assert.match(text,/autocomplete="current-password"/);
 });
+test('migration maintenance blocks account and config writers before storage while health stays readable',async()=>{
+  const frozen={...env,DATA_MIGRATION_READ_ONLY:'true'};
+  for(const [path,method] of [['/api/account/login','POST'],['/api/account/register','POST'],['/api/account/data','PUT'],['/api/account/apps/miniapp/data','PUT'],['/api/account/google/callback?code=unused','GET'],['/api/account/device/poll?id=unused','GET'],['/api/admin/config','PUT']]) {
+    const response=await handle(request(path,{method,...(method!=='GET'?{body:{}}:{})}),frozen);
+    assert.equal(response.status,503);assert.equal((await response.json()).code,'DATA_MIGRATION_READ_ONLY');assert.equal(response.headers.get('retry-after'),'120');
+  }
+  assert.equal((await handle(request('/api/health'),frozen)).status,200);
+});
 test('admin login and mutations enforce origin, cookie, CSRF and stale-SHA conflict',async()=>{
   const noOrigin=await handle(request('/api/admin/login',{method:'POST',body:{email:env.ADMIN_EMAIL,password:env.ADMIN_PASSWORD},headers:{origin:'https://attacker.example'}}),env);assert.equal(noOrigin.status,403);
   const unauth=await handle(request('/api/admin/config'),env);assert.equal(unauth.status,401);
@@ -24,6 +33,43 @@ test('admin login and mutations enforce origin, cookie, CSRF and stale-SHA confl
   const noCSRF=await handle(request('/api/admin/config',{method:'PUT',headers:{cookie:session.cookie},body:{subscriptionUrl:'https://subscription.example/new',sha:'old'}}),env,{writeConfig:async()=>{calls++;}});assert.equal(noCSRF.status,403);assert.equal(calls,0);
   const conflict=await handle(request('/api/admin/config',{method:'PUT',headers:{cookie:session.cookie,'X-CSRF-Token':session.csrf},body:{subscriptionUrl:'https://subscription.example/new',sha:'old'}}),env,{writeConfig:async()=>{calls++;return {conflict:true};}});assert.equal(conflict.status,409);assert.equal(calls,1);
   const logout=await handle(request('/api/admin/logout',{method:'POST',headers:{cookie:session.cookie,'X-CSRF-Token':session.csrf}}),env);assert.equal(logout.status,200);assert.match(logout.headers.get('set-cookie'),/Max-Age=0/);
+});
+test('authenticated admin config and public client configuration use only the explicit program repository',async()=>{
+  clearConfigCache();
+  const scoped={...env,GITHUB_DATA_REPOSITORY:'fixture/worker-users',GITHUB_PROGRAM_DATA_REPOSITORY:'fixture/worker-program'};
+  const endpoint='https://api.github.com/repos/fixture/worker-program/contents/config/update-proxy.json';
+  const subscriptionUrl='https://subscription.example/program';
+  const subscription={proxies:[{type:'vless',uuid:'00112233-4455-6677-8899-aabbccddeeff',tls:true,network:'ws',servername:'vpn.example.com',port:443,'ws-opts':{path:'/tunnel',headers:{Host:'vpn.example.com'}}}]};
+  let sha='before';const privateCalls=[],tokenScopes=[];
+  const tokenProvider=async(_env,repository)=>{tokenScopes.push(repository);assert.equal(repository,scoped.GITHUB_PROGRAM_DATA_REPOSITORY);return 'program-only-fixture-token';};
+  const fetchImpl=async(url,options)=>{
+    if(url===subscriptionUrl){assert.equal(options.headers.Authorization,undefined);return Response.json(subscription);}
+    assert.equal(url,endpoint);assert.equal(options.headers.Authorization,'Bearer program-only-fixture-token');privateCalls.push(options.method||'GET');
+    if(options.method==='PUT'){
+      const stored=JSON.parse(Buffer.from(JSON.parse(options.body).content,'base64').toString());
+      assert.deepEqual(stored.future,{nested:'private-program-extension'});sha='after';return Response.json({content:{sha}});
+    }
+    const data=JSON.stringify({version:1,subscriptionUrl,future:{nested:'private-program-extension'}});return Response.json({sha,size:Buffer.byteLength(data),encoding:'base64',content:Buffer.from(data).toString('base64')});
+  };
+  const dependencies={readConfig:(received,options)=>readConfig(received,{...options,fetchImpl,tokenProvider}),
+    writeConfig:(received,input)=>writeConfig(received,input,fetchImpl,{tokenProvider}),
+    getNodes:(received,_fetch,options)=>getNodes(received,fetchImpl,{...options,tokenProvider})};
+  try{
+    const session=await login();
+    const read=await handle(request('/api/admin/config',{headers:{cookie:session.cookie}}),scoped,dependencies);
+    assert.equal(read.status,200);const visible=await read.json();assert.equal(visible.sha,'before');
+    assert.deepEqual(Object.keys(visible).sort(),['csrf','sha','subscriptionUrl','updatedAt']);
+    assert.ok(!JSON.stringify(visible).includes('private-program-extension'));
+    const saved=await handle(request('/api/admin/config',{method:'PUT',headers:{cookie:session.cookie,'X-CSRF-Token':session.csrf},body:{subscriptionUrl,sha:'before'}}),scoped,dependencies);
+    assert.equal(saved.status,200);assert.equal((await saved.json()).sha,'after');
+    const client=await handle(request('/api/client/update-proxy'),scoped,dependencies);
+    assert.equal(client.status,200);assert.equal((await client.json()).nodes.length,1);
+    assert.deepEqual(privateCalls,['GET','GET','PUT','GET']);assert.equal(tokenScopes.length,4);
+    const missing={...scoped,GITHUB_PROGRAM_DATA_REPOSITORY:undefined};
+    assert.equal((await handle(request('/api/admin/config',{headers:{cookie:session.cookie}}),missing,dependencies)).status,502);
+    assert.equal((await handle(request('/api/client/update-proxy'),missing,dependencies)).status,502);
+    assert.equal(privateCalls.length,4);assert.equal(tokenScopes.length,4);
+  }finally{clearConfigCache();}
 });
 test('public relay rejects arbitrary target before loading private config, sanitizes upstream failure',async()=>{
   let calls=0;
