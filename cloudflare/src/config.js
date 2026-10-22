@@ -4,10 +4,17 @@ import {githubInstallationToken} from './github-app.js';
 const diagnostic = (stage,code,status) => console.warn(JSON.stringify({event:'proxy_setup_failed',stage,code,...(Number.isInteger(status)?{status}:{})}));
 export const CONFIG_PATH = 'config/update-proxy.json';
 export const NODES_CACHE_TTL_MS = 10 * 60 * 1000;
+export const VALIDATED_SUBSCRIPTION_TTL_MS = 15000;
+const VALIDATED_SUBSCRIPTION_LIMIT = 16;
 const configDocuments = new WeakMap();
+const validatedSubscriptions = new Map(), subscriptionFlights = new Map();
 let configCache;
 let nodesCache;
-export function clearConfigCache() { configCache = undefined; nodesCache = undefined; }
+let cacheGeneration = 0;
+export function clearConfigCache() {
+  cacheGeneration++;configCache = undefined;nodesCache = undefined;
+  validatedSubscriptions.clear();subscriptionFlights.clear();
+}
 
 function programRepository(env) {
   const repo = env.GITHUB_PROGRAM_DATA_REPOSITORY;
@@ -33,6 +40,7 @@ async function github(env, options = {}, fetchImpl = fetch, tokenProvider = gith
 export async function readConfig(env, {fresh = false, fetchImpl = fetch, tokenProvider = githubInstallationToken} = {}) {
   const repo = programRepository(env);
   if (!fresh && configCache?.repo === repo && configCache.expires > Date.now()) return configCache.value;
+  const generation = cacheGeneration;
   const response = await github(env, {}, fetchImpl, tokenProvider);
   let config, document;
   if (response.status === 404) {
@@ -53,7 +61,7 @@ export async function readConfig(env, {fresh = false, fetchImpl = fetch, tokenPr
   // Keep the original private document out of administrator/client responses.
   // Weak keys retain it for an in-flight save even when another save clears caches.
   configDocuments.set(config, document);
-  configCache = {repo, expires: Date.now() + 15000, value: config};
+  if (generation === cacheGeneration) configCache = {repo, expires: Date.now() + 15000, value: config};
   return config;
 }
 function subscriptionAwait(promise, signal) {
@@ -129,13 +137,39 @@ export async function readSubscription(url, fetchImpl = fetch) {
     }
   } finally { clearTimeout(timer); }
 }
-export async function getNodes(env, fetchImpl = fetch, {fresh = false, tokenProvider = githubInstallationToken} = {}) {
+async function recentlyValidatedSubscription(repo, config, fetchImpl, generation) {
+  if (generation !== cacheGeneration || typeof config.sha !== 'string' || !/^[a-f0-9]{40}$/.test(config.sha)) return readSubscription(config.subscriptionUrl, fetchImpl);
+  const key = JSON.stringify([repo, config.sha, config.subscriptionUrl]);
+  for (const [storedKey, cached] of validatedSubscriptions) if (cached.expires <= Date.now()) validatedSubscriptions.delete(storedKey);
+  const cached = validatedSubscriptions.get(key);
+  if (cached) return cached.nodes;
+  const pending = subscriptionFlights.get(key);
+  if (pending) return pending.promise;
+  // Above the bounded number of distinct keys, keep normal fresh reads rather
+  // than retaining more shared work or serving an unrelated cached document.
+  if (subscriptionFlights.size >= VALIDATED_SUBSCRIPTION_LIMIT) return readSubscription(config.subscriptionUrl, fetchImpl);
+  const entry = {generation};
+  entry.promise = (async () => {
+    const nodes = await readSubscription(config.subscriptionUrl, fetchImpl);
+    const immutable = Object.freeze(nodes.map(node => Object.freeze({...node})));
+    if (generation === cacheGeneration && subscriptionFlights.get(key) === entry) {
+      if (validatedSubscriptions.size >= VALIDATED_SUBSCRIPTION_LIMIT) validatedSubscriptions.delete(validatedSubscriptions.keys().next().value);
+      validatedSubscriptions.set(key, {nodes: immutable, expires: Date.now() + VALIDATED_SUBSCRIPTION_TTL_MS});
+    }
+    return immutable;
+  })().finally(() => {if (subscriptionFlights.get(key) === entry) subscriptionFlights.delete(key);});
+  subscriptionFlights.set(key, entry);
+  return entry.promise;
+}
+export async function getNodes(env, fetchImpl = fetch, {fresh = false, reuseValidatedSubscription = false, tokenProvider = githubInstallationToken} = {}) {
+  const generation = cacheGeneration;
   let config;
-  try {config = await readConfig(env, {fetchImpl, fresh, tokenProvider});} catch {diagnostic('config','read_failed'); throw new Error('读取私有配置失败');}
+  try {config = await readConfig(env, {fetchImpl, fresh: fresh || reuseValidatedSubscription, tokenProvider});} catch {diagnostic('config','read_failed'); throw new Error('读取私有配置失败');}
   const repo = programRepository(env);
+  if (reuseValidatedSubscription) return recentlyValidatedSubscription(repo, config, fetchImpl, generation);
   if (!fresh && nodesCache?.repo === repo && nodesCache.url === config.subscriptionUrl && nodesCache.expires > Date.now()) return nodesCache.nodes;
   const nodes = await readSubscription(config.subscriptionUrl, fetchImpl);
-  nodesCache = {repo, url: config.subscriptionUrl, nodes, expires: Date.now() + NODES_CACHE_TTL_MS};
+  if (generation === cacheGeneration) nodesCache = {repo, url: config.subscriptionUrl, nodes, expires: Date.now() + NODES_CACHE_TTL_MS};
   return nodes;
 }
 export async function writeConfig(env, input, fetchImpl = fetch, {tokenProvider = githubInstallationToken} = {}) {

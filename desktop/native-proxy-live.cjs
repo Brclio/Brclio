@@ -33,7 +33,7 @@ const { _electron: electron } = require('@playwright/test');
       const { createConnectBridge } = load('./desktop/update-connect-bridge.cjs');
       const { createUpdater, checksumFor, requestBlockMessage } = load('./desktop/updater.cjs');
       const result = { actualAppVersion: app.getVersion(), updaterCurrentVersionFixture: input.fixtureVersion,
-        requestedExpectedRelease: input.expectedVersion, fixturePlatform: 'win32', fixtureArchitecture: 'x64', requests: [], operations: [], installerInstalled: false };
+        requestedExpectedRelease: input.expectedVersion, fixturePlatform: 'win32', fixtureArchitecture: 'x64', requests: [], operations: [], installerInstalled: false, retryCount: 0 };
       const actualSessions = new Set(), names = new WeakMap();
       let active, lastProgress = 0;
       const safeCode = error => [...new Set([String(error?.code || ''), String(error?.message || '')].join(' ').match(/ERR_[A-Z0-9_]+/g) || [])];
@@ -64,7 +64,7 @@ const { _electron: electron } = require('@playwright/test');
           if (response.ok && url.endsWith('SHA256SUMS.txt')) result.expectedSHA256 = checksumFor(await response.clone().text(), result.assetName); return response; },
         onOperation: async (kind, enabled, targets) => { if (enabled) { active = { kind, configurations: 0, candidates: 0, dialAddresses: new Set() }; result.operations.push(active); }
           await router.setBusy(enabled, targets); if (!enabled) { active.distinctDialAddresses = active.dialAddresses.size; delete active.dialAddresses; } },
-        onState: state => { result.lastState = { status: state.status, downloadedBytes: state.downloadedBytes, totalBytes: state.totalBytes, canInstall: state.canInstall };
+        onState: state => { result.retryCount = state.retryCount; result.lastState = { status: state.status, downloadedBytes: state.downloadedBytes, totalBytes: state.totalBytes, canInstall: state.canInstall, retryCount: state.retryCount };
           if (Date.now() - lastProgress >= 5000) { lastProgress = Date.now(); console.log('BRCLIO_NATIVE_GATE ' + JSON.stringify(result.lastState)); } },
         installPackage: async () => { result.installerInstalled = true; throw Error('installation_forbidden'); } });
       function summarizeOperations() {
@@ -81,13 +81,13 @@ const { _electron: electron } = require('@playwright/test');
         result.actualOfficialRelease = checked.version;
         if (checked.status !== 'available' || (input.expectedVersion && checked.version !== input.expectedVersion)) { result.failure = 'official_release_check_failed_or_changed'; return result; }
         result.assetName = checked.assetName; result.totalBytes = checked.totalBytes;
-        const started = performance.now(), downloaded = await updater.download(); result.downloadElapsedMs = Math.round(performance.now() - started);
+        const started = performance.now(), downloaded = await updater.download(); result.downloadElapsedMs = Math.round(performance.now() - started); result.retryCount = downloaded.retryCount;
         result.partialFiles = (await fsp.readdir(directory).catch(() => [])).filter(name => name.endsWith('.part')).length;
         if (downloaded.status !== 'downloaded') { result.failure = downloaded.error === '下载超时或连接中断，请重新下载。' ? 'native_download_timeout_or_interrupted' : 'native_download_failed'; return result; }
         const filename = path.join(directory, result.assetName), hash = crypto.createHash('sha256'); result.actualBytes = (await fsp.stat(filename)).size;
         for await (const bytes of fs.createReadStream(filename)) hash.update(bytes); result.actualSHA256 = hash.digest('hex');
         summarizeOperations();
-        result.passed = downloaded.canInstall && result.actualBytes === result.totalBytes && result.actualSHA256 === result.expectedSHA256 && !result.installerInstalled && result.partialFiles === 0
+        result.passed = [0, 1].includes(result.retryCount) && downloaded.canInstall && result.actualBytes === result.totalBytes && result.actualSHA256 === result.expectedSHA256 && !result.installerInstalled && result.partialFiles === 0
           && result.requests.every(value => !value.range) && result.operations.length === 2 && result.operations.every(value => value.configurations === 1 && value.candidates >= 1 && value.candidates <= 16 && value.probesStarted === value.candidates && value.selectedMinimumWithinTwoMs && value.officialRequestSessionCount === 1);
         if (!result.passed) result.failure = 'native_transport_evidence_mismatch';
         return result;

@@ -40,9 +40,9 @@ test('subscription parser excludes enabled insecure flags in YAML and VLESS URIs
   assert.equal(parseSubscription(`vless://${uuid}@vpn.example.com:443?security=tls&type=ws&sni=vpn.example.com&allowInsecure=0`).length,1);
 });
 
-test('each native configuration request refreshes private configuration and subscription, is no-store and rate limited',async()=>{
+test('each native configuration request checks fresh private config, opts into bounded validated subscription reuse, and is no-store and rate limited',async()=>{
   const env={ADMIN_PASSWORD:'private-admin',GITHUB_TOKEN:'private-token',PROXY_SUBSCRIPTION_URL:'https://private.example/sub'};let calls=0;
-  const dependencies={getNodes:async(received,fetchImpl,options)=>{calls++;assert.equal(received,env);assert.equal(fetchImpl,undefined);assert.deepEqual(options,{fresh:true});return[node];}};
+  const dependencies={getNodes:async(received,fetchImpl,options)=>{calls++;assert.equal(received,env);assert.equal(fetchImpl,undefined);assert.deepEqual(options,{fresh:true,reuseValidatedSubscription:true});return[node];}};
   const request=()=>new Request('https://tools.brclio.com/api/client/update-proxy',{headers:{'CF-Connecting-IP':'native-config-test'}});
   for(let i=0;i<2;i++){const response=await handleClientConfiguration(request(),env,dependencies);assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');assert.equal(response.headers.get('access-control-allow-origin'),null);const body=await response.text();for(const secret of Object.values(env))assert.ok(!body.includes(secret));}
   assert.equal(calls,2);

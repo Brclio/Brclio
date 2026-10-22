@@ -72,27 +72,35 @@ async function fileDigest(filename) {
   return hash.digest('hex');
 }
 
+function abortable(promise, signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => { signal.removeEventListener('abort', abort); reject(Object.assign(new Error('更新请求已取消。'), { name: 'AbortError' })); };
+    Promise.resolve(promise).then(value => { signal.removeEventListener('abort', abort); resolve(value); }, error => { signal.removeEventListener('abort', abort); reject(error); });
+    if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
 function createUpdater(options) {
   const { currentVersion, directory, fetch: fetchURL, installPackage } = options;
   const platform = options.platform || process.platform;
   const architecture = options.architecture || process.arch;
   const publish = options.onState || (() => {});
   let state = { status: 'idle', currentVersion, version: null, notes: '', progress: 0,
-    downloadedBytes: 0, totalBytes: 0, error: null, assetName: null, manualInstall: false, canInstall: false, releaseURL: RELEASE_URL };
+    downloadedBytes: 0, totalBytes: 0, retryCount: 0, error: null, assetName: null, manualInstall: false, canInstall: false, releaseURL: RELEASE_URL };
   let release = null; let verified = null; let checking = null; let downloading = null; let installing = null;
   function snapshot() { return { ...state }; }
   function change(patch) { state = { ...state, ...patch }; publish(snapshot()); return snapshot(); }
-  function failure(error) { return change({ status: 'error', error: error.message || '操作失败，请重试。' }); }
+  function failure(error) { return change({ status: 'error', error: error?.message || '操作失败，请重试。' }); }
 
   async function request(url, signal) {
     const response = await fetchURL(url, { signal, redirect: 'follow', headers: { Accept: 'application/vnd.github+json', 'User-Agent': `Brclio/${currentVersion}` } });
     const blocked = requestBlockMessage(response);
     if (blocked) {
-      await response.body?.cancel().catch(() => {});
+      await abortable(Promise.resolve().then(() => response.body?.cancel()).catch(() => {}), signal);
       throw new Error(blocked);
     }
     if (!response.ok) {
-      await response.body?.cancel().catch(() => {});
+      await abortable(Promise.resolve().then(() => response.body?.cancel()).catch(() => {}), signal);
       if (response.status === 404) throw new Error('正式版本尚未发布，请稍后检查。');
       if (response.status === 403 || response.status === 429) throw new Error('GitHub 暂时限制请求，请稍后重试。');
       throw new Error(`下载服务返回 HTTP ${response.status}，请稍后重试。`);
@@ -100,7 +108,7 @@ function createUpdater(options) {
     if (response.url) {
       const finalURL = new URL(response.url);
       if (finalURL.protocol !== 'https:' || !ALLOWED_HOSTS.has(finalURL.hostname)) {
-        await response.body?.cancel().catch(() => {});
+        await abortable(Promise.resolve().then(() => response.body?.cancel()).catch(() => {}), signal);
         throw new Error('下载重定向至非官方地址，已停止。');
       }
     }
@@ -113,7 +121,7 @@ function createUpdater(options) {
     if (downloading || installing) return Promise.resolve(snapshot());
     checking = (async () => {
       await options.onOperation?.('check', true, [API_URL]);
-      change({ status: 'checking', error: null, progress: 0, downloadedBytes: 0, installerStarted: false, canInstall: false });
+      change({ status: 'checking', error: null, progress: 0, downloadedBytes: 0, retryCount: 0, installerStarted: false, canInstall: false });
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), options.requestTimeout || 20000);
       try {
@@ -145,7 +153,7 @@ function createUpdater(options) {
       let idleTimer; let manifestTimer;
       const totalTimer = setTimeout(() => controller.abort(), options.downloadTimeout || 10 * 60 * 1000);
       const refreshIdle = () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => controller.abort(), options.idleTimeout || 45000); };
-      change({ status: 'downloading', error: null, progress: 0, downloadedBytes: 0, totalBytes: selected.size, canInstall: false });
+      change({ status: 'downloading', error: null, progress: 0, downloadedBytes: 0, totalBytes: selected.size, retryCount: 0, canInstall: false });
       try {
         verified = null;
         await fs.mkdir(directory, { recursive: true });
@@ -158,35 +166,82 @@ function createUpdater(options) {
         if (selected.digest && selected.digest !== expected) throw new Error('GitHub 发布校验值与 SHA256SUMS 不一致，已停止。');
         const existing = await fs.stat(destination).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
         if (existing?.size === selected.size && await fileDigest(destination) === expected) {
+          controller.signal.throwIfAborted();
           verified = { filename: destination, expected, size: selected.size };
           return change({ status: 'downloaded', progress: 100, downloadedBytes: selected.size, canInstall: true });
         }
-        const response = await request(selected.downloadURL, controller.signal);
-        if (!response.body) throw new Error('安装包下载内容为空。');
-        const hash = crypto.createHash('sha256');
-        const output = await fs.open(partial, 'wx', 0o600);
-        let count = 0; let lastUpdate = 0;
-        try {
-          for await (const chunk of response.body) {
-            refreshIdle();
-            count += chunk.length;
-            if (count > selected.size || count > MAX_DOWNLOAD) throw new Error('安装包大小与发布信息不一致，已停止。');
-            hash.update(chunk);
-            await output.writeFile(chunk);
-            if (Date.now() - lastUpdate >= 100) {
-              change({ downloadedBytes: count, progress: Math.min(99, Math.floor(count * 100 / selected.size)) });
-              lastUpdate = Date.now();
+        for (let attempt = 0; attempt < 2; attempt++) {
+          controller.signal.throwIfAborted();
+          const child = new AbortController();
+          const abortChild = () => child.abort();
+          controller.signal.addEventListener('abort', abortChild, { once: true });
+          const noError = Symbol();
+          let response, reader, output, readFailure = noError, attemptError = noError, cleanupFailed = false;
+          let count = 0; let lastUpdate = 0;
+          const hash = crypto.createHash('sha256');
+          try {
+            response = await request(selected.downloadURL, child.signal);
+            controller.signal.throwIfAborted();
+            if (!response.body) throw new Error('安装包下载内容为空。');
+            reader = response.body.getReader();
+            output = await fs.open(partial, 'wx', 0o600);
+            while (true) {
+              let item;
+              const reading = reader.read();
+              try { item = await abortable(reading, controller.signal); }
+              catch (error) { if (!['AbortError', 'TimeoutError'].includes(error?.name) && error?.code !== 'ABORT_ERR' && !controller.signal.aborted) readFailure = error; throw error; }
+              controller.signal.throwIfAborted();
+              if (item.done) break;
+              const chunk = item.value;
+              if (chunk.length) refreshIdle();
+              count += chunk.length;
+              if (count > selected.size || count > MAX_DOWNLOAD) throw new Error('安装包大小与发布信息不一致，已停止。');
+              hash.update(chunk);
+              await output.writeFile(chunk);
+              if (Date.now() - lastUpdate >= 100) {
+                change({ downloadedBytes: count, progress: Math.min(99, Math.floor(count * 100 / selected.size)) });
+                lastUpdate = Date.now();
+              }
+            }
+          } catch (error) { attemptError = error; }
+          finally {
+            child.abort();
+            // An errored reader may reject cancel; a stalled cancel must still
+            // obey the original idle/total limits before another GET can start.
+            const cancelled = Promise.resolve().then(() => reader ? reader.cancel() : response?.body?.cancel()).catch(() => {});
+            const closed = Promise.resolve().then(() => output?.close());
+            closed.catch(() => {});
+            try { await abortable(cancelled, controller.signal); }
+            catch (error) { attemptError = error; cleanupFailed = true; }
+            finally {
+              try { reader?.releaseLock(); } catch (error) { attemptError = error; cleanupFailed = true; }
+              try { await abortable(closed, controller.signal); } catch (error) { attemptError = error; cleanupFailed = true; }
+              controller.signal.removeEventListener('abort', abortChild);
             }
           }
-        } finally { await output.close(); }
-        if (count !== selected.size || hash.digest('hex') !== expected) throw new Error('安装包 SHA256 校验失败，请重新下载。');
-        await fs.rename(partial, destination);
-        verified = { filename: destination, expected, size: selected.size };
-        return change({ status: 'downloaded', progress: 100, downloadedBytes: count, canInstall: true });
+          controller.signal.throwIfAborted();
+          if (attemptError !== noError) {
+            // The router sanitizes body errors, so this can also include a
+            // protocol rejection. One fresh body is still fully verified.
+            if (attempt === 0 && !cleanupFailed && attemptError === readFailure && !controller.signal.aborted) {
+              await fs.rm(partial, { force: true });
+              controller.signal.throwIfAborted();
+              change({ retryCount: 1, downloadedBytes: 0, progress: 0 });
+              continue;
+            }
+            throw attemptError;
+          }
+          controller.signal.throwIfAborted();
+          if (count !== selected.size || hash.digest('hex') !== expected) throw new Error('安装包 SHA256 校验失败，请重新下载。');
+          await fs.rename(partial, destination);
+          controller.signal.throwIfAborted();
+          verified = { filename: destination, expected, size: selected.size };
+          return change({ status: 'downloaded', progress: 100, downloadedBytes: count, canInstall: true });
+        }
       } catch (error) {
         controller.abort();
         await fs.rm(partial, { force: true }).catch(() => {});
-        return failure(error.name === 'AbortError' ? new Error('下载超时或连接中断，请重新下载。') : error);
+        return failure(error?.name === 'AbortError' ? new Error('下载超时或连接中断，请重新下载。') : error);
       } finally { clearTimeout(totalTimer); clearTimeout(idleTimer); clearTimeout(manifestTimer); await options.onOperation?.('download', false); }
     })();
     downloading = operation;

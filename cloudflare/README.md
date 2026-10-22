@@ -86,9 +86,17 @@ The subscription URL, administrator credentials, session key and GitHub App cred
 remain server-side and are never part of this contract.
 
 Each version check and each download operation performs a new configuration
-request and refreshes the subscription; `ttlSeconds` is a bounded schema hint,
-not permission to reuse nodes for the next operation. Both subscription and
-configuration fetches request no-cache/no-store. The service returns all distinct
+request. The service freshly reads and validates the private GitHub configuration
+on every request. The client endpoint may reuse a fully validated subscription
+for a fixed 15 seconds only when the program repository, complete configuration
+SHA and normalized subscription URL all match. Hits do not extend that window;
+configuration changes, expiry and failed GitHub reads cannot return old nodes.
+Concurrent requests in the same Worker isolate share the matching subscription
+read, and an administrator save invalidates these entries. Explicit `fresh`
+reads without this opt-in still bypass both caches. `ttlSeconds` remains a
+bounded schema hint, not permission for a client to skip its next configuration
+request. Both subscription and configuration fetches request no-cache/no-store.
+The service returns all distinct
 compatible routes up to 16, including different preferred IPs for the same TLS
 name. More than 16 compatible routes or a response larger than 32 KiB fails
 explicitly instead of silently claiming to have tested every route.
@@ -106,8 +114,11 @@ Clients probe all returned candidates in one bounded batch using native HTTPS
 `HEAD https://github.com/robots.txt`, require HTTP 200 without redirects or a
 challenge, and select the fastest successful end-to-end path. Each candidate has
 4 seconds and the batch has 8 seconds within the operation deadline. The selected
-route stays fixed for that operation; network failures never cause installer
-bytes to be replayed after delivery.
+route stays fixed for that operation. A rejected installer-body read permits at
+most one new continuous download on that route, after closing and deleting the
+partial file. It starts with a new hash and byte count, uses no Range request,
+and shares the original total deadline. Completed but incorrect content, HTTP
+errors, filesystem errors and aborted requests do not receive this retry.
 
 A system proxy takes precedence. With no system proxy, the session switch enables
 the local bridge; disabling it uses direct native networking. The switch resets
@@ -171,7 +182,8 @@ These commands do not publish. The standalone browser module is
 route, alias guard, compatibility settings, variable names and native limit
 bindings. The Worker uses `nodejs_compat` and `global_fetch_strictly_public`.
 
-Tests cover fresh per-operation reads, strict seven-field configuration, all 16
+Tests cover fresh per-operation configuration reads, version-keyed short reuse
+and single-flight invalidation, strict seven-field configuration, all 16
 preferred-IP routes, insecure flag rejection, size/rate limits, alias isolation,
 410-before-transport, official release parsing, origin/session/CSRF/SHA guards,
 and safe failure evidence. Native gate tests use local fixtures and native TLS,

@@ -31,7 +31,7 @@ export async function handleClientConfiguration(request, env, dependencies = {})
   const ip = request.headers.get('CF-Connecting-IP') || 'development';
   if (!await rateLimit(env, 'CLIENT_CONFIG_LIMITER', ip, 30)) return json({error: '配置请求过于频繁，请稍后重试', code: 'rate_limited'}, 429, {'Retry-After': '60'});
   try {
-    const nodes = await (dependencies.getNodes || getNodes)(env, undefined, {fresh: true});
+    const nodes = await (dependencies.getNodes || getNodes)(env, undefined, {fresh: true, reuseValidatedSubscription: true});
     return json(clientProxyConfiguration(nodes));
   } catch (error) {
     if (['too_many_supported_nodes', 'configuration_too_large', 'no_supported_nodes'].includes(error?.message)) return json({error: '代理配置超出客户端支持范围，请联系管理员调整订阅', code: 'proxy_configuration_unsupported'}, 502);
