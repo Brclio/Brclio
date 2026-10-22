@@ -19,6 +19,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.*
 
 class NativeUpdateProxyTest {
@@ -43,6 +44,7 @@ class NativeUpdateProxyTest {
     }
     private class Fixture(private val outer: SSLContext, inner: SSLContext, private val hang: Boolean=false, private val wrongAccept: Boolean=false, private val deniedStatus: Int?=null) : AutoCloseable {
         val encryptedClientHello = CountDownLatch(1)
+        val blockedRequest = CountDownLatch(1)
         val innerRequests=AtomicInteger()
         private val pool=Executors.newCachedThreadPool { task -> Thread(task,"offline-tls-fixture").apply { isDaemon=true } }
         private val sockets=java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
@@ -57,7 +59,7 @@ class NativeUpdateProxyTest {
                         try {
                             socket.soTimeout=4000
                             val headers=UpdateTunnelProtocol.readHeaders(socket.getInputStream());innerRequests.incrementAndGet()
-                            if(hang){Thread.sleep(10000);return@execute}
+                            if(hang){blockedRequest.countDown();CountDownLatch(1).await();return@execute}
                             val body="verified-through-two-real-TLS-layers".toByteArray()
                             socket.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray())
                             if(!headers.startsWith("HEAD "))socket.getOutputStream().write(body)
@@ -192,10 +194,81 @@ class NativeUpdateProxyTest {
             val proxy=bridge(fixture,valid.context.socketFactory)
             val connection=request(proxy,valid.context.socketFactory);connection.readTimeout=10000
             val pool=Executors.newSingleThreadExecutor()
-            val result=pool.submit<Boolean>{runCatching{connection.responseCode}.isFailure}
-            assertTrue(fixture.encryptedClientHello.await(2,TimeUnit.SECONDS));proxy.close()
-            assertTrue(result.get(2,TimeUnit.SECONDS));assertTrue(runCatching{Socket((proxy.proxy.address() as InetSocketAddress).address,(proxy.proxy.address() as InetSocketAddress).port)}.isFailure)
-            connection.disconnect();pool.shutdownNow()
+            // responseCode may return -1 on EOF; reading requires a real HTTP response.
+            val result=pool.submit<Boolean>{runCatching{connection.inputStream.read()}.isFailure}
+            try {
+                assertTrue("The request must reach blocked HTTP I/O",fixture.blockedRequest.await(2,TimeUnit.SECONDS))
+                assertFalse("The request must remain blocked before close",result.isDone)
+                proxy.close()
+                assertTrue("Closing the proxy must cancel blocked I/O",result.get(2,TimeUnit.SECONDS))
+                val address=proxy.proxy.address() as InetSocketAddress
+                assertTrue("A closed proxy must reject new connections",runCatching{Socket(address.address,address.port).use{}}.isFailure)
+            } finally {
+                proxy.close();connection.disconnect();result.cancel(true);pool.shutdownNow()
+            }
+        }
+    }
+    @Test fun closeToleratesAConcurrentSocketSetShrinkingBeforeIteration() {
+        val proxy=NativeUpdateProxy(listOf(node()),System.currentTimeMillis()+8000)
+        // A concurrent set's size can be observed as one just before its last entry is removed.
+        val shrinking=object:AbstractMutableSet<Socket>() {
+            override val size get()=1
+            override fun add(element:Socket)=false
+            override fun iterator()=mutableSetOf<Socket>().iterator()
+        }
+        NativeUpdateProxy::class.java.getDeclaredField("sockets").apply{isAccessible=true}.set(proxy,shrinking)
+        val workers=listOf("executor","timer").map { name ->
+            NativeUpdateProxy::class.java.getDeclaredField(name).apply{isAccessible=true}.get(proxy) as java.util.concurrent.ExecutorService
+        }
+        try {
+            proxy.close()
+            assertTrue("Closing must shut down both worker pools",workers.all{it.isShutdown})
+            val address=proxy.proxy.address() as InetSocketAddress
+            assertTrue("A closed proxy must reject new connections",runCatching{Socket(address.address,address.port).use{}}.isFailure)
+        } finally {
+            proxy.close();workers.forEach{it.shutdownNow()}
+        }
+    }
+    @Test fun socketsRegisteredAfterCloseAreDisposedBeforeDialOrTlsHandshake() {
+        for(stage in listOf("tcp","tls")) java.net.ServerSocket(0,8,java.net.InetAddress.getLoopbackAddress()).use { destination ->
+            val dials=AtomicInteger()
+            val proxy=NativeUpdateProxy(listOf(node()),System.currentTimeMillis()+8000,valid.context.socketFactory){
+                dials.incrementAndGet();InetSocketAddress("127.0.0.1",destination.localPort)
+            }
+            val raw=AtomicReference<Socket>()
+            val late=AtomicReference<Socket>()
+            val registered=CountDownLatch(1)
+            val entries=java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
+            val tracker=object:MutableSet<Socket> by entries {
+                override fun add(element:Socket):Boolean {
+                    if(element !is SSLSocket&&!element.isConnected)raw.compareAndSet(null,element)
+                    val selected=if(stage=="tcp")!element.isConnected else element is SSLSocket
+                    if(selected&&late.compareAndSet(null,element)) {
+                        if(element is SSLSocket)element.sslParameters=element.sslParameters.apply{endpointIdentificationAlgorithm=null}
+                        proxy.close() // Close before this new socket becomes visible to the tracker.
+                    }
+                    val added=entries.add(element)
+                    if(late.get()===element)registered.countDown()
+                    return added
+                }
+            }
+            NativeUpdateProxy::class.java.getDeclaredField("sockets").apply{isAccessible=true}.set(proxy,tracker)
+            try {
+                val address=proxy.proxy.address() as InetSocketAddress
+                Socket(address.address,address.port).use { client ->
+                    client.soTimeout=2000
+                    client.getOutputStream().apply{write("CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n".toByteArray());flush()}
+                    assertTrue("The $stage registration race must be reached",registered.await(2,TimeUnit.SECONDS))
+                    val ended=runCatching{client.getInputStream().read()}
+                    assertTrue("Closing must terminate the local connection",ended.isFailure||ended.getOrNull()==-1)
+                }
+                UpdateProxyThreadAssertions.awaitIdle()
+                assertTrue("The late $stage socket must be closed",late.get().isClosed)
+                assertTrue("The raw transport must be closed",raw.get().isClosed)
+                assertEquals("No dial may start after close",if(stage=="tcp")0 else 1,dials.get())
+                if(stage=="tls")assertNull("TLS must not be configured or started after close",(late.get() as SSLSocket).sslParameters.endpointIdentificationAlgorithm)
+                assertTrue("A closed proxy must reject new connections",runCatching{Socket(address.address,address.port).use{}}.isFailure)
+            } finally {proxy.close()}
         }
     }
     companion object {

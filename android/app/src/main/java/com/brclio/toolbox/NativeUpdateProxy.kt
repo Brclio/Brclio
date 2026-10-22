@@ -69,10 +69,12 @@ internal class NativeUpdateProxy(
                 var candidate: SSLSocket? = null
                 try {
                     tcp = Socket(Proxy.NO_PROXY).also { sockets.add(it) }
+                    checkOpen()
                     tcp.connect(connectAddress(node), 15_000)
                     candidate = (tlsFactory.createSocket(tcp, node.host, node.port, true) as SSLSocket).also { sockets.add(it) }
                     transports[candidate] = tcp
                     sockets.remove(tcp) // dispose(TLS) closes raw TCP first, including blocked writes.
+                    checkOpen()
                     candidate.enabledProtocols = candidate.supportedProtocols.filter { it == "TLSv1.2" || it == "TLSv1.3" }.toTypedArray()
                     candidate.soTimeout = 30_000
                     candidate.sslParameters = candidate.sslParameters.apply {
@@ -133,10 +135,13 @@ internal class NativeUpdateProxy(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        runCatching { server.close() }
-        sockets.toList().forEach(::dispose)
-        executor.shutdownNow()
-        timer.shutdownNow()
+        try {
+            runCatching { server.close() }
+            // The concurrent set can shrink between a size check and iteration.
+            sockets.forEach(::dispose)
+        } finally {
+            try { executor.shutdownNow() } finally { timer.shutdownNow() }
+        }
     }
 }
 
