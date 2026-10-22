@@ -137,6 +137,12 @@ class NativeUpdateProxyTest {
     private fun request(proxy:NativeUpdateProxy,trust:SSLSocketFactory)=(URL(UpdateNodeSelector.PROBE_ADDRESS).openConnection(proxy.proxy) as HttpsURLConnection).apply{
         sslSocketFactory=trust;connectTimeout=2000;readTimeout=2000;setRequestProperty("Connection","close")
     }
+    private fun assertListenerClosed(proxy:NativeUpdateProxy) {
+        val listener=NativeUpdateProxy::class.java.getDeclaredField("server").apply{isAccessible=true}.get(proxy) as java.net.ServerSocket
+        // A released ephemeral port can already belong to another fixture/process.
+        // Assert ownership of the actual listener rather than redialing its former address.
+        assertTrue("This proxy's own listener must be closed",listener.isClosed)
+    }
     @Test fun actualWssConnectAndInnerHttpsUseTwoRealVerifiedTlsLayers(){
         Fixture(valid.context,valid.context).use{fixture->bridge(fixture,valid.context.socketFactory).use{proxy->
             val connection=request(proxy,valid.context.socketFactory)
@@ -239,8 +245,7 @@ class NativeUpdateProxyTest {
                 assertFalse("The request must remain blocked before close",result.isDone)
                 proxy.close()
                 assertTrue("Closing the proxy must cancel blocked I/O",result.get(2,TimeUnit.SECONDS))
-                val address=proxy.proxy.address() as InetSocketAddress
-                assertTrue("A closed proxy must reject new connections",runCatching{Socket(address.address,address.port).use{}}.isFailure)
+                assertListenerClosed(proxy)
             } finally {
                 proxy.close();connection.disconnect();result.cancel(true);pool.shutdownNow()
             }
@@ -261,8 +266,7 @@ class NativeUpdateProxyTest {
         try {
             proxy.close()
             assertTrue("Closing must shut down both worker pools",workers.all{it.isShutdown})
-            val address=proxy.proxy.address() as InetSocketAddress
-            assertTrue("A closed proxy must reject new connections",runCatching{Socket(address.address,address.port).use{}}.isFailure)
+            assertListenerClosed(proxy)
         } finally {
             proxy.close();workers.forEach{it.shutdownNow()}
         }
@@ -305,7 +309,7 @@ class NativeUpdateProxyTest {
                 assertTrue("The raw transport must be closed",raw.get().isClosed)
                 assertEquals("No dial may start after close",if(stage=="tcp")0 else 1,dials.get())
                 if(stage=="tls")assertNull("TLS must not be configured or started after close",(late.get() as SSLSocket).sslParameters.endpointIdentificationAlgorithm)
-                assertTrue("A closed proxy must reject new connections",runCatching{Socket(address.address,address.port).use{}}.isFailure)
+                assertListenerClosed(proxy)
             } finally {proxy.close()}
         }
     }
