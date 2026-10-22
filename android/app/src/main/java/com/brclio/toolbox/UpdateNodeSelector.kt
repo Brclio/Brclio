@@ -15,12 +15,15 @@ internal class UpdateNodeSelector(
     private val requestFactory: (NativeUpdateProxy) -> HttpsURLConnection = { bridge -> URL(PROBE_ADDRESS).openConnection(bridge.proxy) as HttpsURLConnection },
 ) : AutoCloseable {
     private val closed = AtomicBoolean(false)
+    @Volatile private var terminalFailure: Throwable? = null
+    @Volatile private var permanentFailure: Throwable? = null
     private val bridges = Collections.newSetFromMap(ConcurrentHashMap<NativeUpdateProxy, Boolean>())
     private val requests = Collections.newSetFromMap(ConcurrentHashMap<HttpsURLConnection, Boolean>())
     private val executor = Executors.newFixedThreadPool(16) { task -> Thread(task, "Brclio-update-probe").apply { isDaemon = true } }
     private class Result(val node: UpdateProxyNode, val nanos: Long)
 
     fun select(nodes: List<UpdateProxyNode>, operationDeadline: Long): UpdateProxyNode {
+        require(nodes.size in 1..16) { "内置更新代理节点数量无效。" }
         val deadline = minOf(operationDeadline, System.currentTimeMillis() + TOTAL_TIMEOUT)
         val completions = ExecutorCompletionService<Result?>(executor)
         val futures = nodes.map { node -> completions.submit(java.util.concurrent.Callable {
@@ -46,10 +49,18 @@ internal class UpdateNodeSelector(
                     setRequestProperty("Accept", "application/vnd.github+json")
                 }
                 val status = request.responseCode
+                val challenge = UpdateProxyPolicy.isCloudflareChallenge(request.getHeaderField("cf-mitigated"))
+                if (status in setOf(403, 429, 301, 302, 303, 307, 308) || challenge) {
+                    permanentFailure = IllegalStateException("更新节点拒绝请求或返回未经允许的响应。")
+                }
                 if (!closed.get() && System.currentTimeMillis() < deadline && status == 200 &&
                     !UpdateProxyPolicy.isCloudflareChallenge(request.getHeaderField("cf-mitigated"))) Result(node, System.nanoTime() - started)
                 else null
-            } catch (_: Exception) { null }
+            } catch (failure: Exception) {
+                if (UpdateRetryPolicy.isSecurityFailure(failure)) terminalFailure = failure
+                bridge?.terminalFailure?.let { terminalFailure = it }
+                null
+            }
             finally {
                 request?.let { requests.remove(it); it.disconnect() }
                 bridge?.let { bridges.remove(it); it.close() }
@@ -65,7 +76,10 @@ internal class UpdateNodeSelector(
                 if (result != null && (best == null || result.nanos < best!!.nanos)) best = result
             }
             check(!closed.get() && !Thread.currentThread().isInterrupted) { "下载已停止。" }
-            return best?.node ?: error("内置更新代理节点均不可用，可关闭内置代理后重试。")
+            best?.node?.let { return it }
+            terminalFailure?.let { throw it }
+            permanentFailure?.let { throw it }
+            throw UpdateNetworkFailure("内置更新代理节点均不可用，可关闭内置代理后重试。")
         } finally {
             futures.forEach { it.cancel(true) }
             close()

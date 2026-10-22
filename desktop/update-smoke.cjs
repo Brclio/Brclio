@@ -106,8 +106,7 @@ async function main() {
     assert.deepEqual(await fs.readdir(updates), []);
 
     await application.evaluate(() => { globalThis.__updateSmoke.corrupted = false; });
-    await page.click('#about-update');
-    await expect(page.locator('#about-update')).toHaveText('下载并安装更新');
+    await expect(page.locator('#about-update')).toHaveText('重新下载');
     await page.click('#about-update');
     await expect(page.locator('#about-update-progress')).toBeVisible();
     await expect(page.locator('#about-update-status-title')).toHaveText('这次更新未完成，可以重试。');

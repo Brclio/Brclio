@@ -12,12 +12,8 @@ const SYSTEM_PARTITION = 'brclio-update-system';
 const DIRECT_PARTITION = 'brclio-update-direct';
 const OFFICIAL_HOSTS = new Set(['github.com', 'api.github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com']);
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
-const SYSTEM_CONNECTION_FAILURES = new Set([
-  'ERR_PROXY_CONNECTION_FAILED', 'ERR_TUNNEL_CONNECTION_FAILED', 'ERR_SOCKS_CONNECTION_FAILED',
-  'ERR_CONNECTION_CLOSED', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_TIMED_OUT',
-]);
-
 function routingError(message) { const error = new Error(message); error.code = 'BRCLIO_UPDATE_ROUTE'; return error; }
+function securityError() { return Object.assign(new Error('更新连接证书验证失败，已停止。'), { code: 'BRCLIO_UPDATE_SECURITY' }); }
 
 function officialURL(value, initial = false) {
   let url;
@@ -49,7 +45,7 @@ function responseAt(response, url, route, signal, finish = async () => {}) {
       try {
         const item = await reader.read();
         if (item.done) { await done(); controller.close(); } else controller.enqueue(item.value);
-      } catch { await done(); controller.error(connectionError(route, signal)); }
+      } catch (failure) { await done(); controller.error(transportError(failure, route, signal)); }
     },
     async cancel(reason) { try { await reader.cancel(reason); } finally { await done(); } },
   }, { highWaterMark: 0 }) : null;
@@ -60,7 +56,9 @@ function responseAt(response, url, route, signal, finish = async () => {}) {
 }
 
 async function cancel(response) {
-  try { await response.body?.cancel(); } catch { /* Preserve the validation error. */ }
+  // A remote cancellation must never turn an already known security rejection
+  // into a timeout that the outer updater would retry.
+  try { Promise.resolve(response.body?.cancel()).catch(() => {}); } catch { /* Preserve the validation error. */ }
 }
 
 async function closeSession(value) {
@@ -69,16 +67,15 @@ async function closeSession(value) {
 
 function connectionError(route, signal) {
   if (signal?.aborted) { const error = new Error('更新请求已取消。'); error.name = 'AbortError'; return error; }
-  return new Error(route === 'builtin' ? '内置更新代理连接失败，可关闭内置代理或稍后重试。' : '更新服务连接失败，请检查网络或系统代理后重试。');
+  return Object.assign(new Error(route === 'builtin' ? '内置更新代理连接失败，可关闭内置代理或稍后重试。' : '更新服务连接失败，请检查网络或系统代理后重试。'), { code: 'BRCLIO_UPDATE_NETWORK' });
 }
 
-function systemConnectionFailure(failure) {
-  if (['AbortError', 'TimeoutError'].includes(failure?.name)) return false;
-  const code = typeof failure?.code === 'string' ? failure.code : '';
-  const message = typeof failure?.message === 'string' ? failure.message : '';
-  const messageCodes = message.match(/\bERR_[A-Z0-9_]+\b/g) || [];
-  if (code && !SYSTEM_CONNECTION_FAILURES.has(code) || messageCodes.some(value => !SYSTEM_CONNECTION_FAILURES.has(value))) return false;
-  return Boolean(code || /^(?:net::)?ERR_[A-Z0-9_]+$/.test(message) && messageCodes.length);
+function transportError(failure, route, signal) {
+  if (signal?.aborted || failure?.name === 'AbortError') return connectionError(route, { aborted: true });
+  if (['BRCLIO_UPDATE_ROUTE', 'BRCLIO_UPDATE_SECURITY', 'BRCLIO_UPDATE_NETWORK'].includes(failure?.code)) return failure;
+  const codes = [failure?.code, ...(String(failure?.message || '').match(/\b(?:ERR_[A-Z0-9_]+|CERT_HAS_EXPIRED|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY)\b/g) || [])];
+  if (codes.some(value => /^(?:ERR_CERT_|ERR_SSL_|ERR_TLS_CERT_|CERT_HAS_EXPIRED$|DEPTH_ZERO_SELF_SIGNED_CERT$|SELF_SIGNED_CERT_IN_CHAIN$|UNABLE_TO_VERIFY_LEAF_SIGNATURE$|UNABLE_TO_GET_ISSUER_CERT_LOCALLY$)/.test(value || ''))) return securityError();
+  return connectionError(route, signal);
 }
 
 function abortable(promise, signal) {
@@ -109,23 +106,24 @@ async function configurationBody(response) {
     }
     const bytes = new Uint8Array(size); let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } finally { await reader.cancel().catch(() => {}); }
+    try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+    catch { throw routingError('内置更新代理配置无效，请稍后重试。'); }
+  } finally { void reader.cancel().catch(() => {}); }
 }
 
 function createUpdateProxy(options) {
-  let enabled = true, busy = false, route = 'builtin', error = null, fallbackFrom;
+  let enabled = true, busy = false, route = 'builtin', error = null;
   let sessionsPromise, operation;
   const scopes = new Set();
   const publish = options.onState || (() => {});
+  const now = options.now || (() => performance.now());
   const bridgeFactory = options.createBridge || createConnectBridge;
   const sessionFetch = options.fetchSession || ((value, url, init) => value.fetch(url, init));
-  function snapshot() { return { enabled, supported: true, route, busy, error, ...(fallbackFrom ? { fallbackFrom } : {}) }; }
+  function snapshot() { return { enabled, supported: true, route, busy, error }; }
   function change(next) {
     if ('enabled' in next) enabled = next.enabled;
     if ('route' in next) route = next.route;
     if ('error' in next) error = next.error;
-    if ('fallbackFrom' in next) fallbackFrom = next.fallbackFrom;
     const state = snapshot(); publish(state); return state;
   }
   function sessions() {
@@ -148,9 +146,7 @@ function createUpdateProxy(options) {
     return enabled ? { route: 'builtin', available } : { route: 'direct', fetch: options.netFetch };
   }
   async function state() {
-    // Idle UI refreshes must retain the route the last operation actually used.
-    // The next operation/selection or explicit toggle rechecks system routing.
-    if (busy || fallbackFrom === 'system') return snapshot();
+    if (busy) return snapshot();
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 5000);
     try { return change({ route: (await select([API_URL], controller.signal)).route, error: null }); }
     catch { return change({ error: '无法读取当前系统代理设置，请稍后重试。' }); }
@@ -159,7 +155,7 @@ function createUpdateProxy(options) {
   async function setEnabled(value) {
     if (typeof value !== 'boolean') throw new TypeError('内置代理开关必须为开启或关闭。');
     if (busy) throw new Error('正在检查或下载更新，请完成后再切换内置代理。');
-    change({ enabled: value, route: value ? 'builtin' : 'direct', error: null, fallbackFrom: undefined });
+    change({ enabled: value, route: value ? 'builtin' : 'direct', error: null });
     return state();
   }
   function dispose(scope) {
@@ -178,44 +174,64 @@ function createUpdateProxy(options) {
     return scope.disposing;
   }
   function setBusy(value, targets = []) {
-    busy = value === true;
-    if (busy) { fallbackFrom = undefined; operation = { targets: targets.map(url => officialURL(url, true)) }; }
-    else { const completed = operation; operation = null; publish(snapshot()); return dispose(completed); }
+    const previous = operation;
+    if (value === true) {
+      // Create synchronously for existing callers; the updater awaits disposal
+      // before starting the next attempt while controls remain locked.
+      operation = { targets: targets.map(url => officialURL(url, true)), configEndpoint: previous?.nextConfigEndpoint || CONFIG_URL }; busy = true;
+    } else { operation = null; busy = false; }
     publish(snapshot());
+    return dispose(previous);
   }
   async function initializeBuiltin(scope, selected, init) {
     if (!scope.initializing) scope.initializing = (async () => {
       let response;
-      for (const endpoint of [CONFIG_URL, CONFIG_FALLBACK_URL]) {
-        try {
-          response = await sessionFetch(selected.available.direct, endpoint, { signal: init.signal, redirect: 'manual', credentials: 'omit', cache: 'no-store', headers: {
-            Accept: 'application/json', 'Cache-Control': 'no-store, no-cache', 'User-Agent': new Headers(init.headers).get('user-agent') || 'Brclio-Updater/1.0',
-          } });
-        } catch (failure) {
-          if (init.signal?.aborted || endpoint === CONFIG_FALLBACK_URL) throw failure;
-          continue;
-        }
-        if (response.redirected || REDIRECTS.has(response.status) || (response.url && response.url !== endpoint)) {
-          await cancel(response); throw routingError('内置更新代理配置返回异常重定向，已停止。');
-        }
-        if (endpoint === CONFIG_URL && response.status === 403 && response.headers.get('cf-mitigated')?.trim().toLowerCase() === 'challenge') {
-          await cancel(response); continue;
-        }
-        break;
+      const endpoint = scope.configEndpoint || CONFIG_URL;
+      const nextEndpoint = () => { scope.nextConfigEndpoint = endpoint === CONFIG_URL ? CONFIG_FALLBACK_URL : CONFIG_URL; };
+      try {
+        response = await sessionFetch(selected.available.direct, endpoint, { signal: init.signal, redirect: 'manual', credentials: 'omit', cache: 'no-store', headers: {
+          Accept: 'application/json', 'Cache-Control': 'no-store, no-cache', 'User-Agent': new Headers(init.headers).get('user-agent') || 'Brclio-Updater/1.0',
+        } });
+      } catch (failure) {
+        const safe = transportError(failure, 'builtin', init.signal);
+        if (safe.code === 'BRCLIO_UPDATE_NETWORK') nextEndpoint();
+        throw safe;
+      }
+      if (response.redirected || REDIRECTS.has(response.status) || (response.url && response.url !== endpoint)) {
+        await cancel(response); throw routingError('内置更新代理配置返回异常重定向，已停止。');
+      }
+      if (endpoint === CONFIG_URL && response.status === 403 && response.headers.get('cf-mitigated')?.trim().toLowerCase() === 'challenge') {
+        nextEndpoint(); await cancel(response); throw connectionError('builtin', init.signal);
       }
       const blocked = requestBlockMessage(response, true);
       if (blocked) { await cancel(response); throw routingError(blocked); }
-      if (response.status !== 200) { await cancel(response); throw connectionError('builtin', init.signal); }
-      const configuration = parseProxyConfiguration(await configurationBody(response));
+      if (response.status !== 200) {
+        let unsupported = false;
+        if (response.status === 502) { try { unsupported = (await configurationBody(response)).code === 'proxy_configuration_unsupported'; } catch { /* The status still identifies a failed bootstrap. */ } }
+        await cancel(response);
+        if (unsupported) throw routingError('内置更新代理配置无效，请联系管理员调整订阅。');
+        if (response.status >= 400 && response.status < 500 && ![408, 425].includes(response.status)) throw routingError('内置更新代理配置请求被拒绝，请稍后重试。');
+        throw connectionError('builtin', init.signal);
+      }
+      let configuration;
+      let document;
+      try { document = await configurationBody(response); }
+      catch (failure) {
+        const safe = transportError(failure, 'builtin', init.signal);
+        if (safe.code === 'BRCLIO_UPDATE_NETWORK') nextEndpoint();
+        throw safe;
+      }
+      try { configuration = parseProxyConfiguration(document); }
+      catch { throw routingError('内置更新代理配置无效，请稍后重试。'); }
       const controller = new AbortController();
       const stop = () => controller.abort();
       scope.probeStop = stop;
       init.signal?.addEventListener('abort', stop, { once: true });
       if (init.signal?.aborted || scope.closed) stop();
       const totalTimer = setTimeout(stop, 8000);
-      const successful = []; let next = 0;
+      const successful = [], failures = []; let next = 0;
       async function probe(node, index) {
-        let bridge, builtin, retained = false;
+        let bridge, builtin, retained = false, failureCode = 'BRCLIO_UPDATE_NETWORK';
         const candidate = new AbortController();
         const abort = () => candidate.abort();
         controller.signal.addEventListener('abort', abort, { once: true });
@@ -230,19 +246,23 @@ function createUpdateProxy(options) {
           const close = () => { void bridge.close(); void closeSession(builtin); };
           candidate.signal.addEventListener('abort', close, { once: true });
           if (candidate.signal.aborted) { close(); return; }
-          const started = performance.now();
+          const started = now();
           try {
             const checked = await sessionFetch(builtin, PROBE_URL, { method: 'HEAD', signal: candidate.signal, redirect: 'manual', credentials: 'omit', cache: 'no-store',
               headers: { Accept: 'application/vnd.github+json', 'User-Agent': new Headers(init.headers).get('user-agent') || 'Brclio-Updater/1.0' } });
-            const elapsed = performance.now() - started;
+            const elapsed = now() - started;
             const valid = checked.status === 200 && !checked.redirected && (!checked.url || checked.url === PROBE_URL) && !requestBlockMessage(checked);
+            if (checked.redirected || REDIRECTS.has(checked.status) || checked.url && checked.url !== PROBE_URL || [403, 429].includes(checked.status)) failureCode = 'BRCLIO_UPDATE_ROUTE';
             await cancel(checked);
             if (valid && !candidate.signal.aborted && !scope.closed) { successful.push({ bridge, builtin, elapsed }); retained = true; }
           } finally { candidate.signal.removeEventListener('abort', close); }
-        } catch { /* Candidate names, credentials, URLs and remote bodies never leave this scope. */ }
+        } catch (failure) {
+          const safe = transportError(failure, 'builtin', candidate.signal);
+          failureCode = bridge?.failureCode || safe.code || failureCode;
+        }
         finally {
           clearTimeout(timer); controller.signal.removeEventListener('abort', abort);
-          if (!retained) { await closeSession(builtin); await bridge?.close().catch(() => {}); }
+          if (!retained) { failures.push(failureCode); await closeSession(builtin); await bridge?.close().catch(() => {}); }
         }
       }
       async function worker() {
@@ -253,7 +273,11 @@ function createUpdateProxy(options) {
         successful.sort((left, right) => left.elapsed - right.elapsed);
         const chosen = successful.shift();
         await Promise.all(successful.map(async value => { await closeSession(value.builtin); await value.bridge.close(); }));
-        if (!chosen) throw connectionError('builtin', init.signal);
+        if (!chosen) {
+          if (failures.length && failures.every(code => code === 'BRCLIO_UPDATE_SECURITY')) throw securityError();
+          if (failures.length && failures.every(code => ['BRCLIO_UPDATE_ROUTE', 'BRCLIO_UPDATE_SECURITY'].includes(code))) throw routingError('更新节点验证失败，已停止。');
+          throw connectionError('builtin', init.signal);
+        }
         if (scope.closed || init.signal?.aborted) { await chosen.bridge.close(); await closeSession(chosen.builtin); throw connectionError('builtin', { aborted: true }); }
         scope.bridge = chosen.bridge; scope.builtin = chosen.builtin;
       } finally { clearTimeout(totalTimer); init.signal?.removeEventListener('abort', stop); }
@@ -268,28 +292,14 @@ function createUpdateProxy(options) {
     let selected;
     try {
       let target = officialURL(url, true);
-      if (!scope.selection) { fallbackFrom = undefined; scope.selection = select(scope.targets.length ? scope.targets : [target], init.signal); }
+      if (!scope.selection) scope.selection = select(scope.targets.length ? scope.targets : [target], init.signal);
       selected = await abortable(scope.selection, init.signal);
-      change({ route: selected.route, error: null, fallbackFrom: selected.fallbackFrom });
-      let request = selected.route === 'builtin' ? await initializeBuiltin(scope, selected, init) : selected.fetch;
+      change({ route: selected.route, error: null });
+      const request = selected.route === 'builtin' ? await initializeBuiltin(scope, selected, init) : selected.fetch;
       for (let redirects = 0; ; redirects++) {
         if (scope.closed || init.signal?.aborted) throw connectionError(selected.route, { aborted: true });
         const requestOptions = { ...init, redirect: 'manual', credentials: 'omit' };
-        let response;
-        try { response = await request(target, requestOptions); }
-        catch (failure) {
-          if (selected.route !== 'system' || scope.systemFallbackAttempted || scope.closed || init.signal?.aborted ||
-              !['GET', 'HEAD'].includes(init.method || 'GET') || init.body != null || !systemConnectionFailure(failure)) throw failure;
-          // Retry only a failed connection before response headers. Keep the
-          // original signal/deadline and pin this operation to isolated DIRECT.
-          scope.systemFallbackAttempted = true;
-          selected.route = 'direct'; selected.fallbackFrom = 'system';
-          selected.fetch = (url, options) => sessionFetch(selected.available.direct, url, options);
-          request = selected.fetch;
-          change({ route: selected.route, error: null, fallbackFrom: selected.fallbackFrom });
-          if (scope.closed || init.signal?.aborted) throw connectionError(selected.route, { aborted: true });
-          response = await request(target, requestOptions);
-        }
+        const response = await request(target, requestOptions);
         if (response.redirected) { await cancel(response); throw routingError('下载重定向至非官方地址，已停止。'); }
         const blocked = requestBlockMessage(response);
         if (blocked) { await cancel(response); throw routingError(blocked); }
@@ -300,7 +310,10 @@ function createUpdateProxy(options) {
       }
     } catch (failure) {
       if (standalone) await dispose(scope);
-      const safe = failure?.code === 'BRCLIO_UPDATE_ROUTE' ? failure : connectionError(selected?.route, init.signal);
+      const bridgeCode = !init.signal?.aborted && failure?.name !== 'AbortError' ? scope.bridge?.failureCode : undefined;
+      const safe = bridgeCode === 'BRCLIO_UPDATE_SECURITY' ? securityError()
+        : bridgeCode === 'BRCLIO_UPDATE_ROUTE' ? routingError('内置更新代理连接被拒绝或返回无效跳转，已停止。')
+          : transportError(failure, selected?.route, init.signal);
       change({ error: safe.message }); throw safe;
     }
   }

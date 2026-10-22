@@ -34,7 +34,9 @@ try{
      const actual=session.fromPartition('brclio-offline-'+routerId+'-'+name,{...options,cache:false});
      // Trust this test-only leaf, including the official hostname SAN. This
      // verifier exists only in the fixture; production installs no verifier.
-     actual.setCertificateVerifyProc((request,callback)=>{try{const received=new crypto.X509Certificate(request.certificate.data);callback(received.fingerprint256===certificate.fingerprint256&&received.checkHost(request.hostname)?0:-2);}catch{callback(-2);}});
+     // Return Chromium's actual certificate errors (-200/-202/-207), rather
+     // than generic FAILED (-2), so retry classification receives the TLS cause.
+     actual.setCertificateVerifyProc((request,callback)=>{try{const received=new crypto.X509Certificate(request.certificate.data);callback(!received.checkHost(request.hostname)?-200:received.fingerprint256===certificate.fingerprint256?0:-202);}catch{callback(-207);}});
      sessionsToClose.push(actual);
      return actual;
     },createBridge:async options=>{const bridge=await createConnectBridge({...options,WebSocketClass:target.WebSocketClass});proxyPorts.push(Number(new URL(bridge.proxyRules).port));return bridge;}});
@@ -51,7 +53,7 @@ try{
    const h1=await startRelay({respond:(req,res)=>{if(req.method==='HEAD'){res.writeHead(200);res.end();return;}if(req.url.endsWith('SHA256SUMS.txt')){res.writeHead(302,{Location:'https://objects.githubusercontent.com/verified-checksum'});res.end();return;}res.end(`${digest}  ${assetName}`);}});
    try{
     const manual=session.fromPartition('brclio-offline-manual-redirect',{cache:false});sessionsToClose.push(manual);
-    manual.setCertificateVerifyProc((request,callback)=>{try{const received=new crypto.X509Certificate(request.certificate.data);callback(received.fingerprint256===certificate.fingerprint256&&received.checkHost(request.hostname)?0:-2);}catch{callback(-2);}});
+    manual.setCertificateVerifyProc((request,callback)=>{try{const received=new crypto.X509Certificate(request.certificate.data);callback(!received.checkHost(request.hostname)?-200:received.fingerprint256===certificate.fingerprint256?0:-202);}catch{callback(-207);}});
     const bridge=await createConnectBridge({nodes:[h1.node],WebSocketClass:h1.WebSocketClass});proxyPorts.push(Number(new URL(bridge.proxyRules).port));
     try{await manual.setProxy({mode:'fixed_servers',proxyRules:bridge.proxyRules,proxyBypassRules:'<-loopback>'});const first=await electronUpdateFetch(options=>electronNet.request(options),manual,prefix+'SHA256SUMS.txt');if(first.status!==302||h1.requests.length!==1)throw Error('Native redirect followed before validation');}finally{await manual.closeAllConnections();await bridge.close();}
     const redirected=routerFor(h1,1);const value=await redirected.fetch(prefix+'SHA256SUMS.txt');if(!(await value.text()).includes(digest))throw Error('HTTP1 redirect failed');await redirected.close();if(!h1.requests.every(value=>value.httpVersion==='1.1'))throw Error('HTTP1 fixture unused');
@@ -60,8 +62,8 @@ try{
    try{const redirected=routerFor(evil,1);await redirected.fetch(prefix+'SHA256SUMS.txt').then(()=>{throw Error('Unsafe redirect accepted');},error=>{if(!/非官方地址/.test(error.message))throw error;});await redirected.close();if(evil.requests.length!==2)throw Error('Unsafe redirect reached destination');}finally{await evil.close();}
    const truncated=await startRelay({respond:(req,res)=>{if(req.method==='HEAD'){res.writeHead(200);res.end();return;}res.writeHead(200,{'Content-Length':10000});res.write(Buffer.alloc(100));setTimeout(()=>res.destroy(),15);}});
    try{const broken=routerFor(truncated,1);try{const response=await broken.fetch(prefix+assetName);await response.text();throw Error('Truncated response accepted');}catch(error){if(!/内置更新代理连接失败/.test(error.message))throw error;}finally{await broken.close();}}finally{await truncated.close();}
-   const bad=await startRelay({originCertificate:'relay'});try{const negative=routerFor(bad,1);await negative.fetch(API_URL).then(()=>{throw Error('Bad inner certificate accepted');},error=>{if(!/内置更新代理连接失败/.test(error.message))throw Error('Unsafe negative error');});await negative.close();if(bad.requests.length)throw Error('Inner TLS rejection did not occur');}finally{await bad.close();}
-   const untrusted=await startRelay({trustOuter:false});try{const negative=routerFor(untrusted,1);await negative.fetch(API_URL).then(()=>{throw Error('Bad WSS certificate accepted');},()=>{});await negative.close();if(untrusted.requests.length)throw Error('WSS TLS rejection did not occur');}finally{await untrusted.close();}
+   const bad=await startRelay({originCertificate:'relay'});try{const negative=routerFor(bad,1);await negative.fetch(API_URL).then(()=>{throw Error('Bad inner certificate accepted');},error=>{if(error.code!=='BRCLIO_UPDATE_SECURITY'||!/证书验证失败/.test(error.message))throw Error('Unsafe negative error');});await negative.close();if(bad.requests.length)throw Error('Inner TLS rejection did not occur');}finally{await bad.close();}
+   const untrusted=await startRelay({trustOuter:false});try{const negative=routerFor(untrusted,1);await negative.fetch(API_URL).then(()=>{throw Error('Bad WSS certificate accepted');},error=>{if(error.code!=='BRCLIO_UPDATE_SECURITY')throw Error('Outer TLS failure must stop automatic retries');});await negative.close();if(untrusted.requests.length)throw Error('WSS TLS rejection did not occur');}finally{await untrusted.close();}
    const controller=new AbortController(),cancelling=routerFor(relay,1);const response=await cancelling.fetch(prefix+assetName,{signal:controller.signal});const reader=response.body.getReader();await reader.read();controller.abort();try{while(!(await reader.read()).done){}}catch{}await reader.cancel().catch(()=>{});await cancelling.close();
    await new Promise(resolve=>setTimeout(resolve,60));
    const closed=await Promise.all(proxyPorts.map(port=>new Promise(resolve=>{const socket=net.connect({host:'127.0.0.1',port});socket.once('error',()=>resolve(true));socket.once('connect',()=>{socket.destroy();resolve(false);});})));

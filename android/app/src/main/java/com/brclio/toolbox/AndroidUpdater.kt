@@ -18,15 +18,22 @@ import java.net.URL
 import java.security.MessageDigest
 import java.security.DigestOutputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.HttpsURLConnection
 
 class AndroidUpdater(private val activity: Activity, private val emit: (JSONObject) -> Unit) {
     private val worker = Executors.newSingleThreadExecutor()
     private val busy = AtomicBoolean(false)
+    private val deadlineWorker = Executors.newSingleThreadScheduledExecutor()
+    @Volatile private var connectionDeadline: ScheduledFuture<*>? = null
+    @Volatile private var retryState = UpdateRetryState()
     private val directory = File(activity.cacheDir, "updates").apply { mkdirs() }
     private val currentVersion = BuildConfig.VERSION_NAME.removeSuffix("-debug")
     @Volatile private var state = JSONObject().put("status", "up-to-date").put("currentVersion", currentVersion)
+        .put("retryCount", 0).put("retryLimit", UpdateRetryPolicy.LIMIT).put("retrying", false)
+        .put("retryExhausted", false).put("retryStage", JSONObject.NULL).put("message", JSONObject.NULL)
     @Volatile private var connection: HttpsURLConnection? = null
     @Volatile private var bootstrap: UpdateProxyBootstrap? = null
     @Volatile private var nodeSelector: UpdateNodeSelector? = null
@@ -43,36 +50,56 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
     }
 
     fun check(callback: (JSONObject?, String?) -> Unit) = run(callback) {
+        retryState = UpdateRetryState(retryStage = "check")
+        latest = null
         publish("checking")
-        val route = prepareNetwork(60_000)
-        val metadata = readSmall("https://api.github.com/repos/Brclio/Brclio/releases/latest", 1024 * 1024, route)
-        val release = UpdatePolicy.parseRelease(JSONObject(metadata))
+        // Each attempt has a fresh 60s budget; the whole loop is still bounded.
+        val deadline = System.currentTimeMillis() + 11 * 60_000L + 42_000L
+        var bootstrapAddress = UpdateProxyConfig.ADDRESS
+        val release = UpdateRetryController().run("check", deadline, { closed }, { retry ->
+            retryState = retry
+            publish("checking")
+        }, ::closeNetwork) {
+            val attemptDeadline = minOf(deadline, System.currentTimeMillis() + 60_000L)
+            val address = bootstrapAddress
+            bootstrapAddress = UpdateProxyConfig.ADDRESS
+            val route = try { prepareNetwork(attemptDeadline, address) }
+            catch (failure: UpdateBootstrapFailure) { bootstrapAddress = failure.nextAddress; throw failure }
+            val metadata = readSmall("https://api.github.com/repos/Brclio/Brclio/releases/latest", 1024 * 1024, route, attemptDeadline)
+            UpdatePolicy.parseRelease(JSONObject(metadata))
+        }
         latest = release
         publish(if (UpdatePolicy.isNewer(release.version, currentVersion)) "available" else "up-to-date", release)
     }
 
     fun download(callback: (JSONObject?, String?) -> Unit) = run(callback) {
+        retryState = UpdateRetryState(retryStage = "download")
         val release = latest ?: error("请先检查更新。")
         check(!UpdatePolicy.isNewer(currentVersion, release.version)) { "不能下载早于当前版本的安装包。" }
-        downloaded?.delete()
+        downloaded?.let { check(!it.exists() || it.delete()) { "无法删除上次的安装包。" } }
         downloaded = null
         downloadedSha256 = null
-        val deadline = System.currentTimeMillis() + 10 * 60 * 1000
-        val route = prepareNetwork(10 * 60 * 1000, deadline)
-        val checksum = UpdatePolicy.expectedChecksum(readSmall(release.checksums.url, 256 * 1024, route), release.apk.name)
+        val deadline = System.currentTimeMillis() + 10 * 60_000L
         val temporary = File(directory, "${release.apk.name}.part")
         val target = File(directory, release.apk.name)
-        temporary.delete()
-        target.delete()
+        var bootstrapAddress = UpdateProxyConfig.ADDRESS
         publish("downloading", release, 0, release.apk.size)
-        try {
+        UpdateRetryController().run("download", deadline, { closed }, { retry ->
+            retryState = retry
+            publish("downloading", release, 0, release.apk.size)
+        }, {
+            closeNetwork()
+            check(!temporary.exists() || temporary.delete()) { "无法清理未完成的安装包。" }
+        }) {
+            check(!target.exists() || target.delete()) { "无法清理旧安装包。" }
+            val address = bootstrapAddress
+            bootstrapAddress = UpdateProxyConfig.ADDRESS
+            val route = try { prepareNetwork(deadline, address) }
+            catch (failure: UpdateBootstrapFailure) { bootstrapAddress = failure.nextAddress; throw failure }
+            val checksum = UpdatePolicy.expectedChecksum(readSmall(release.checksums.url, 256 * 1024, route, deadline), release.apk.name)
             val digest = MessageDigest.getInstance("SHA-256")
             var received = 0L
             var lastProgress = 0L
-            fun checkActive() {
-                check(!closed && !Thread.currentThread().isInterrupted) { "下载已停止。" }
-                check(System.currentTimeMillis() < deadline) { "下载超时，请重试。" }
-            }
             fun progress(bytes: Long) {
                 received = bytes
                 val now = System.currentTimeMillis()
@@ -81,40 +108,38 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                     lastProgress = now
                 }
             }
+            // Only remote connection/read exceptions are retryable. Disk writes,
+            // checksum/signature failures and installation are never replayed.
             DigestOutputStream(temporary.outputStream(), digest).use { output ->
-                val response = open(release.apk.url, route)
-                response.inputStream.use { input ->
+                val response = open(release.apk.url, route, deadline)
+                val input = remote { response.inputStream }
+                try {
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
-                        checkActive()
-                        val count = input.read(buffer)
+                        checkActive(deadline)
+                        val count = remote { input.read(buffer) }
                         if (count < 0) break
-                        checkActive()
+                        checkActive(deadline)
                         check(received + count <= release.apk.size) { "安装包大小超过发布记录。" }
                         output.write(buffer, 0, count)
                         progress(received + count)
                     }
-                }
+                } finally { runCatching { input.close() } }
             }
-            checkActive()
-            check(received == release.apk.size) { "安装包下载不完整，请重试。" }
+            checkActive(deadline)
+            if (received < release.apk.size) throw UpdateNetworkFailure("安装包连接提前结束。")
+            check(received == release.apk.size) { "安装包大小与发布记录不符。" }
             check(digest.digest().hex() == checksum) { "安装包 SHA-256 校验失败，已删除下载文件。" }
             verifyPackage(temporary, release)
             check(temporary.renameTo(target)) { "无法保存已验证的安装包。" }
             downloaded = target
             downloadedSha256 = checksum
-            publish("downloaded", release, received, release.apk.size)
-        } catch (exception: Exception) {
-            temporary.delete()
-            target.delete()
-            throw exception
-        } finally {
-            connection?.disconnect()
-            connection = null
         }
+        publish("downloaded", release, release.apk.size, release.apk.size)
     }
 
     fun install(callback: (JSONObject?, String?) -> Unit) = run(callback) {
+        retryState = UpdateRetryState()
         val release = latest ?: error("请先检查并下载更新。")
         val apk = downloaded?.takeIf { it.isFile } ?: error("请先下载更新。")
         val actual = apk.inputStream().use { input ->
@@ -164,15 +189,16 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 val result = action()
                 if (result != null) onMain { callback(result, null) }
             } catch (exception: Exception) {
-                val message = if (exception is java.io.IOException) "更新网络连接中断，请检查网络或关闭内置代理后重试。"
+                if (exception !is UpdateRetryExhausted) retryState = retryState.copy(retrying = false, message = null)
+                val message = if (exception is UpdateRetryExhausted) retryState.message ?: exception.message!!
+                    else if (UpdateRetryPolicy.isSecurityFailure(exception)) "更新连接的安全验证失败，请检查网络后点击重试。"
+                    else if (exception is UpdateNetworkFailure) "更新网络连接中断，请点击重试。"
+                    else if (exception is java.io.IOException) "无法读写更新文件，请检查设备存储后重试。"
                     else exception.message?.take(500) ?: "更新操作失败，请重试。"
                 publish("error", latest, error = message)
                 onMain { callback(null, message) }
             } finally {
-                connection?.disconnect()
-                connection = null
-                nativeProxy?.close()
-                nativeProxy = null
+                closeNetwork()
                 busy.set(false)
             }
         }
@@ -186,6 +212,10 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
             .put("downloadedBytes", received).put("totalBytes", total)
             .put("progress", if (total > 0) minOf(100, received * 100 / total) else 0)
             .put("error", error ?: JSONObject.NULL)
+            .put("retryCount", retryState.retryCount).put("retryLimit", retryState.retryLimit)
+            .put("retrying", retryState.retrying).put("retryExhausted", retryState.retryExhausted)
+            .put("retryStage", retryState.retryStage ?: JSONObject.NULL)
+            .put("message", retryState.message ?: JSONObject.NULL)
         state = next
         onMain { emit(next) }
         return next
@@ -237,37 +267,68 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         }
     }
 
-    /** One operation owns one route and bridge; no configuration is persisted. */
-    private fun prepareNetwork(duration: Long, deadline: Long = System.currentTimeMillis() + duration): UpdateProxyRoute {
+    private fun checkActive(deadline: Long) {
+        if (closed || Thread.currentThread().isInterrupted) throw UpdateStopped()
+        if (System.currentTimeMillis() >= deadline) throw UpdateNetworkFailure("更新连接超时。")
+    }
+
+    private fun closeConnection() {
+        connectionDeadline?.cancel(false)
+        connectionDeadline = null
+        connection?.disconnect()
+        connection = null
+    }
+
+    private fun closeNetwork() {
+        // Tear down transports before disconnecting a possibly blocked TLS read.
+        nativeProxy?.close()
+        nativeProxy = null
+        nodeSelector?.close()
+        nodeSelector = null
+        bootstrap?.close()
+        bootstrap = null
+        closeConnection()
+    }
+
+    private fun <T> remote(action: () -> T): T = try { action() }
+    catch (failure: java.io.IOException) {
+        nativeProxy?.terminalFailure?.let { throw it }
+        if (closed || Thread.currentThread().isInterrupted) throw UpdateStopped()
+        if (UpdateRetryPolicy.isSecurityFailure(failure)) throw failure
+        throw UpdateNetworkFailure("更新网络连接中断。", failure)
+    }
+
+    /** Every attempt freshly resolves routing, configuration and every candidate. */
+    private fun prepareNetwork(deadline: Long, bootstrapAddress: String): UpdateProxyRoute {
+        checkActive(deadline)
         val route = currentProxyRoute()
         if (route != UpdateProxyRoute.BUILTIN) return route
-        val loader = UpdateProxyBootstrap(deadline, { closed })
+        val loader = UpdateProxyBootstrap(deadline, { closed }, address = bootstrapAddress)
         bootstrap = loader
         val nodes = try { loader.fetch() } finally { loader.close(); bootstrap = null }
         val selector = UpdateNodeSelector()
         nodeSelector = selector
         val selected = try { selector.select(nodes, deadline) } finally { selector.close(); nodeSelector = null }
         nativeProxy = NativeUpdateProxy(listOf(selected), deadline)
-        check(!closed && !Thread.currentThread().isInterrupted) { "下载已停止。" }
+        checkActive(deadline)
         return route
     }
 
-    private fun open(address: String, route: UpdateProxyRoute): HttpsURLConnection {
+    private fun open(address: String, route: UpdateProxyRoute, deadline: Long): HttpsURLConnection {
         check(UpdateProxyPolicy.allowedSource(address)) { "更新下载地址不受信任。" }
         var url = address
         repeat(6) {
-            check(!closed && !Thread.currentThread().isInterrupted) { "下载已停止。" }
+            checkActive(deadline)
             check(UpdatePolicy.allowedDownloadHost(url)) { "更新下载地址不受信任。" }
-            // The URL, SNI, certificate and hostname checks all remain the original
-            // GitHub/CDN values. Only the explicitly supplied transport proxy changes.
             val opened = when (route) {
                 UpdateProxyRoute.SYSTEM -> URL(url).openConnection()
                 UpdateProxyRoute.DIRECT -> URL(url).openConnection(Proxy.NO_PROXY)
                 UpdateProxyRoute.BUILTIN -> URL(url).openConnection(nativeProxy?.proxy ?: error("内置更新代理已停止。"))
             }
+            val remaining = maxOf(1, deadline - System.currentTimeMillis())
             val request = (opened as HttpsURLConnection).apply {
-                connectTimeout = 15_000
-                readTimeout = 30_000
+                connectTimeout = minOf(15_000L, remaining).toInt()
+                readTimeout = minOf(30_000L, remaining).toInt()
                 instanceFollowRedirects = false
                 useCaches = false
                 setRequestProperty("Connection", "close")
@@ -277,27 +338,25 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
             }
             connection = request
-            if (closed || Thread.currentThread().isInterrupted) { request.disconnect(); error("下载已停止。") }
-            val code = try { request.responseCode } catch (_: java.io.IOException) {
-                request.disconnect()
-                error(if (route == UpdateProxyRoute.BUILTIN) "内置更新代理连接失败，可关闭内置代理后重试。" else "无法连接更新服务器，请检查网络后重试。")
-            }
+            connectionDeadline = deadlineWorker.schedule({ request.disconnect() }, remaining, TimeUnit.MILLISECONDS)
+            checkActive(deadline)
+            val code = remote { request.responseCode }
             val mitigated = request.getHeaderField("cf-mitigated")
             if (UpdateProxyPolicy.isCloudflareChallenge(mitigated)) {
-                request.disconnect()
+                closeConnection()
                 error(UpdateProxyPolicy.responseError(code, UpdateProxyRoute.DIRECT, mitigated))
             }
             if (code in setOf(301, 302, 303, 307, 308)) {
                 val destination = request.getHeaderField("Location")
-                request.disconnect()
+                closeConnection()
                 check(destination != null) { "更新服务器重定向缺少地址。" }
                 url = try { URL(URL(url), destination).toString() } catch (_: Exception) { error("更新下载地址不受信任。") }
             } else {
                 if (code != HttpURLConnection.HTTP_OK) {
-                    request.disconnect()
-                    // These are now original GitHub responses; service errors are
-                    // classified separately while loading the bootstrap configuration.
-                    error(UpdateProxyPolicy.responseError(code, UpdateProxyRoute.DIRECT))
+                    closeConnection()
+                    val message = UpdateProxyPolicy.responseError(code, UpdateProxyRoute.DIRECT)
+                    if (code == 408 || code in 500..599) throw UpdateNetworkFailure(message)
+                    error(message)
                 }
                 return request
             }
@@ -305,23 +364,27 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         error("更新服务器重定向次数过多。")
     }
 
-    private fun readSmall(address: String, limit: Int, route: UpdateProxyRoute): String {
-        val request = open(address, route)
+    private fun readSmall(address: String, limit: Int, route: UpdateProxyRoute, deadline: Long): String {
+        val request = open(address, route, deadline)
         val output = ByteArrayOutputStream()
-        val deadline = System.currentTimeMillis() + 60_000
         try {
-            request.inputStream.use { input ->
+            val declaredLength = request.contentLengthLong
+            check(declaredLength <= limit) { "更新信息超过大小限制。" }
+            val input = remote { request.inputStream }
+            try {
                 val buffer = ByteArray(8192)
                 while (true) {
-                    check(!closed && System.currentTimeMillis() < deadline) { "更新检查超时，请重试。" }
-                    val count = input.read(buffer)
+                    checkActive(deadline)
+                    val count = remote { input.read(buffer) }
                     if (count < 0) break
+                    checkActive(deadline)
                     check(output.size() + count <= limit) { "更新信息超过大小限制。" }
                     output.write(buffer, 0, count)
                 }
-            }
+            } finally { runCatching { input.close() } }
+            if (declaredLength >= 0 && output.size().toLong() < declaredLength) throw UpdateNetworkFailure("更新信息连接提前结束。")
             return output.toString("UTF-8")
-        } finally { request.disconnect(); connection = null }
+        } finally { closeConnection() }
     }
 
     @Suppress("DEPRECATION")
@@ -346,12 +409,9 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
 
     fun close() {
         closed = true
-        bootstrap?.close()
-        nodeSelector?.close()
-        nativeProxy?.close()
-        connection?.disconnect()
-        nativeProxy = null
+        closeNetwork()
         worker.shutdownNow()
+        deadlineWorker.shutdownNow()
         directory.listFiles()?.filter { it.name.endsWith(".part") }?.forEach(File::delete)
     }
 

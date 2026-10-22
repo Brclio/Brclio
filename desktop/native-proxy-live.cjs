@@ -33,7 +33,7 @@ const { _electron: electron } = require('@playwright/test');
       const { createConnectBridge } = load('./desktop/update-connect-bridge.cjs');
       const { createUpdater, checksumFor, requestBlockMessage } = load('./desktop/updater.cjs');
       const result = { actualAppVersion: app.getVersion(), updaterCurrentVersionFixture: input.fixtureVersion,
-        requestedExpectedRelease: input.expectedVersion, fixturePlatform: 'win32', fixtureArchitecture: 'x64', requests: [], operations: [], installerInstalled: false, retryCount: 0 };
+        requestedExpectedRelease: input.expectedVersion, fixturePlatform: 'win32', fixtureArchitecture: 'x64', requests: [], operations: [], installerInstalled: false, retryCount: 0, retryLimit: 10 };
       const actualSessions = new Set(), names = new WeakMap();
       let active, lastProgress = 0;
       const safeCode = error => [...new Set([String(error?.code || ''), String(error?.message || '')].join(' ').match(/ERR_[A-Z0-9_]+/g) || [])];
@@ -41,7 +41,7 @@ const { _electron: electron } = require('@playwright/test');
         const parsed = new URL(url), service = [new URL(CONFIG_URL).origin, new URL(CONFIG_FALLBACK_URL).origin].includes(parsed.origin);
         if (service ? parsed.pathname !== '/api/client/update-proxy' : !['github.com', 'api.github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'].includes(parsed.hostname)) throw Error('unexpected_transport_destination');
         const kind = service ? 'configuration' : init.method === 'HEAD' ? 'probe' : parsed.hostname === 'api.github.com' ? 'metadata' : parsed.pathname.endsWith('SHA256SUMS.txt') ? 'manifest-origin' : parsed.hostname === 'github.com' ? 'installer-origin' : 'official-cdn';
-        const record = { operation: active?.kind, kind, session: names.get(value), method: init.method || 'GET', range: new Headers(init.headers).has('range') };
+        const record = { operation: active?.kind, operationId: active?.id, kind, session: names.get(value), method: init.method || 'GET', range: new Headers(init.headers).has('range') };
         result.requests.push(record); const started = performance.now();
         try { const response = await electronUpdateFetch(options => net.request(options), value, url, init);
           const ray = response.headers.get('cf-ray');
@@ -62,13 +62,17 @@ const { _electron: electron } = require('@playwright/test');
       const updater = createUpdater({ currentVersion: input.fixtureVersion, platform: 'win32', architecture: 'x64', directory,
         fetch: async (url, init) => { const response = await router.fetch(url, init);
           if (response.ok && url.endsWith('SHA256SUMS.txt')) result.expectedSHA256 = checksumFor(await response.clone().text(), result.assetName); return response; },
-        onOperation: async (kind, enabled, targets) => { if (enabled) { active = { kind, configurations: 0, candidates: 0, dialAddresses: new Set() }; result.operations.push(active); }
-          await router.setBusy(enabled, targets); if (!enabled) { active.distinctDialAddresses = active.dialAddresses.size; delete active.dialAddresses; } },
+        onOperation: async (kind, enabled, targets) => {
+          if (active?.dialAddresses) { active.distinctDialAddresses = active.dialAddresses.size; delete active.dialAddresses; }
+          if (enabled) { active = { id: result.operations.length + 1, kind, configurations: 0, candidates: 0, dialAddresses: new Set() }; result.operations.push(active); }
+          await router.setBusy(enabled, targets); },
         onState: state => { result.retryCount = state.retryCount; result.lastState = { status: state.status, downloadedBytes: state.downloadedBytes, totalBytes: state.totalBytes, canInstall: state.canInstall, retryCount: state.retryCount };
+          if (active && ((active.kind === 'check' && ['available', 'up-to-date'].includes(state.status)) || (active.kind === 'download' && state.status === 'downloaded'))) active.succeeded = true;
           if (Date.now() - lastProgress >= 5000) { lastProgress = Date.now(); console.log('BRCLIO_NATIVE_GATE ' + JSON.stringify(result.lastState)); } },
         installPackage: async () => { result.installerInstalled = true; throw Error('installation_forbidden'); } });
       function summarizeOperations() {
-        for (const operation of result.operations) { const requests = result.requests.filter(value => value.operation === operation.kind), probes = requests.filter(value => value.kind === 'probe'), successful = probes.filter(value => value.probeAccepted);
+        for (const operation of result.operations) { const requests = result.requests.filter(value => value.operationId === operation.id), probes = requests.filter(value => value.kind === 'probe'), successful = probes.filter(value => value.probeAccepted);
+          if (operation.dialAddresses) { operation.distinctDialAddresses = operation.dialAddresses.size; delete operation.dialAddresses; }
           operation.probesStarted = probes.length; operation.successfulProbes = successful.length;
           operation.selectedLatencyMs = successful.find(value => value.session === operation.selectedSession)?.headersElapsedMs ?? null;
           operation.minimumSuccessfulLatencyMs = successful.length ? Math.min(...successful.map(value => value.headersElapsedMs)) : null;
@@ -78,6 +82,7 @@ const { _electron: electron } = require('@playwright/test');
       }
       try {
         const checked = await updater.check();
+        result.checkRetryCount = checked.retryCount;
         result.actualOfficialRelease = checked.version;
         if (checked.status !== 'available' || (input.expectedVersion && checked.version !== input.expectedVersion)) { result.failure = 'official_release_check_failed_or_changed'; return result; }
         result.assetName = checked.assetName; result.totalBytes = checked.totalBytes;
@@ -87,8 +92,12 @@ const { _electron: electron } = require('@playwright/test');
         const filename = path.join(directory, result.assetName), hash = crypto.createHash('sha256'); result.actualBytes = (await fsp.stat(filename)).size;
         for await (const bytes of fs.createReadStream(filename)) hash.update(bytes); result.actualSHA256 = hash.digest('hex');
         summarizeOperations();
-        result.passed = [0, 1].includes(result.retryCount) && downloaded.canInstall && result.actualBytes === result.totalBytes && result.actualSHA256 === result.expectedSHA256 && !result.installerInstalled && result.partialFiles === 0
-          && result.requests.every(value => !value.range) && result.operations.length === 2 && result.operations.every(value => value.configurations === 1 && value.candidates >= 1 && value.candidates <= 16 && value.probesStarted === value.candidates && value.selectedMinimumWithinTwoMs && value.officialRequestSessionCount === 1);
+        const successful = result.operations.filter(value => value.succeeded);
+        result.passed = Number.isInteger(result.retryCount) && result.retryCount >= 0 && result.retryCount <= 10 && downloaded.canInstall && result.actualBytes === result.totalBytes && result.actualSHA256 === result.expectedSHA256 && !result.installerInstalled && result.partialFiles === 0
+          && result.requests.every(value => !value.range) && result.operations.length === 2 + result.checkRetryCount + result.retryCount
+          && ['check', 'download'].every(kind => successful.filter(value => value.kind === kind).length === 1)
+          && successful.every(value => value.configurations === 1 && value.candidates >= 1 && value.candidates <= 16 && value.probesStarted === value.candidates && value.selectedMinimumWithinTwoMs && value.officialRequestSessionCount === 1)
+          && result.operations.every(value => value.configurations <= 1 && value.candidates <= 16 && value.officialRequestSessionCount <= 1);
         if (!result.passed) result.failure = 'native_transport_evidence_mismatch';
         return result;
       } catch (error) { result.failure = 'native_gate_unexpected_failure'; result.errorCodes = safeCode(error); return result; }

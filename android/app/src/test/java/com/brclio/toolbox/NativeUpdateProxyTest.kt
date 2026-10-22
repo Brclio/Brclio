@@ -41,7 +41,7 @@ class NativeUpdateProxyTest {
             directory.deleteRecursively()
         }
     }
-    private class Fixture(private val outer: SSLContext, inner: SSLContext, private val hang: Boolean=false, private val wrongAccept: Boolean=false) : AutoCloseable {
+    private class Fixture(private val outer: SSLContext, inner: SSLContext, private val hang: Boolean=false, private val wrongAccept: Boolean=false, private val deniedStatus: Int?=null) : AutoCloseable {
         val encryptedClientHello = CountDownLatch(1)
         val innerRequests=AtomicInteger()
         private val pool=Executors.newCachedThreadPool { task -> Thread(task,"offline-tls-fixture").apply { isDaemon=true } }
@@ -81,6 +81,7 @@ class NativeUpdateProxyTest {
                 val key=headers.split("\r\n").first{it.startsWith("Sec-WebSocket-Key:")}.substringAfter(':').trim()
                 val accept=if(wrongAccept)"invalid" else Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-1").digest((key+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").toByteArray()))
                 val out=socket.getOutputStream()
+                if(deniedStatus!=null){out.write("HTTP/1.1 $deniedStatus Rejected\r\nContent-Length: 0\r\n\r\n".toByteArray());out.flush();return}
                 out.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\nSec-WebSocket-Accept: $accept\r\n\r\n".toByteArray());out.flush()
                 if(wrongAccept)return
                 val input=DataInputStream(socket.getInputStream())
@@ -129,6 +130,18 @@ class NativeUpdateProxyTest {
             val connection=request(proxy,valid.context.socketFactory)
             try{assertEquals("verified-through-two-real-TLS-layers",connection.inputStream.bufferedReader().readText());assertTrue(fixture.encryptedClientHello.await(1,TimeUnit.SECONDS));assertEquals(1,fixture.innerRequests.get())}finally{connection.disconnect()}
         }}
+    }
+    @Test fun websocketDenialsAndRedirectsRemainPermanentAcrossTheLocalConnectBoundary() {
+        for(status in listOf(403,429,302)) Fixture(valid.context,valid.context,deniedStatus=status).use { fixture ->
+            bridge(fixture,valid.context.socketFactory).use { proxy ->
+                val connection=request(proxy,valid.context.socketFactory)
+                try {
+                    assertTrue(runCatching{connection.inputStream.read()}.isFailure)
+                    assertTrue(proxy.terminalFailure is UpdateTransportRejected)
+                    assertFalse(UpdateRetryPolicy.canRetry(proxy.terminalFailure!!))
+                } finally { connection.disconnect() }
+            }
+        }
     }
     @Test fun fastestNodeProbePerformsRealEndToEndHttpsHead() {
         Fixture(valid.context,valid.context).use { fixture ->

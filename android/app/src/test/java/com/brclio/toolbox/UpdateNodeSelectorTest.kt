@@ -73,8 +73,19 @@ class UpdateNodeSelectorTest {
         for((status,challenge) in listOf(302 to null,403 to null,200 to " Challenge ")){
             val selector=UpdateNodeSelector(requestFactory={Response({status},challenge)})
             val error=runCatching{selector.select(listOf(node(1)),System.currentTimeMillis()+1000)}.exceptionOrNull()
-            assertEquals("内置更新代理节点均不可用，可关闭内置代理后重试。",error!!.message)
+            assertNotNull(error);assertFalse(UpdateRetryPolicy.canRetry(error!!))
         }
+    }
+    @Test fun securityFailureDoesNotBecomeRetryableNoUsableNodes(){
+        val selector=UpdateNodeSelector(requestFactory={Response({throw javax.net.ssl.SSLHandshakeException("fixture certificate")})})
+        val failure=runCatching{selector.select(listOf(node(1)),System.currentTimeMillis()+1000)}.exceptionOrNull()!!
+        assertTrue(failure is javax.net.ssl.SSLHandshakeException);assertFalse(UpdateRetryPolicy.canRetry(failure))
+    }
+    @Test fun connectionFailureBecomesRetryableOnlyAfterAllResourcesClose(){
+        val closes=AtomicInteger()
+        val selector=UpdateNodeSelector(requestFactory={Response({throw java.net.SocketTimeoutException("fixture")},onClose={closes.incrementAndGet()})})
+        val failure=runCatching{selector.select(listOf(node(1)),System.currentTimeMillis()+1000)}.exceptionOrNull()!!
+        assertTrue(UpdateRetryPolicy.canRetry(failure));assertEquals(1,closes.get())
     }
     @Test fun cancellationClosesInFlightRequestsAndDoesNotSelectANode(){
         val started=CountDownLatch(1);val released=CountDownLatch(1);val count=AtomicInteger()

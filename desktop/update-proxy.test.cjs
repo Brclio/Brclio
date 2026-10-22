@@ -26,7 +26,7 @@ function fixture(overrides = {}) {
   };
   const router = createUpdateProxy({whenReady:async()=>{},defaultSession:()=>({resolveProxy:url=>resolve('native',url),setProxy:()=>{throw Error('Default session proxy must not change');}}),
     fromPartition:(name,options)=>{assert.equal(options.cache,false);assert.ok(!name.startsWith('persist:'));return sessions[name] || (name.startsWith(BUILTIN_PARTITION + '-') ? {...sessions[BUILTIN_PARTITION],fetch:fetch('builtin',name)} : undefined);},
-    netFetch:fetch('native'),onState:s=>states.push(s),createBridge:async options=>{
+    netFetch:fetch('native'),onState:s=>states.push(s),now:overrides.now,createBridge:async options=>{
       const bridge={proxyRules:'http://127.0.0.1:12345',closed:false,close:async()=>{bridge.closed=true;}};
       bridges.push({bridge,options});return bridge;
     }});
@@ -58,102 +58,62 @@ test('system/CLI proxy wins and disables bootstrap without modifying OS settings
     assert.deepEqual(configurations,[['system',{mode:'system'}],['direct',{mode:'direct'}]]);
   }
 });
-test('native connection failures retry once through isolated DIRECT and pin the remaining official operation',async()=>{
-  const cdn='https://release-assets.githubusercontent.com/release?signature=public';
-  for(const native of [true,false])for(const code of ['ERR_CONNECTION_CLOSED','ERR_PROXY_CONNECTION_FAILED']){
-    const controller=new AbortController();
-    const {router,calls,bridges,probes,configurations}=fixture({resolve:kind=>kind===(native?'native':'system')?'PROXY localhost:7890':'DIRECT',fetch:async(kind,url,init)=>{
-      assert.equal(init.signal,controller.signal);
-      if(kind!=='direct')throw Error('net::'+code);
-      return url===downloadURL?new Response(null,{status:302,headers:{location:cdn}}):new Response('ok');
-    }});
-    router.setBusy(true,[API_URL,checksumURL,downloadURL]);
-    assert.equal(await(await router.fetch(API_URL,{signal:controller.signal})).text(),'ok');
-    const state=await router.state();assert.equal(state.route,'direct');assert.equal(state.fallbackFrom,'system');
-    await(await router.fetch(checksumURL,{signal:controller.signal})).text();
-    const download=await router.fetch(downloadURL,{signal:controller.signal});assert.equal(download.url,cdn);await download.text();
-    assert.deepEqual(calls.map(value=>[value.kind,value.url]),[[native?'native':'system',API_URL],['direct',API_URL],['direct',checksumURL],['direct',downloadURL],['direct',cdn]]);
-    assert.ok(calls.every(value=>value.init.redirect==='manual'&&value.init.credentials==='omit'));
-    assert.equal(bridges.length,0);assert.equal(probes.length,0);
-    assert.deepEqual(configurations,[['system',{mode:'system'}],['direct',{mode:'direct'}]]);
-    await router.setBusy(false);
-    for(let refresh=0;refresh<2;refresh++){
-      const completed=await router.state();assert.equal(completed.route,'direct');assert.equal(completed.fallbackFrom,'system');
+test('every attempt stays on the detected system proxy after connection failures with either builtin setting',async()=>{
+  for(const native of [true,false])for(const enabled of [true,false]){
+    const {router,calls,bridges,probes,resolved}=fixture({resolve:kind=>kind===(native?'native':'system')?'PROXY localhost:7890':'DIRECT',fetch:async()=>{throw Error('net::ERR_CONNECTION_CLOSED');}});
+    await router.setEnabled(enabled);
+    for(let attempt=0;attempt<3;attempt++){
+      await router.setBusy(true,[API_URL]);
+      await assert.rejects(router.fetch(API_URL),error=>error.code==='BRCLIO_UPDATE_NETWORK'&&!/localhost/.test(error.message));
     }
+    assert.deepEqual(calls.map(value=>value.kind),Array(3).fill(native?'native':'system'));
+    assert.equal((await router.state()).route,'system');assert.ok(resolved.length>=8);
+    assert.equal(bridges.length,0);assert.equal(probes.length,0);await router.setBusy(false);
   }
 });
-test('HEAD can fail over using an explicit native code and a failed DIRECT attempt never loops',async()=>{
-  for(const fails of [false,true]){
-    const {router,calls,bridges}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async kind=>{
-      if(kind!=='direct'||fails)throw Object.assign(Error('Native connection failed'),{code:'ERR_PROXY_CONNECTION_FAILED'});
-      return new Response(null,{status:200});
-    }});
-    if(fails)await assert.rejects(router.fetch(API_URL,{method:'HEAD'}),/更新服务连接失败/);
-    else assert.equal((await router.fetch(API_URL,{method:'HEAD'})).status,200);
-    assert.deepEqual(calls.map(value=>value.kind),['native','direct']);assert.equal(bridges.length,0);
+test('transport failures are retryable, certificate failures permanent, and cancellation stays AbortError',async()=>{
+  for(const failure of [Error('net::ERR_CONNECTION_CLOSED'),Error('Unknown private transport URL'),Object.assign(Error('closed'),{name:'TimeoutError'})]){
+    const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>{throw failure;}});
+    await assert.rejects(router.fetch(API_URL),error=>error.code==='BRCLIO_UPDATE_NETWORK'&&!/private/.test(error.message));
+    assert.deepEqual(calls.map(value=>value.kind),['native']);
   }
-});
-test('fallback state resets for new operations, standalone selections and toggle changes',async()=>{
-  let failures=0;
-  const {router,states}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async kind=>{
-    if(kind==='native'&&failures++<3)throw Error('net::ERR_CONNECTION_CLOSED');
-    return new Response('ok');
-  }});
-  await(await router.fetch(API_URL)).text();assert.equal(states.at(-1).fallbackFrom,'system');
-  const completed=await router.state();assert.equal(completed.route,'direct');assert.equal(completed.fallbackFrom,'system');
-  router.setBusy(true,[API_URL]);assert.equal(Object.hasOwn(await router.state(),'fallbackFrom'),false);
-  await(await router.fetch(API_URL)).text();assert.equal(states.at(-1).fallbackFrom,'system');
-  await router.setBusy(false);
-  assert.equal(Object.hasOwn(await router.setEnabled(false),'fallbackFrom'),false);
-  await(await router.fetch(API_URL)).text();assert.equal(states.at(-1).fallbackFrom,'system');
-  await(await router.fetch(API_URL)).text();assert.equal(states.at(-1).route,'system');assert.equal(Object.hasOwn(states.at(-1),'fallbackFrom'),false);
-});
-test('aborts, certificate failures, unknown failures and requests with a body never fall back',async()=>{
-  const failures=[
-    ()=>Error('net::ERR_CERT_AUTHORITY_INVALID'),
-    ()=>Object.assign(Error('net::ERR_CONNECTION_CLOSED'),{code:'ERR_CERT_DATE_INVALID'}),
-    ()=>Error('net::ERR_CONNECTION_CLOSED net::ERR_CERT_COMMON_NAME_INVALID'),
-    ()=>Error('Unknown native failure'),
-    ()=>Error('Unknown failure mentioning ERR_CONNECTION_CLOSED'),
-    ()=>Object.assign(Error('net::ERR_CONNECTION_CLOSED'),{name:'AbortError'}),
-    ()=>Object.assign(Error('net::ERR_CONNECTION_CLOSED'),{name:'TimeoutError'}),
-    ()=>Error('net::ERR_ABORTED'),
-  ];
-  for(const failure of failures){
-    const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>{throw failure();}});
-    await assert.rejects(router.fetch(API_URL));assert.deepEqual(calls.map(value=>value.kind),['native']);
-  }
-  for(const init of [{method:'POST'},{method:'GET',body:'payload'},{method:'HEAD',body:'payload'}]){
-    const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>{throw Error('net::ERR_CONNECTION_CLOSED');}});
-    await assert.rejects(router.fetch(API_URL,init));assert.deepEqual(calls.map(value=>value.kind),['native']);
+  for(const failure of [Error('net::ERR_CERT_AUTHORITY_INVALID'),Object.assign(Error('private peer'),{code:'ERR_CERT_DATE_INVALID'}),Error('net::ERR_SSL_PROTOCOL_ERROR')]){
+    const {router}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>{throw failure;}});
+    await assert.rejects(router.fetch(API_URL),error=>error.code==='BRCLIO_UPDATE_SECURITY'&&!/private/.test(error.message));
   }
   const controller=new AbortController();
-  const cancelled=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>{controller.abort();throw Error('net::ERR_CONNECTION_CLOSED');}});
-  await assert.rejects(cancelled.router.fetch(API_URL,{signal:controller.signal}),{name:'AbortError'});
-  assert.deepEqual(cancelled.calls.map(value=>value.kind),['native']);
+  const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>{controller.abort();throw Error('net::ERR_CONNECTION_CLOSED');}});
+  await assert.rejects(router.fetch(API_URL,{signal:controller.signal}),{name:'AbortError'});
+  assert.deepEqual(calls.map(value=>value.kind),['native']);
 });
-test('DIRECT fallback shares the original cancellation deadline and never replays a returned body',async()=>{
-  const controller=new AbortController();let directStarted;
-  const started=new Promise(resolve=>{directStarted=resolve;});
-  const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async(kind,_url,init)=>{
-    assert.equal(init.signal,controller.signal);
-    if(kind==='native')throw Error('net::ERR_CONNECTION_CLOSED');
-    directStarted();return new Promise((_resolve,reject)=>init.signal.addEventListener('abort',()=>reject(Object.assign(Error('Cancelled'),{name:'AbortError'})),{once:true}));
-  }});
-  const pending=router.fetch(API_URL,{signal:controller.signal});await started;controller.abort();
-  await assert.rejects(pending,{name:'AbortError'});assert.deepEqual(calls.map(value=>value.kind),['native','direct']);
-  const broken=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>new Response(new ReadableStream({start(value){value.error(Error('net::ERR_CONNECTION_CLOSED'));}}))});
-  const response=await broken.router.fetch(API_URL);await assert.rejects(response.text(),/更新服务连接失败/);
-  assert.deepEqual(broken.calls.map(value=>value.kind),['native']);
+test('replacing an active attempt keeps busy locked and awaits disposal before a fresh subscription and node probe',async()=>{
+  let documents=0,release;
+  const {router,calls,bridges,probes}=fixture({configFetch:async()=>new Response(JSON.stringify({...configuration(),nodes:[{...configuration().nodes[0],dialAddress:`1.1.1.${++documents}`}]}))});
+  await router.setBusy(true,[API_URL]);await(await router.fetch(API_URL)).text();
+  const old=bridges[0].bridge,gate=new Promise(resolve=>{release=resolve;});old.close=async()=>{await gate;old.closed=true;};
+  let disposed=false;const replacement=router.setBusy(true,[API_URL]).then(()=>{disposed=true;});
+  assert.equal((await router.state()).busy,true);assert.equal(disposed,false);assert.equal(documents,1);
+  await assert.rejects(router.setEnabled(false),/检查或下载/);release();await replacement;assert.equal(old.closed,true);
+  await(await router.fetch(API_URL)).text();
+  assert.equal(documents,2);assert.equal(probes.length,2);assert.equal(calls.filter(value=>value.url===CONFIG_URL).length,2);
+  assert.deepEqual(bridges.map(value=>value.options.nodes[0].dialAddress),['1.1.1.1','1.1.1.2']);await router.setBusy(false);
 });
-test('HTTP responses and redirect/security rejections never trigger system-to-DIRECT fallback',async()=>{
+test('a failed builtin attempt never reuses its subscription, selection or bridge on the next attempt',async()=>{
+  let documents=0,official=0;
+  const {router,bridges,probes}=fixture({configFetch:async()=>new Response(JSON.stringify({...configuration(),nodes:[{...configuration().nodes[0],dialAddress:`1.1.1.${++documents}`}]})),fetch:async()=>{if(official++===0)throw Error('net::ERR_CONNECTION_RESET');return new Response('ok');}});
+  await router.setBusy(true,[API_URL]);await assert.rejects(router.fetch(API_URL),{code:'BRCLIO_UPDATE_NETWORK'});
+  await router.setBusy(true,[API_URL]);assert.equal(bridges[0].bridge.closed,true);
+  assert.equal(await(await router.fetch(API_URL)).text(),'ok');assert.equal(documents,2);assert.equal(probes.length,2);
+  assert.deepEqual(bridges.map(value=>value.options.nodes[0].dialAddress),['1.1.1.1','1.1.1.2']);await router.setBusy(false);
+});
+test('system HTTP responses are never rerouted and permanent address blocks retain their code',async()=>{
   for(const status of [403,407,429,500]){
     const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>new Response(null,{status})});
     assert.equal((await router.fetch(API_URL)).status,status);assert.deepEqual(calls.map(value=>value.kind),['native']);
   }
-  for(const response of [new Response(null,{status:403,headers:{'cf-mitigated':'challenge'}}),new Response(null,{status:302,headers:{location:'https://foreign.invalid/private'}}),Object.defineProperty(new Response('ok'),'redirected',{value:true})]){
+  for(const response of [new Response(null,{status:403,headers:{'cf-mitigated':'challenge'}}),new Response(null,{status:302,headers:{location:'https://foreign.invalid/private'}})]){
     const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>response});
-    await assert.rejects(router.fetch(API_URL),/Cloudflare|非官方/);assert.deepEqual(calls.map(value=>value.kind),['native']);
+    await assert.rejects(router.fetch(API_URL),{code:'BRCLIO_UPDATE_ROUTE'});assert.deepEqual(calls.map(value=>value.kind),['native']);
   }
 });
 test('OFF is session-only, new process defaults ON, and busy switches are rejected',async()=>{
@@ -189,11 +149,20 @@ test('every operation refreshes configuration and closes its selected probe brid
 });
 test('all 16 candidates receive native HTTPS HEAD probes concurrently and the fastest successful node stays fixed',async()=>{
   const nodes=Array.from({length:16},(_,i)=>({...configuration().nodes[0],dialAddress:`1.1.1.${i+1}`}));
-  let active=0,maximum=0;
-  const {router,calls,probes,bridges}=fixture({configFetch:async()=>new Response(JSON.stringify({...configuration(),nodes})),probe:async(url,init,sessionId)=>{
+  let active=0,maximum=0,clock=0;const releases=new Map();
+  const {router,calls,probes,bridges}=fixture({now:()=>clock,configFetch:async()=>new Response(JSON.stringify({...configuration(),nodes})),probe:async(url,init,sessionId)=>{
     assert.equal(url,'https://github.com/robots.txt');assert.equal(init.method,'HEAD');assert.equal(init.redirect,'manual');assert.equal(init.cache,'no-store');
     active++;maximum=Math.max(maximum,active);const index=Number(sessionId.split('-').at(-1));
-    await new Promise(resolve=>setTimeout(resolve,index===7?2:20));active--;
+    await new Promise(resolve=>{
+      releases.set(index,resolve);
+      if(releases.size===16)setImmediate(async()=>{
+        clock=2;releases.get(7)();
+        // Flush the actual measured probe completion at logical t=2 before
+        // advancing the clock and completing every other candidate at t=20.
+        await new Promise(setImmediate);clock=20;
+        for(const [candidate,release]of releases)if(candidate!==7)release();
+      });
+    });active--;
     return new Response(null,{status:index===1?403:200});
   }});
   router.setBusy(true,[checksumURL,downloadURL]);await(await router.fetch(checksumURL)).text();await(await router.fetch(downloadURL)).text();
@@ -214,23 +183,28 @@ test('aborted or unsuccessful probe batches close every bridge and never request
     assert.equal(calls.length,1);assert.ok(bridges.every(x=>x.bridge.closed));
   }
 });
-test('bootstrap fallback is fixed and limited to a network failure or an explicit primary challenge',async()=>{
-  for(const network of [true,false]){
-    let cancelled=0;
-    const {router,calls}=fixture({configFetch:async(url)=>{
-      if(url===CONFIG_FALLBACK_URL)return new Response(JSON.stringify(configuration()));
-      if(network)throw Error('private transport URL');
-      return new Response(new ReadableStream({cancel(){cancelled++;}},{highWaterMark:0}),{status:403,headers:{'cf-mitigated':'challenge'}});
-    }});
-    await(await router.fetch(API_URL)).text();assert.deepEqual(calls.map(c=>c.url),[CONFIG_URL,CONFIG_FALLBACK_URL,API_URL]);assert.equal(cancelled,network?0:1);
+test('fixed bootstrap alias runs only on the next outer attempt after primary network failure or explicit challenge',async()=>{
+  for(const challenge of [false,true]){
+    const {router,calls}=fixture({configFetch:async url=>{if(url===CONFIG_URL){if(challenge)return new Response(null,{status:403,headers:{'cf-mitigated':'challenge'}});throw Error('private transport URL');}return new Response(JSON.stringify(configuration()));}});
+    await router.setBusy(true,[API_URL]);await assert.rejects(router.fetch(API_URL),{code:'BRCLIO_UPDATE_NETWORK'});
+    assert.deepEqual(calls.map(c=>c.url),[CONFIG_URL]);
+    await router.setBusy(true,[API_URL]);await(await router.fetch(API_URL)).text();
+    assert.deepEqual(calls.map(c=>c.url),[CONFIG_URL,CONFIG_FALLBACK_URL,API_URL]);await router.setBusy(false);
+    await router.setBusy(true,[API_URL]);await assert.rejects(router.fetch(API_URL),{code:'BRCLIO_UPDATE_NETWORK'});
+    assert.equal(calls.at(-1).url,CONFIG_URL);await router.setBusy(false);
   }
-  for(const status of [429,502]){const {router,calls}=fixture({configFetch:async()=>new Response(null,{status})});await assert.rejects(router.fetch(API_URL));assert.equal(calls.length,1);}
+  for(const status of [403,429,502]){
+    const {router,calls}=fixture({configFetch:async()=>new Response(null,{status})});
+    await assert.rejects(router.fetch(API_URL),error=>error.code===(status===502?'BRCLIO_UPDATE_NETWORK':'BRCLIO_UPDATE_ROUTE'));assert.equal(calls.length,1);
+  }
+  const certificate=fixture({configFetch:async()=>{throw Error('net::ERR_CERT_AUTHORITY_INVALID');}});
+  await assert.rejects(certificate.router.fetch(API_URL),{code:'BRCLIO_UPDATE_SECURITY'});assert.equal(certificate.calls.length,1);
 });
 test('bootstrap access blocks are safely identified, unread bodies cancelled, and never retried',async()=>{
-  for(const [status,headers,message] of [[403,{},/内置更新服务拒绝/],[429,{},/内置更新服务暂时限制/],[403,{'cf-mitigated':'challenge'},/Cloudflare 安全验证/],[503,{},/内置更新代理连接失败/]]){
+  for(const [status,headers,message] of [[403,{},/内置更新服务拒绝/],[429,{},/内置更新服务暂时限制/],[403,{'cf-mitigated':'challenge'},/内置更新代理连接失败/],[503,{},/内置更新代理连接失败/]]){
     let cancelled=0,read=0;
     const {router,calls,states,bridges}=fixture({configFetch:async()=>new Response(new ReadableStream({pull(){read++;throw Error('private URL/HTML');},cancel(){cancelled++;}},{highWaterMark:0}),{status,headers})});
-    await assert.rejects(router.fetch(API_URL),message);assert.equal(cancelled,headers['cf-mitigated'] ? 2 : 1);assert.equal(read,0);assert.equal(calls.length,headers['cf-mitigated'] ? 2 : 1);assert.equal(bridges.length,0);
+    await assert.rejects(router.fetch(API_URL),message);assert.equal(cancelled,1);assert.equal(read,0);assert.equal(calls.length,1);assert.equal(bridges.length,0);
     assert.ok(states.every(s=>!/private|HTML/.test(JSON.stringify(s))));
   }
 });
@@ -281,4 +255,50 @@ test('body cancellation closes a standalone bridge and sanitizes streamed transp
   const response=await router.fetch(downloadURL);await response.body.cancel();assert.equal(cancelled,1);assert.equal(bridges[0].bridge.closed,true);
   const broken=fixture({fetch:async()=>new Response(new ReadableStream({start(c){c.error(Error('private.invalid/?uuid=secret'));}}))});
   const stream=await broken.router.fetch(API_URL);await assert.rejects(stream.text(),error=>/内置更新代理连接失败/.test(error.message)&&!/secret|uuid|private/.test(error.message));assert.equal(broken.bridges[0].bridge.closed,true);
+});
+
+test('probe batches retain healthy alternatives, retry mixed network failures, and stop all-security failures',async()=>{
+  for(const mode of ['healthy-alternative','mixed-network','all-security']){
+    const nodes=[1,2].map(value=>({...configuration().nodes[0],dialAddress:`1.1.1.${value}`}));
+    const f=fixture({configFetch:async()=>Response.json({...configuration(),nodes}),probe:async(_url,_init,sessionId)=>{
+      const index=Number(sessionId.split('-').at(-1))-1;
+      if(index===1&&mode==='healthy-alternative')return new Response(null,{status:200});
+      f.bridges[index].bridge.failureCode=index===0||mode==='all-security'?'BRCLIO_UPDATE_SECURITY':'BRCLIO_UPDATE_NETWORK';
+      throw Error('net::ERR_CONNECTION_CLOSED');
+    }});
+    if(mode==='healthy-alternative')assert.equal(await(await f.router.fetch(API_URL)).text(),'builtin');
+    else await assert.rejects(f.router.fetch(API_URL),{code:mode==='all-security'?'BRCLIO_UPDATE_SECURITY':'BRCLIO_UPDATE_NETWORK'});
+    assert.equal(f.probes.length,2);assert.ok(f.bridges.every(value=>value.bridge.closed));
+  }
+});
+
+test('the updater owns exactly eleven failing system attempts and never bootstraps or switches routes',async()=>{
+  const f=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>{throw Error('net::ERR_CONNECTION_CLOSED');}});
+  const updater=createUpdater({currentVersion:'0.1.0',directory:'/unused-check-only',platform:'win32',architecture:'x64',retryDelay:0,
+    fetch:f.router.fetch,onOperation:(_kind,busy,targets)=>f.router.setBusy(busy,targets)});
+  const result=await updater.check();assert.equal(result.status,'error');assert.equal(result.retryExhausted,true);assert.equal(result.retryCount,10);
+  assert.equal(f.calls.length,11);assert.ok(f.calls.every(value=>value.kind==='native'&&value.url===API_URL));
+  assert.equal(f.bridges.length,0);assert.equal(f.probes.length,0);assert.equal((await f.router.state()).route,'system');assert.equal((await f.router.state()).busy,false);
+});
+test('known blocked headers or invalid config never wait for a stalled cancellation before permanent rejection',async()=>{
+  for(const response of [new Response(new ReadableStream({cancel:()=>new Promise(()=>{})}),{status:403}),new Response(new ReadableStream({cancel:()=>new Promise(()=>{})}),{status:302,headers:{location:'https://foreign.invalid/private'}})]){
+    const {router}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>response});
+    if(response.status===403)assert.equal((await router.fetch(API_URL)).status,403);
+    else await assert.rejects(router.fetch(API_URL),{code:'BRCLIO_UPDATE_ROUTE'});
+  }
+  const invalid=fixture({configFetch:async()=>new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('{invalid'));controller.close();},cancel:()=>new Promise(()=>{})}))});
+  await assert.rejects(invalid.router.fetch(API_URL),{code:'BRCLIO_UPDATE_ROUTE'});
+});
+
+test('fixed unsupported-configuration enum stops after one bootstrap while ordinary502 uses the single retry budget',async()=>{
+  for(const [status,code,attempts]of [[502,'proxy_configuration_unsupported',1],[502,'proxy_configuration_unavailable',11],[403,'rate_limited',1],[429,'rate_limited',1]]){
+    const f=fixture({configFetch:async()=>Response.json({code,error:'private-subscription-must-not-leak'},{status})});
+    const updater=createUpdater({currentVersion:'0.1.0',directory:'/unused-check-only',platform:'win32',architecture:'x64',retryDelay:0,
+      fetch:f.router.fetch,onOperation:(_kind,busy,targets)=>f.router.setBusy(busy,targets)});
+    const result=await updater.check();assert.equal(result.status,'error');assert.equal(f.calls.length,attempts);
+    assert.equal(result.retryExhausted,attempts===11);assert.equal(result.retryCount,attempts-1);
+    assert.equal(f.probes.length,0);assert.ok(!JSON.stringify(result).includes('private-subscription'));
+  }
+  const oversized=fixture({configFetch:async()=>Response.json({padding:'x'.repeat(32768),code:'proxy_configuration_unsupported'},{status:502})});
+  await assert.rejects(oversized.router.fetch(API_URL),error=>error.code==='BRCLIO_UPDATE_NETWORK'&&!/padding|unsupported/.test(error.message));
 });

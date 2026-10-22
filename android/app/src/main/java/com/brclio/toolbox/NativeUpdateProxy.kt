@@ -32,6 +32,8 @@ internal class NativeUpdateProxy(
     private val connectAddress: (UpdateProxyNode) -> InetSocketAddress = { InetSocketAddress(it.dialAddress, it.port) },
 ) : AutoCloseable {
     private val closed = AtomicBoolean(false)
+    @Volatile var terminalFailure: Throwable? = null
+        private set
     private val sockets = Collections.newSetFromMap(ConcurrentHashMap<Socket, Boolean>())
     private val transports = ConcurrentHashMap<SSLSocket, Socket>()
     private val slots = Semaphore(4)
@@ -78,11 +80,14 @@ internal class NativeUpdateProxy(
                         serverNames = listOf(SNIHostName(node.host))
                     }
                     candidate.startHandshake()
-                    UpdateTunnelProtocol.upgrade(candidate.getInputStream(), candidate.getOutputStream(), node)
+                    try { UpdateTunnelProtocol.upgrade(candidate.getInputStream(), candidate.getOutputStream(), node) }
+                    catch (_: IllegalArgumentException) { throw UpdateTransportRejected() }
+                    catch (_: IllegalStateException) { throw UpdateTransportRejected() }
                     upstream = candidate
                     selected = node
                     break
-                } catch (_: Exception) {
+                } catch (failure: Exception) {
+                    if (UpdateRetryPolicy.isSecurityFailure(failure) || failure is UpdateTransportRejected) terminalFailure = failure
                     candidate?.let(::dispose)
                     tcp?.let(::dispose)
                 }
@@ -183,7 +188,11 @@ internal object UpdateTunnelProtocol {
         output.write("GET $target HTTP/1.1\r\nHost: $authority\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: $key\r\nSec-WebSocket-Version: 13\r\n\r\n".toByteArray(Charsets.US_ASCII))
         output.flush()
         val lines = readHeaders(input).split("\r\n")
-        require(lines.first().matches(Regex("^HTTP/1\\.[01] 101(?: .*)?$")))
+        val status = Regex("^HTTP/1\\.[01] ([0-9]{3})(?: .*)?$").matchEntire(lines.first())?.groupValues?.get(1)?.toInt()
+        if (status != 101) {
+            if (status != null && (status == 408 || status in 500..599)) throw UpdateNetworkFailure("更新节点连接暂不可用。")
+            throw UpdateTransportRejected()
+        }
         val fields = mutableMapOf<String, String>()
         lines.drop(1).filter { it.isNotEmpty() }.forEach {
             val colon = it.indexOf(':'); require(colon > 0 && !it.startsWith(' ') && !it.startsWith('\t'))

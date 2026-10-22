@@ -149,3 +149,21 @@ test('a failed fresh subscription still reads current GitHub config and never re
     assert.equal(privateReads,2);assert.equal(subscriptions,3);
   }finally{t.mock.timers.reset();clearConfigCache();}
 });
+
+test('native fresh reads observe changed subscription content at the same URL and SHA without secondary subscription fetches',async()=>{
+  clearConfigCache();let privateReads=0,subscriptions=0,currentPath='/before',unavailable=false;
+  const fetchImpl=async target=>{
+    if(String(target).includes('subscription.example')){
+      subscriptions++;
+      if(unavailable)return new Response('',{status:503});
+      const document=JSON.parse(subscription);document.proxies[0]['ws-opts'].path=currentPath;return Response.json(document);
+    }
+    privateReads++;return Response.json(file('same-sha',env.PROXY_SUBSCRIPTION_URL));
+  };
+  const options={fresh:true,subscriptionAttempts:1};
+  assert.equal((await getNodes(env,fetchImpl,options))[0].path,'/before');
+  currentPath='/after';assert.equal((await getNodes(env,fetchImpl,options))[0].path,'/after');
+  assert.equal(privateReads,2);assert.equal(subscriptions,2);
+  unavailable=true;await assert.rejects(getNodes(env,fetchImpl,options),/无法读取代理订阅/);
+  assert.equal(privateReads,3);assert.equal(subscriptions,3);clearConfigCache();
+});

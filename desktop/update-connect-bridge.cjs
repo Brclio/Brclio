@@ -12,7 +12,10 @@ const NODE_KEYS = ['dialAddress', 'host', 'path', 'port', 'servername', 'uuid', 
 // WebSocket message. Keep reassembly bounded while accepting larger batches.
 const MAX_WS_MESSAGE = 8 * 1024 * 1024;
 const FAILURE = '内置更新代理连接失败，可关闭内置代理或稍后重试。';
-function safeError() { return new Error(FAILURE); }
+function safeError(code = 'BRCLIO_UPDATE_NETWORK') { return Object.assign(new Error(FAILURE), { code }); }
+function certificateFailure(error) {
+  return /^(?:ERR_CERT_|ERR_TLS_CERT_|CERT_HAS_EXPIRED$|DEPTH_ZERO_SELF_SIGNED_CERT$|SELF_SIGNED_CERT_IN_CHAIN$|UNABLE_TO_VERIFY_LEAF_SIGNATURE$|UNABLE_TO_GET_ISSUER_CERT_LOCALLY$)/.test(String(error?.code || ''));
+}
 
 function publicDNS(value) {
   return typeof value === 'string' && value === value.toLowerCase() && value.length <= 253 && value.includes('.') && !net.isIP(value)
@@ -96,7 +99,7 @@ async function createConnectBridge({ nodes, WebSocketClass } = {}) {
   // The caller already parsed the fixed public configuration; validate again so
   // this listener can never become a general-purpose local proxy accidentally.
   nodes = parseProxyConfiguration({ version: 1, ttlSeconds: 600, nodes }).nodes;
-  const clients = new Set(); const tunnels = new Set(); let closed = false; let closing; let preferred = 0;
+  const clients = new Set(); const tunnels = new Set(); let closed = false; let closing; let preferred = 0, failureCode;
   const server = http.createServer({ maxHeaderSize: 8192 }, (_request, response) => { response.writeHead(403); response.end(); });
   server.headersTimeout = 10000; server.requestTimeout = 10000; server.maxHeadersCount = 32;
   server.on('connection', client => {
@@ -106,6 +109,7 @@ async function createConnectBridge({ nodes, WebSocketClass } = {}) {
   });
   server.on('clientError', (_error, client) => client.destroy());
   server.on('connect', async (request, client, head) => {
+    failureCode = undefined;
     const hostname = targetHost(request.url);
     if (!hostname || request.headers.origin || request.headers['transfer-encoding'] || Number(request.headers['content-length'] || 0) !== 0) {
       client.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return;
@@ -128,8 +132,8 @@ async function createConnectBridge({ nodes, WebSocketClass } = {}) {
           ws.once('close', () => { tunnels.delete(ws); client.removeListener('close', abort); });
           ws.on('error', () => {});
           ws.on('message', (_data, binary) => { if (!binary) ws.terminate(); });
-          ws.once('unexpected-response', (_req, response) => { response.destroy(); ws.terminate(); reject(safeError()); });
-          ws.once('error', () => reject(safeError()));
+          ws.once('unexpected-response', (_req, response) => { failureCode = [301, 302, 303, 307, 308, 403, 429].includes(response.statusCode) ? 'BRCLIO_UPDATE_ROUTE' : 'BRCLIO_UPDATE_NETWORK'; response.destroy(); ws.terminate(); reject(safeError(failureCode)); });
+          ws.once('error', error => { failureCode = certificateFailure(error) ? 'BRCLIO_UPDATE_SECURITY' : failureCode || 'BRCLIO_UPDATE_NETWORK'; reject(safeError(failureCode)); });
           ws.once('close', () => reject(safeError()));
           ws.once('open', () => {
             if (client.destroyed || closed) { ws.terminate(); reject(safeError()); return; }
@@ -163,6 +167,7 @@ async function createConnectBridge({ nodes, WebSocketClass } = {}) {
   server.on('error', () => {});
   return {
     proxyRules: `http://127.0.0.1:${server.address().port}`,
+    get failureCode() { return failureCode; },
     close() {
       if (closing) return closing; closed = true;
       for (const tunnel of tunnels) tunnel.terminate();

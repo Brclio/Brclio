@@ -91,7 +91,7 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
           node scripts/verify-live.mjs > "$GITHUB_WORKSPACE/artifacts/production-update-standard.json"
-      - name: Verify actual system-proxy routing and direct recovery through real Electron
+      - name: Verify actual system-proxy routing and bounded retries through real Electron
         working-directory: .
         run: xvfb-run -a node desktop/system-proxy-live.cjs > artifacts/production-update-system-proxy.json
       - name: Verify the complete large installer through real Electron and the native proxy

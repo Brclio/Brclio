@@ -14,6 +14,7 @@ const { _electron: electron } = require('@playwright/test');
   const argument = (name, fallback) => process.argv.find(value => value.startsWith(name + '='))?.slice(name.length + 1) || fallback;
   const fixtureVersion = argument('--current-version', '0.1.10');
   const expectedVersion = argument('--expected-release', null);
+  const expectExhausted = process.argv.includes('--expect-exhausted');
   // The gate only reads release metadata. Select an officially shipped asset
   // independently of the runner OS; Linux is not an updater target.
   const fixturePlatform = 'win32', fixtureArchitecture = 'x64';
@@ -24,7 +25,7 @@ const { _electron: electron } = require('@playwright/test');
   let application;
   const report = {
     source: null,
-    sourceVersion, fixtureVersion, expectedVersion,
+    sourceVersion, fixtureVersion, expectedVersion, expectedOutcome: expectExhausted ? 'system-retries-exhausted' : 'update-check-succeeded',
     actualHostPlatform: process.platform, actualHostArchitecture: process.arch,
     fixturePlatform, fixtureArchitecture,
     startedAt: new Date().toISOString(), passed: false,
@@ -59,7 +60,8 @@ app.on('window-all-closed',()=>{});
         'ERR_NO_SUPPORTED_PROXIES', 'ERR_MANDATORY_PROXY_CONFIGURATION_FAILED', 'ERR_PAC_SCRIPT_FAILED',
       ]);
       const safeCodes = error => [...new Set(([String(error?.code || ''), String(error?.message || '')].join(' ').match(/ERR_[A-Z0-9_]+/g) || []).filter(value => allowedCodes.has(value)))];
-      const result = { systemDetected: false, systemDetectionComplete: false, mode: 'unknown', proxyDetections: [], requests: [], routeStates: [] };
+      const result = { systemDetected: false, systemDetectionComplete: false, mode: 'unknown', proxyDetections: [], requests: [], routeStates: [], retryStates: [] };
+      let attempt = 0;
       const isolatedSessions = new Set(), actualSessions = new WeakMap(), stages = new WeakMap();
       const adapters = new Map();
       function trackedSession(actual, stage) {
@@ -83,7 +85,7 @@ app.on('window-all-closed',()=>{});
       const native = trackedSession(session.defaultSession, 'native-default');
       async function fetchSession(adapter, url, init = {}) {
         if (url !== API_URL || (init.method && init.method !== 'GET')) throw Error('unexpected_transport_target');
-        const record = { stage: stages.get(adapter), method: 'GET' }; result.requests.push(record);
+        const record = { attempt, stage: stages.get(adapter), method: 'GET' }; result.requests.push(record);
         const started = performance.now();
         try {
           const response = await electronUpdateFetch(options => net.request(options), actualSessions.get(adapter), url, init);
@@ -109,7 +111,7 @@ app.on('window-all-closed',()=>{});
         }
       }
       const stateRecord = value => ({ enabled: value.enabled, supported: value.supported, route: value.route,
-        busy: value.busy, fallbackFrom: value.fallbackFrom || null, errorPresent: !!value.error });
+        busy: value.busy, errorPresent: !!value.error });
       const router = createUpdateProxy({
         whenReady: () => app.whenReady(), defaultSession: () => native,
         fromPartition: (name, options) => {
@@ -129,21 +131,29 @@ app.on('window-all-closed',()=>{});
           currentVersion: input.fixtureVersion, platform: input.fixturePlatform, architecture: input.fixtureArchitecture,
           directory: app.getPath('userData') + '/unused-updates',
           fetch: (url, init) => router.fetch(url, init),
-          onOperation: (_kind, busy, targets) => router.setBusy(busy, targets),
+          onOperation: (_kind, busy, targets) => { if (busy) attempt++; return router.setBusy(busy, targets); },
+          onState: value => { result.retryStates.push({ status: value.status, retryCount: value.retryCount,
+            retryLimit: value.retryLimit, retrying: value.retrying, retryExhausted: value.retryExhausted }); },
           installPackage: async () => { throw Error('installation_forbidden'); },
         });
         const checked = await updater.check();
-        result.updaterCheck = { status: checked.status, version: checked.version, canInstall: checked.canInstall };
+        result.updaterCheck = { status: checked.status, version: checked.version, canInstall: checked.canInstall,
+          retryCount: checked.retryCount, retryLimit: checked.retryLimit, retryExhausted: checked.retryExhausted };
         result.routerAfter = stateRecord(await router.state());
         result.systemDetected = result.proxyDetections.some(value => value.systemDetected === true);
         result.systemDetectionComplete = ['native-default', 'isolated-system'].every(stage => result.proxyDetections.some(value => value.stage === stage && typeof value.systemDetected === 'boolean'));
-        const systemFailed = result.requests.some(value => ['native-default', 'isolated-system'].includes(value.stage) && value.errorCodes);
-        const directSucceeded = result.requests.some(value => value.stage === 'isolated-direct' && value.status === 200);
-        const fallbackObserved = result.routeStates.some(value => value.fallbackFrom === 'system') || (systemFailed && directSucceeded);
-        result.mode = result.systemDetected ? fallbackObserved ? 'system-fallback' : 'system' : result.systemDetectionComplete ? 'no-system' : 'detection-failed';
-        result.passed = result.systemDetectionComplete && ['available', 'up-to-date'].includes(checked.status)
-          && /^\d+\.\d+\.\d+$/.test(checked.version || '') && (!input.expectedVersion || checked.version === input.expectedVersion);
-        if (!result.passed) result.failure = result.systemDetectionComplete ? 'update_check_failed_or_release_changed' : 'system_proxy_detection_failed';
+        result.mode = result.systemDetected ? 'system' : result.systemDetectionComplete ? 'no-system' : 'detection-failed';
+        result.attemptCount = attempt;
+        result.systemRoutePreserved = !result.systemDetected || result.routerAfter.route === 'system'
+          && result.requests.every(value => ['native-default', 'isolated-system'].includes(value.stage));
+        const outcomePassed = input.expectExhausted
+          ? result.systemDetected && checked.status === 'error' && checked.retryExhausted === true
+            && checked.retryCount === 10 && checked.retryLimit === 10 && attempt === 11 && result.requests.length === 11
+          : ['available', 'up-to-date'].includes(checked.status) && /^\d+\.\d+\.\d+$/.test(checked.version || '')
+            && (!input.expectedVersion || checked.version === input.expectedVersion);
+        result.passed = result.systemDetectionComplete && result.systemRoutePreserved && outcomePassed;
+        if (!result.passed) result.failure = !result.systemDetectionComplete ? 'system_proxy_detection_failed'
+          : !result.systemRoutePreserved ? 'system_proxy_route_changed' : input.expectExhausted ? 'expected_retry_exhaustion_not_observed' : 'update_check_failed_or_release_changed';
       } catch (error) {
         result.passed = false; result.failure = 'system_proxy_gate_failed'; result.errorCodes = safeCodes(error);
       } finally {
@@ -151,7 +161,7 @@ app.on('window-all-closed',()=>{});
         await Promise.all([...isolatedSessions, session.defaultSession].map(value => value.closeAllConnections()));
       }
       return result;
-    }, { root, fixtureVersion, expectedVersion, fixturePlatform, fixtureArchitecture }));
+    }, { root, fixtureVersion, expectedVersion, fixturePlatform, fixtureArchitecture, expectExhausted }));
   } catch {
     report.passed = false; report.failure = 'isolated_electron_launch_or_evaluation_failed';
   } finally {

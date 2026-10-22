@@ -29,8 +29,8 @@ try {
     window.__systemProxy = false;
     window.__failProxy = false;
     window.__probeError = null;
-    window.__directFallback = false;
-    const proxyState = () => ({ enabled, supported: true, route: window.__directFallback ? 'direct' : window.__systemProxy ? 'system' : enabled ? 'builtin' : 'direct', ...(window.__directFallback ? { fallbackFrom: 'system' } : {}), error: window.__probeError });
+    window.__updateCalls = [];
+    const proxyState = () => ({ enabled, supported: true, route: window.__systemProxy ? 'system' : enabled ? 'builtin' : 'direct', error: window.__probeError });
     window.brclio = {
       accountRequest: async ({ path, method = 'GET' }) => {
         if (path === '/api/account/session' && method === 'GET') return { user: null, csrf: null, googleEnabled: false };
@@ -47,7 +47,8 @@ try {
         if (window.__failProxy) throw new Error('更新期间无法修改代理。');
         enabled = value; return proxyState();
       },
-      checkForUpdates: () => new Promise(resolve => { window.__finishCheck = () => resolve({ status: 'up-to-date' }); }),
+      checkForUpdates: () => { window.__updateCalls.push('check'); return new Promise(resolve => { window.__finishCheck = state => resolve(state || { status: 'up-to-date' }); }); },
+      downloadUpdate: () => { window.__updateCalls.push('download'); return new Promise(resolve => { window.__finishDownload = state => resolve(state); }); },
       onUpdateState: callback => { window.__emitUpdate = callback; return () => {}; },
       onPaths: () => () => {},
     };
@@ -90,15 +91,37 @@ try {
   await page.locator('#about-update').click();
   assert.equal(await page.locator('#about-update-proxy').isEnabled(), false);
   assert.equal(await page.locator('#update-proxy').isEnabled(), false);
-  await page.evaluate(() => window.__finishCheck());
+  for (const count of [1, 10]) {
+    await page.evaluate(count => window.__emitUpdate({ status: 'checking', retryCount: count, retryLimit: 10, retrying: true, retryStage: 'check', message: `连接未完成，正在进行第 ${count}/10 次自动重试。` }), count);
+    assert.equal(await page.locator('#about-update-status-title').innerText(), `正在自动重试（${count}/10）…`);
+    assert.equal(await page.locator('#update-status-title').innerText(), `正在自动重试（${count}/10）…`);
+    assert.equal(await page.locator('#about-update').isEnabled(), false);
+    assert.equal(await page.locator('#about-update-proxy').isEnabled(), false);
+  }
+  await page.evaluate(() => window.__finishCheck({ status: 'error', retryCount: 10, retryLimit: 10, retryExhausted: true, retryStage: 'check', error: '已自动重试 10 次仍未成功，请点击重新检查。' }));
   await page.locator('#about-update-proxy:enabled').waitFor();
-  await page.evaluate(() => { window.__directFallback = true; });
-  await page.locator('#about-dialog [data-close]').click();
-  await page.locator('#about-button').click();
-  await page.waitForFunction(() => document.querySelector('#about-update-proxy-status').textContent.includes('切换为直连'));
-  assert.match(await page.locator('#update-proxy-status').innerText(), /系统代理连接未成功.*切换为直连/);
-  assert.equal(await page.locator('#about-update-proxy').isChecked(), true);
-  await page.evaluate(() => { window.__directFallback = false; });
+  assert.equal(await page.locator('#about-update-status-title').innerText(), '自动重试已用完，请手动重试。');
+  assert.equal(await page.locator('#about-update').innerText(), '重新检查');
+  assert.match(await page.locator('#about-update-status-detail').innerText(), /10.*重新检查/);
+  assert.match(await page.locator('#about-update-proxy-status').innerText(), /系统代理/);
+  await page.locator('#about-update').click();
+  assert.equal(await page.locator('#about-update-status-title').innerText(), '正在检查 GitHub 最新版本…');
+  await page.evaluate(() => window.__finishCheck({ status: 'available', version: '0.1.13', assetName: 'Brclio-0.1.13-mac-arm64.dmg' }));
+  await page.locator('#about-update:enabled').waitFor();
+  await page.locator('#about-update').click();
+  await page.evaluate(() => window.__emitUpdate({ status: 'downloading', version: '0.1.13', progress: 0, retryCount: 10, retryLimit: 10, retrying: true, retryStage: 'download', message: '正在进行第 10/10 次自动重试。' }));
+  assert.equal(await page.locator('#about-update-status-title').innerText(), '正在自动重试（10/10）…');
+  assert.equal(await page.locator('#about-update-proxy').isEnabled(), false);
+  await page.evaluate(() => window.__finishDownload({ status: 'error', version: '0.1.13', retryStage: 'download', retryCount: 10, retryExhausted: true, error: '已自动重试 10 次仍未成功，请点击重新下载。' }));
+  await page.locator('#about-update:enabled').waitFor();
+  assert.equal(await page.locator('#about-update').innerText(), '重新下载');
+  assert.equal(await page.locator('#download-update').isHidden(), false);
+  assert.equal(await page.locator('#download-update').textContent(), '重新下载并安装');
+  await page.locator('#about-update').click();
+  assert.equal(await page.locator('#about-update-status-title').innerText(), '正在下载 v0.1.13…');
+  assert.deepEqual(await page.evaluate(() => window.__updateCalls), ['check', 'check', 'download', 'download']);
+  await page.evaluate(() => window.__finishDownload({ status: 'error', retryStage: 'download', retryCount: 0, retryExhausted: false, error: '下载已取消。' }));
+  await page.locator('#about-update-proxy:enabled').waitFor();
   await page.locator('#about-update-proxy').uncheck();
   await page.waitForFunction(() => !document.querySelector('#about-update-proxy').disabled);
   await page.reload();
@@ -116,7 +139,7 @@ try {
     await page.locator('#about-dialog [data-close]').click();
   }
   assert.deepEqual(errors, []);
-  console.log('Passed: session-only proxy switches synchronize, reject failed changes, surface detection errors returned after switching, lock during updates, show system route and direct recovery in both panels, reset on new process, and fit narrow layouts.');
+  console.log('Passed: proxy switches synchronize, system route remains visible, automatic retry counts and exhaustion appear in both panels, manual retry invokes the correct operation, controls stay locked, and fresh runs and narrow layouts work.');
 } finally {
   await browser?.close(); server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));

@@ -31,10 +31,11 @@ export async function handleClientConfiguration(request, env, dependencies = {})
   const ip = request.headers.get('CF-Connecting-IP') || 'development';
   if (!await rateLimit(env, 'CLIENT_CONFIG_LIMITER', ip, 30)) return json({error: '配置请求过于频繁，请稍后重试', code: 'rate_limited'}, 429, {'Retry-After': '60'});
   try {
-    const nodes = await (dependencies.getNodes || getNodes)(env, undefined, {fresh: true, reuseValidatedSubscription: true});
+    const nodes = await (dependencies.getNodes || getNodes)(env, undefined, {fresh: true, subscriptionAttempts: 1});
     return json(clientProxyConfiguration(nodes));
   } catch (error) {
-    if (['too_many_supported_nodes', 'configuration_too_large', 'no_supported_nodes'].includes(error?.message)) return json({error: '代理配置超出客户端支持范围，请联系管理员调整订阅', code: 'proxy_configuration_unsupported'}, 502);
+    if (error?.code === 'BRCLIO_PROXY_SUBSCRIPTION_REJECTED') return json({error: '订阅服务拒绝配置请求，请联系管理员检查订阅', code: 'proxy_configuration_rejected'}, 403);
+    if (error?.code === 'BRCLIO_PROXY_SUBSCRIPTION_INVALID' || ['invalid_nodes', 'too_many_supported_nodes', 'configuration_too_large', 'no_supported_nodes'].includes(error?.message)) return json({error: '代理配置超出客户端支持范围，请联系管理员调整订阅', code: 'proxy_configuration_unsupported'}, 502);
     return json({error: '暂时无法获取内置代理配置，请关闭内置代理或稍后重试', code: 'proxy_configuration_unavailable'}, 502);
   }
 }

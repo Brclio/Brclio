@@ -49,7 +49,7 @@ export async function readConfig(env, {fresh = false, fetchImpl = fetch, tokenPr
     config = {subscriptionUrl, sha: null, updatedAt: null};
     document = {};
   } else {
-    if (!response.ok) { diagnostic('config','github_response',response.status); await response.body?.cancel(); throw new Error('读取私有配置失败'); }
+    if (!response.ok) { diagnostic('config','github_response',response.status); await response.body?.cancel(); throw Object.assign(new Error('读取私有配置失败'), [403,429].includes(response.status) ? {code:'BRCLIO_PROXY_SUBSCRIPTION_REJECTED'} : {}); }
     let file;try{file=await response.json();}catch{diagnostic('config','invalid_github_json');throw new Error('私有配置格式无效');}
     if (file.size > 16384 || file.encoding !== 'base64') {diagnostic('config','invalid_github_file');throw new Error('私有配置格式无效');}
     try{document=JSON.parse(decoder.decode(Uint8Array.from(atob(file.content.replace(/\s/g, '')), c => c.charCodeAt(0))));}catch{diagnostic('config','invalid_config_document');throw new Error('私有配置格式无效');}
@@ -87,14 +87,15 @@ function subscriptionRetryDelay(response) {
     : Number.isFinite(timestamp) && new Date(timestamp).toUTCString() === value ? timestamp - Date.now() : NaN;
   return Number.isFinite(delay) ? Math.max(100, delay) : null;
 }
-export async function readSubscription(url, fetchImpl = fetch) {
+export async function readSubscription(url, fetchImpl = fetch, {attempts = 2} = {}) {
   publicHTTPS(url);
-  // Both attempts, response bodies, cancellation and backoff share one budget.
+  if (![1, 2].includes(attempts)) throw new Error('订阅读取次数无效');
+  // Configured attempts, response bodies, cancellation and backoff share one budget.
   const controller = new AbortController(), signal = controller.signal, deadline = Date.now() + 10000;
   const timer = setTimeout(() => controller.abort(), 10000);
   const options = {headers: {'User-Agent': 'clash.meta', Accept: 'text/yaml, text/plain, */*', 'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache'}, redirect: 'manual', signal};
   try {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       try {
         if (Date.now() >= deadline) controller.abort();
         signal.throwIfAborted();
@@ -104,7 +105,7 @@ export async function readSubscription(url, fetchImpl = fetch) {
         if (!response.ok || Number(response.headers.get('content-length')) > 1024 * 1024) {
           const oversized = Number(response.headers.get('content-length')) > 1024 * 1024;
           await subscriptionAwait(response.body?.cancel(), signal).catch(() => {});
-          throw subscriptionFailure('http_response', oversized ? null : subscriptionRetryDelay(response), response.status);
+          throw subscriptionFailure(oversized ? 'response_too_large' : 'http_response', oversized ? null : subscriptionRetryDelay(response), response.status);
         }
         if (!response.body) throw subscriptionFailure('unsupported_document');
         const reader = response.body.getReader(), chunks = []; let length = 0;
@@ -127,12 +128,15 @@ export async function readSubscription(url, fetchImpl = fetch) {
         return nodes;
       } catch (error) {
         const delay = error?.retryDelay;
-        if (attempt === 0 && !signal.aborted && Number.isFinite(delay) && delay >= 0 && Date.now() + delay < deadline) {
+        if (attempt + 1 < attempts && !signal.aborted && Number.isFinite(delay) && delay >= 0 && Date.now() + delay < deadline) {
           await subscriptionAwait(new Promise(resolve => setTimeout(resolve, delay)), signal).catch(() => {});
           continue;
         }
         diagnostic('subscription', error?.subscriptionCode || 'fetch_failed', error?.status);
-        throw new Error(error?.subscriptionCode === 'unsupported_document' ? '订阅没有兼容节点' : '无法读取代理订阅');
+        const failure = new Error(error?.subscriptionCode === 'unsupported_document' ? '订阅没有兼容节点' : '无法读取代理订阅');
+        if (['unsupported_document', 'response_too_large'].includes(error?.subscriptionCode)) failure.code = 'BRCLIO_PROXY_SUBSCRIPTION_INVALID';
+        if ([403, 429].includes(error?.status)) failure.code = 'BRCLIO_PROXY_SUBSCRIPTION_REJECTED';
+        throw failure;
       }
     }
   } finally { clearTimeout(timer); }
@@ -161,14 +165,18 @@ async function recentlyValidatedSubscription(repo, config, fetchImpl, generation
   subscriptionFlights.set(key, entry);
   return entry.promise;
 }
-export async function getNodes(env, fetchImpl = fetch, {fresh = false, reuseValidatedSubscription = false, tokenProvider = githubInstallationToken} = {}) {
+export async function getNodes(env, fetchImpl = fetch, {fresh = false, reuseValidatedSubscription = false, subscriptionAttempts = 2, tokenProvider = githubInstallationToken} = {}) {
   const generation = cacheGeneration;
   let config;
-  try {config = await readConfig(env, {fetchImpl, fresh: fresh || reuseValidatedSubscription, tokenProvider});} catch {diagnostic('config','read_failed'); throw new Error('读取私有配置失败');}
+  try {config = await readConfig(env, {fetchImpl, fresh: fresh || reuseValidatedSubscription, tokenProvider});} catch (error) {
+    diagnostic('config','read_failed');
+    throw Object.assign(new Error('读取私有配置失败'), error?.code === 'BRCLIO_PROXY_SUBSCRIPTION_REJECTED' ? {code:error.code}
+      : /私有配置(?:格式无效|版本不受支持)|默认订阅尚未正确配置|程序资料仓库尚未配置/.test(error?.message || '') ? {code:'BRCLIO_PROXY_SUBSCRIPTION_INVALID'} : {});
+  }
   const repo = programRepository(env);
   if (reuseValidatedSubscription) return recentlyValidatedSubscription(repo, config, fetchImpl, generation);
   if (!fresh && nodesCache?.repo === repo && nodesCache.url === config.subscriptionUrl && nodesCache.expires > Date.now()) return nodesCache.nodes;
-  const nodes = await readSubscription(config.subscriptionUrl, fetchImpl);
+  const nodes = await readSubscription(config.subscriptionUrl, fetchImpl, {attempts: subscriptionAttempts});
   if (generation === cacheGeneration) nodesCache = {repo, url: config.subscriptionUrl, nodes, expires: Date.now() + NODES_CACHE_TTL_MS};
   return nodes;
 }

@@ -67,11 +67,11 @@ test('single-frame and accumulated fragmented messages above 8 MiB fail closed a
  });
 });
 test('untrusted WSS certificates and WSS redirects are rejected before any inner request',async t=>{
- for(const options of [{trustOuter:false},{redirect:true}]){const relay=await startRelay(options);t.after(()=>relay.close());const bridge=await createConnectBridge({nodes:[relay.node],WebSocketClass:relay.WebSocketClass});t.after(()=>bridge.close());await assert.rejects(request(bridge.proxyRules));assert.equal(relay.requests.length,0);assert.equal(relay.destinations.length,0);}
+ for(const options of [{trustOuter:false},{redirect:true}]){const relay=await startRelay(options);t.after(()=>relay.close());const bridge=await createConnectBridge({nodes:[relay.node],WebSocketClass:relay.WebSocketClass});t.after(()=>bridge.close());await assert.rejects(request(bridge.proxyRules));assert.equal(bridge.failureCode,options.redirect?'BRCLIO_UPDATE_ROUTE':'BRCLIO_UPDATE_SECURITY');assert.equal(relay.requests.length,0);assert.equal(relay.destinations.length,0);}
 });
 test('WSS SNI verification rejects a trusted certificate for a different node hostname',async t=>{
  const relay=await startRelay();t.after(()=>relay.close());const wrong={...relay.node,host:'other.example.com',servername:'other.example.com',wsHost:'other.example.com'};
- const bridge=await createConnectBridge({nodes:[wrong],WebSocketClass:relay.WebSocketClass});t.after(()=>bridge.close());await assert.rejects(request(bridge.proxyRules));assert.equal(relay.connections,0);assert.equal(relay.requests.length,0);
+ const bridge=await createConnectBridge({nodes:[wrong],WebSocketClass:relay.WebSocketClass});t.after(()=>bridge.close());await assert.rejects(request(bridge.proxyRules));assert.equal(bridge.failureCode,'BRCLIO_UPDATE_SECURITY');assert.equal(relay.connections,0);assert.equal(relay.requests.length,0);
 });
 test('native inner TLS rejects a trusted certificate with the wrong official hostname',async t=>{
  const relay=await startRelay({originCertificate:'relay'});t.after(()=>relay.close());const bridge=await createConnectBridge({nodes:[relay.node],WebSocketClass:relay.WebSocketClass});t.after(()=>bridge.close());await assert.rejects(request(bridge.proxyRules),error=>/CERT_ALTNAME_INVALID/.test(error.code));assert.equal(relay.requests.length,0);

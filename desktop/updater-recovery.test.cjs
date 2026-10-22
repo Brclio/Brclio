@@ -20,6 +20,7 @@ const release = { tag_name: 'v0.2.0', assets: [
 ] };
 const abortError = () => Object.assign(new Error('fixture aborted'), { name: 'AbortError' });
 const ioError = () => Object.assign(new Error('fixture disk failure'), { code: 'EIO' });
+const networkError = () => Object.assign(new Error('fixture body connection interrupted'), { code: 'BRCLIO_UPDATE_NETWORK' });
 
 async function until(condition) {
   const deadline = performance.now() + 3000;
@@ -29,7 +30,7 @@ async function until(condition) {
   }
 }
 
-function brokenBody({ error = new Error('fixture body connection interrupted'), onFailure = () => {} } = {}) {
+function brokenBody({ error = networkError(), onFailure = () => {} } = {}) {
   let first = true;
   return new Response(new ReadableStream({ pull(controller) {
     if (first) { first = false; controller.enqueue(payload.subarray(0, 7)); }
@@ -55,6 +56,7 @@ async function fixture(t, asset, options = {}) {
   const calls = [], operations = [];
   let installs = 0;
   const updater = createUpdater({ currentVersion: '0.1.0', directory, platform: 'darwin', architecture: 'arm64',
+    retryDelay: 0,
     fetch: async (url, init) => {
       calls.push({ url, init });
       assert.equal(new Headers(init.headers).get('range'), null);
@@ -96,7 +98,7 @@ test('healthy concurrent downloads share one promise, one manifest and one insta
   assert.equal(f.installs(), 0);
 });
 
-test('one body read rejection restarts from zero with the pinned manifest and a fresh hash', async t => {
+test('one body read rejection refreshes the whole route and manifest, then restarts from zero with a fresh hash', async t => {
   let firstSignal, firstWasAborted = false;
   const f = await fixture(t, (attempt, init) => {
     if (attempt === 1) {
@@ -117,34 +119,66 @@ test('one body read rejection restarts from zero with the pinned manifest and a 
   assert.deepEqual(actual, payload, 'the first attempt prefix must not remain in the final file');
   assert.deepEqual(await fs.readdir(f.directory), [assetName]);
   assert.equal(f.assets().length, 2);
-  assert.equal(f.calls.filter(call => call.url === manifestURL).length, 1);
-  assert.deepEqual(f.operations.map(({ kind, active }) => [kind, active]), [['check', true], ['check', false], ['download', true], ['download', false]]);
+  assert.equal(f.calls.filter(call => call.url === manifestURL).length, 2);
+  assert.deepEqual(f.operations.map(({ kind, active }) => [kind, active]), [['check', true], ['check', false], ['download', true], ['download', true], ['download', false]]);
   assert.deepEqual(f.operations.find(value => value.kind === 'download' && value.active).targets, [manifestURL, assetURL]);
   assert.equal(f.installs(), 0);
 });
 
-test('two failing body attempts stop at two GETs and remove partial data without allowing installation', async t => {
-  const f = await fixture(t, () => brokenBody());
+test('ten automatic retries stop at eleven complete attempts and a manual download gets a fresh budget', async t => {
+  let failing = true;
+  const f = await fixture(t, () => failing ? brokenBody() : new Response(payload));
   await f.updater.check();
-  await failedWithoutInstall(f, 1);
-  assert.equal(f.assets().length, 2);
+  const exhausted = await failedWithoutInstall(f, 10);
+  assert.equal(exhausted.retryLimit, 10); assert.equal(exhausted.retryExhausted, true); assert.equal(exhausted.retrying, false);
+  assert.match(exhausted.error, /自动重试 10 次.*手动重试/);
+  assert.equal(f.assets().length, 11); assert.equal(f.calls.filter(call => call.url === manifestURL).length, 11);
+  assert.equal(f.operations.filter(value => value.kind === 'download' && value.active).length, 11);
+  assert.equal(f.operations.filter(value => value.kind === 'download' && !value.active).length, 1);
+  assert.deepEqual(await fs.readdir(f.directory), []);
+  failing = false;
+  const recovered = await f.updater.download();
+  assert.equal(recovered.status, 'downloaded'); assert.equal(recovered.retryCount, 0); assert.equal(recovered.retryExhausted, false);
+});
+
+test('a short normal EOF is cleaned before the next route and a complete retry passes its full hash', async t => {
+  let f, routes = 0;
+  f = await fixture(t, attempt => new Response(attempt === 1 ? payload.subarray(0, -1) : payload), {
+    onOperation: async (kind, active) => {
+      if (kind === 'download' && active && ++routes > 1) await assert.rejects(fs.stat(path.join(f.directory, assetName + '.part')), {code: 'ENOENT'});
+    }
+  });
+  await f.updater.check();
+  const result = await f.updater.download();
+  assert.equal(result.status, 'downloaded'); assert.equal(result.retryCount, 1);
+  assert.equal(f.assets().length, 2); assert.equal(f.calls.filter(call => call.url === manifestURL).length, 2);
+  assert.equal(routes, 2); assert.deepEqual(await fs.readFile(path.join(f.directory, assetName)), payload);
+  assert.deepEqual(await fs.readdir(f.directory), [assetName]);
+});
+
+test('short normal EOF exhausts only the shared eleven-attempt budget and leaves no installable data', async t => {
+  const f = await fixture(t, () => new Response(payload.subarray(0, -1)));
+  await f.updater.check();
+  const result = await failedWithoutInstall(f, 10);
+  assert.equal(result.retryExhausted, true); assert.match(result.error, /连接提前结束.*自动重试 10 次.*手动重试/);
+  assert.equal(f.assets().length, 11); assert.equal(f.calls.filter(call => call.url === manifestURL).length, 11);
   assert.deepEqual(await fs.readdir(f.directory), []);
 });
 
-test('HTTP, clean EOF, integrity, limits, request, reader and disk failures never enter recovery', async t => {
-  for (const mode of ['http-403', 'short-eof', 'bad-hash', 'size-overflow', 'request-error', 'request-abort', 'reader-abort', 'reader-timeout', 'reader-abort-code', 'sync-read', 'get-reader', 'open', 'write', 'close', 'remove']) {
+test('HTTP, complete-length integrity, limits, request, reader and disk failures never enter recovery', async t => {
+  for (const mode of ['http-403', 'bad-hash', 'size-overflow', 'request-error', 'request-abort', 'reader-abort', 'reader-abort-code', 'reader-security', 'reader-certificate', 'sync-read', 'get-reader', 'open', 'write', 'close', 'remove']) {
     await t.test(mode, async t => {
       let readFailed = false;
       const f = await fixture(t, () => {
         if (mode === 'http-403') return new Response(null, { status: 403 });
-        if (mode === 'short-eof') return new Response(payload.subarray(0, -1));
         if (mode === 'bad-hash') return new Response(Buffer.alloc(payload.length, 120));
         if (mode === 'size-overflow') return new Response(Buffer.concat([payload, Buffer.from('extra')]));
         if (mode === 'request-error') throw new Error('fixture header connection failure');
         if (mode === 'request-abort') throw abortError();
         if (mode === 'reader-abort') return brokenBody({ error: abortError() });
-        if (mode === 'reader-timeout') return brokenBody({ error: Object.assign(new Error('fixture reader timeout'), { name: 'TimeoutError' }) });
         if (mode === 'reader-abort-code') return brokenBody({ error: Object.assign(new Error('fixture reader aborted'), { code: 'ABORT_ERR' }) });
+        if (mode === 'reader-security') return brokenBody({ error: Object.assign(new Error('fixture security rejection'), { code: 'BRCLIO_UPDATE_SECURITY' }) });
+        if (mode === 'reader-certificate') return brokenBody({ error: Object.assign(new Error('fixture certificate rejection'), { code: 'ERR_CERT_AUTHORITY_INVALID' }) });
         if (mode === 'sync-read') {
           const result = new Response(payload);
           Object.defineProperty(result, 'body', { value: { getReader() { return {
@@ -182,39 +216,40 @@ test('HTTP, clean EOF, integrity, limits, request, reader and disk failures neve
         });
       }
       await f.updater.check();
-      await failedWithoutInstall(f, 0);
+      const failure = await failedWithoutInstall(f, 0);
+      if (mode === 'bad-hash') { assert.match(failure.error, /SHA256/); assert.equal(failure.retryExhausted, false); }
       assert.equal(f.assets().length, 1);
       if (mode !== 'remove') assert.deepEqual(await fs.readdir(f.directory), []);
     });
   }
 });
 
-test('idle and total limits retain their original budgets through recovery and abort active children', async t => {
-  for (const mode of ['idle-first-attempt', 'idle-during-retry', 'total-during-retry']) await t.test(mode, async t => {
+test('an idle timeout starts a fresh attempt while the hard total deadline never restarts', async t => {
+  for (const mode of ['idle-recovery', 'total-during-retry']) await t.test(mode, async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     let firstWaiting = false, secondWaiting = false, rejectFirst, secondSignal;
     const total = mode === 'total-during-retry' ? 100 : 400;
     const idle = mode === 'total-during-retry' ? 400 : 40;
     const f = await fixture(t, (attempt, init) => {
-      if (mode === 'idle-first-attempt') return pendingBody(init.signal, { prefixBytes: true, waiting: () => { firstWaiting = true; } });
+      if (mode === 'idle-recovery') return attempt === 1 ? pendingBody(init.signal, { prefixBytes: true, waiting: () => { firstWaiting = true; } }) : new Response(payload);
       if (attempt === 2) { secondSignal = init.signal; return pendingBody(init.signal, { waiting: () => { secondWaiting = true; } }); }
       let prefixPending = true;
       return new Response(new ReadableStream({ pull(controller) {
         if (prefixPending) { prefixPending = false; controller.enqueue(payload.subarray(0, 7)); return; }
         firstWaiting = true;
-        return new Promise(resolve => { rejectFirst = () => { controller.error(new Error('fixture body interruption')); resolve(); }; });
+        return new Promise(resolve => { rejectFirst = () => { controller.error(networkError()); resolve(); }; });
       } }, { highWaterMark: 0 }));
     }, { downloadTimeout: total, idleTimeout: idle });
     await f.updater.check();
     const downloading = f.updater.download();
     await until(() => firstWaiting);
-    if (mode === 'idle-first-attempt') {
+    if (mode === 'idle-recovery') {
       t.mock.timers.tick(idle);
-      const failed = await downloading;
-      assert.equal(failed.status, 'error'); assert.equal(failed.retryCount, 0); assert.equal(f.assets().length, 1);
+      const recovered = await downloading;
+      assert.equal(recovered.status, 'downloaded'); assert.equal(recovered.retryCount, 1); assert.equal(f.assets().length, 2);
     } else {
-      const beforeFailure = mode === 'total-during-retry' ? 60 : 30;
-      const deadline = mode === 'total-during-retry' ? total : idle;
+      const beforeFailure = 60;
+      const deadline = total;
       t.mock.timers.tick(beforeFailure); rejectFirst();
       await until(() => secondWaiting);
       t.mock.timers.tick(deadline - beforeFailure - 1);
@@ -224,8 +259,10 @@ test('idle and total limits retain their original budgets through recovery and a
       const failed = await downloading;
       assert.equal(failed.status, 'error'); assert.equal(failed.retryCount, 1); assert.equal(f.assets().length, 2);
     }
-    assert.deepEqual(await fs.readdir(f.directory), []);
-    assert.equal((await f.updater.install()).status, 'error'); assert.equal(f.installs(), 0);
+    if (mode === 'total-during-retry') {
+      assert.deepEqual(await fs.readdir(f.directory), []);
+      assert.equal((await f.updater.install()).status, 'error'); assert.equal(f.installs(), 0);
+    }
   });
 });
 
@@ -278,7 +315,7 @@ test('a hanging file-close receipt obeys the master deadline and its late failur
   t.mock.timers.tick(40);
   const result = await downloading;
   assert.equal(result.status, 'error'); assert.equal(result.retryCount, 0); assert.equal(result.canInstall, false);
-  assert.match(result.error, /下载超时/);
+  assert.match(result.error, /清理超时/);
   assert.equal(f.assets().length, 1); assert.deepEqual(await fs.readdir(f.directory), []);
   const partial = path.join(f.directory, assetName + '.part');
   await fs.writeFile(partial, 'later operation fixture');
@@ -305,7 +342,7 @@ test('master cancellation stays authoritative when reader release also throws du
       cancel: async () => {}, releaseLock() { throw new Error('fixture secondary release-lock failure'); },
     }; } } });
     return result;
-  }, { idleTimeout: 40, downloadTimeout: 120 });
+  }, { idleTimeout: 400, downloadTimeout: 40 });
   await f.updater.check();
   const downloading = f.updater.download();
   await until(() => reading);
