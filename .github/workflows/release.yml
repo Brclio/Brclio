@@ -60,7 +60,7 @@ jobs:
     name: Verify production native proxy downloads
     needs: metadata
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: cloudflare

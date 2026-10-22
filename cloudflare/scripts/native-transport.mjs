@@ -22,22 +22,38 @@ export function nativeHTTPSRequest(target, {bridge, signal, method = 'GET', head
         proxy.protocol !== 'http:' || proxy.hostname !== '127.0.0.1' || !proxy.port || proxy.username || proxy.password || proxy.pathname !== '/') return reject(failure('INVALID_TARGET'));
     if (signal?.aborted) return reject(failure('CANCELLED'));
     const agent = new https.Agent({keepAlive: false});
-    let connect, secure, request, incoming;
-    const abort = () => {
-      connect?.destroy(); secure?.destroy(); request?.destroy(failure('CANCELLED')); incoming?.destroy(); agent.destroy();
-    };
+    let connect, secure, request, incoming, pendingConnection, settled = false, stopped = false;
     const cleanup = () => { signal?.removeEventListener('abort', abort); agent.destroy(); };
+    const stop = error => {
+      if (stopped) return;
+      stopped = true;
+      if (!settled) { settled = true; reject(error); }
+      // An Agent waits for this asynchronous callback before ClientRequest can
+      // emit its error. Destroying a TLS socket during its handshake alone does
+      // not guarantee an error event, so cancellation must release both waits.
+      pendingConnection?.(error);
+      connect?.destroy(); secure?.destroy(); request?.destroy(error); incoming?.destroy(error); cleanup();
+    };
+    const abort = () => stop(failure('CANCELLED'));
     signal?.addEventListener('abort', abort, {once: true});
     agent.createConnection = (_options, callback) => {
-      let completed = false;
-      const done = (error, socket) => { if (completed) return; completed = true; callback(error, socket); };
+      let completed = false, tunnelEstablished = false;
+      const done = (error, socket) => {
+        if (completed) return;
+        completed = true; pendingConnection = undefined; callback(error, socket);
+        if (error) stop(error);
+      };
+      pendingConnection = done;
       connect = http.request({host: '127.0.0.1', port: Number(proxy.port), method: 'CONNECT', path: `${url.hostname}:443`, agent: false,
         headers: {Host: `${url.hostname}:443`}, signal});
       connect.once('error', () => done(failure(signal?.aborted ? 'CANCELLED' : 'CONNECT_FAILED')));
+      connect.once('close', () => { if (!tunnelEstablished) done(failure(signal?.aborted ? 'CANCELLED' : 'CONNECT_FAILED')); });
       connect.once('connect', (response, socket, head) => {
+        tunnelEstablished = true;
         if (response.statusCode !== 200 || head.length) { socket.destroy(); done(failure('CONNECT_FAILED')); return; }
         secure = tls.connect({socket, servername: url.hostname, rejectUnauthorized: true, ALPNProtocols: ['http/1.1'], ...(testCA ? {ca: testCA} : {})});
         secure.once('error', () => done(failure('TLS_FAILED')));
+        secure.once('close', () => done(failure(signal?.aborted ? 'CANCELLED' : 'TLS_FAILED')));
         secure.once('secureConnect', () => {
           if (!secure.authorized) { secure.destroy(); done(failure('TLS_FAILED')); return; }
           done(null, secure);
@@ -47,6 +63,7 @@ export function nativeHTTPSRequest(target, {bridge, signal, method = 'GET', head
       return undefined;
     };
     request = https.request(url, {agent, method, headers, signal}, response => {
+      if (stopped) { response.destroy(); return; }
       incoming = response;
       incoming.once('close', cleanup);
       const responseHeaders = new Headers();
@@ -57,9 +74,10 @@ export function nativeHTTPSRequest(target, {bridge, signal, method = 'GET', head
       if (noBody) response.resume();
       const result = new Response(noBody ? null : Readable.toWeb(response), {status: response.statusCode, headers: responseHeaders});
       Object.defineProperty(result, 'url', {value: url.href});
-      resolve(result);
+      settled = true; resolve(result);
     });
-    request.once('error', () => { abort(); cleanup(); reject(failure(signal?.aborted ? 'CANCELLED' : 'HTTPS_FAILED')); });
+    request.once('error', () => stop(failure(signal?.aborted ? 'CANCELLED' : 'HTTPS_FAILED')));
+    request.once('close', () => { if (!settled) stop(failure(signal?.aborted ? 'CANCELLED' : 'HTTPS_FAILED')); });
     request.end();
   });
 }

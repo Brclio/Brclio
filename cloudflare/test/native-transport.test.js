@@ -7,6 +7,7 @@ import {execFileSync} from 'node:child_process';
 import http from 'node:http';
 import net from 'node:net';
 import tls from 'node:tls';
+import {once,getEventListeners} from 'node:events';
 import {nativeHTTPSRequest,selectNativeNodes,probeURL} from '../scripts/native-transport.mjs';
 let dir,cert,server,proxy,bridge;const sockets=new Set();
 before(async()=>{
@@ -26,6 +27,24 @@ test('production native HTTPS adapter encrypts through CONNECT and verifies the 
   await assert.rejects(()=>nativeHTTPSRequest('https://api.github.com/',{bridge,signal:AbortSignal.timeout(3000),testCA:cert}));
   await assert.rejects(()=>nativeHTTPSRequest('https://github.com/',{bridge,signal:AbortSignal.timeout(3000)}));
   await assert.rejects(()=>nativeHTTPSRequest('https://private.example/',{bridge,signal:AbortSignal.timeout(3000),testCA:cert}),/failed/);
+});
+for(const outcome of ['abort','peer-close'])test(`native HTTPS settles and closes its pending Agent connection on TLS handshake ${outcome}`,{timeout:3000},async t=>{
+  const clients=new Set(),controller=new AbortController();let handshakeSeen=false;
+  const stalled=http.createServer();
+  stalled.on('connection',socket=>{clients.add(socket);socket.on('error',()=>{});socket.once('close',()=>clients.delete(socket));});
+  stalled.on('connect',(_request,socket)=>{
+    socket.once('end',()=>socket.end());
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    // Trigger only after the real TLS ClientHello, when the asynchronous
+    // Agent callback is still pending. No remote endpoint is contacted.
+    socket.once('data',()=>{handshakeSeen=true;if(outcome==='abort')controller.abort();else socket.end();});
+  });
+  await new Promise(resolve=>stalled.listen(0,'127.0.0.1',resolve));
+  t.after(async()=>{for(const socket of clients)socket.destroy();await new Promise(resolve=>stalled.close(resolve));});
+  await assert.rejects(nativeHTTPSRequest('https://github.com/test',{bridge:{proxyRules:`http://127.0.0.1:${stalled.address().port}`},signal:controller.signal}),error=>error.code===(outcome==='abort'?'CANCELLED':'TLS_FAILED'));
+  assert.equal(handshakeSeen,true);assert.equal(controller.signal.aborted,outcome==='abort');
+  await Promise.all([...clients].map(socket=>once(socket,'close')));
+  assert.equal(clients.size,0);assert.equal(getEventListeners(controller.signal,'abort').length,0);
 });
 test('native selection probes all16 candidates once and selects lowest successful end-to-end HTTPS latency',async()=>{
   const nodes=Array.from({length:16},(_,index)=>({index})),seen=[];let closed=0;
