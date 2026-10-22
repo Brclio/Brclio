@@ -164,7 +164,8 @@ test('fixed scripts parse and their native interop types compile in Windows Powe
     const parseScript = "$ErrorActionPreference = 'Stop'; [void][ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($env:BRCLIO_TEST_SCRIPT))); Add-Type -TypeDefinition ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($env:BRCLIO_TEST_NATIVE_SOURCE)))";
     assert.ok(encodedScript.length < 32000, 'Windows CreateProcess command-line length must remain bounded');
     await promisify(execFile)(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', Buffer.from(parseScript, 'utf16le').toString('base64')], {
-      windowsHide: true, timeout: 10000,
+      // Bound cold PowerShell/Add-Type compilation separately from live selection reads.
+      windowsHide: true, timeout: 60000,
       env: { ...process.env, BRCLIO_TEST_SCRIPT: encodedScript, BRCLIO_TEST_NATIVE_SOURCE: encodedNative }
     });
   }

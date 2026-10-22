@@ -6,7 +6,7 @@
 
 ![Brclio 界面预览](docs/screenshots/desktop-preview.png)
 
-## 主要功能（v0.1.10）
+## 主要功能（v0.1.11）
 
 - 桌面复制快捷键：在前台 Finder／资源管理器中选中文件或文件夹后，按 macOS `Option+P`、Windows `Alt+P` 直接复制所选路径，沿用保存的格式。可在“通用设置 → 复制所选路径”中修改组合键或恢复默认；发生占用时保留原组合并提示。
 

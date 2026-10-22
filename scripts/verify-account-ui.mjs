@@ -88,6 +88,92 @@ try {
   await page.locator('#account-message').filter({ hasText: '已应用云端偏好' }).waitFor();
   assert.equal(await page.locator('#quote-mode').inputValue(), 'single');
   assert.equal(await page.locator('#base-path').inputValue(), '/private/local-only');
+  const beforeFailedApply = await page.evaluate(async () => ({
+    portable: await window.BrclioPreferences.read(), persisted: await window.BrclioHost.getSettings(),
+  }));
+  const beforeFailedApplyPreview = await page.locator('#path-preview').innerText();
+  await page.evaluate(() => {
+    window.__accountSavedPreferences = [];
+    window.__accountFailNextSave = true;
+    window.__accountOriginalSaveSettings = window.BrclioHost.saveSettings;
+    window.__accountOriginalCopyText = window.BrclioHost.copyText;
+    window.BrclioHost.saveSettings = async settings => {
+      window.__accountSavedPreferences.push({ ...settings });
+      if (window.__accountFailNextSave) {
+        window.__accountFailNextSave = false;
+        throw new Error('fixture local preference write failed');
+      }
+      if (window.__accountDeferNextSave) {
+        window.__accountDeferNextSave = false;
+        await new Promise(resolve => { window.__accountFinishDeferredSave = resolve; });
+      }
+      return window.__accountOriginalSaveSettings(settings);
+    };
+    window.BrclioHost.copyText = async text => { window.__accountCopiedText = text; };
+  });
+  cloud.preferences.quoteMode = 'double';
+  await page.locator('#account-apply').click();
+  await page.locator('#account-message').filter({ hasText: 'fixture local preference write failed' }).waitFor();
+  assert.equal(await page.locator('#account-message').getAttribute('data-error'), 'true');
+  assert.deepEqual(await page.evaluate(() => window.BrclioPreferences.read()), beforeFailedApply.portable, 'a failed cloud apply must leave the in-memory local format intact');
+  assert.deepEqual(await page.evaluate(() => window.BrclioHost.getSettings()), beforeFailedApply.persisted, 'a failed cloud apply must leave persisted local settings intact');
+  assert.equal(await page.locator('#quote-mode').inputValue(), 'single', 'a failed cloud apply must keep the existing control value');
+  assert.equal(await page.locator('#path-preview').innerText(), beforeFailedApplyPreview, 'a failed cloud apply must keep the existing preview');
+  const rejectedApplyCalls = await page.evaluate(() => window.__accountSavedPreferences);
+  assert.equal(rejectedApplyCalls.length, 1);
+  assert.equal(rejectedApplyCalls[0].quoteMode, 'double', 'the fixture must fail the attempted cloud-format write');
+  await page.locator('.account-close').click();
+  await page.locator('#copy-preview').click();
+  assert.equal(await page.evaluate(() => window.__accountCopiedText), beforeFailedApplyPreview, 'copying after the failed apply must still use the old local format');
+  const ordinaryJoinWith = beforeFailedApply.portable.joinWith === 'space' ? 'newline' : 'space';
+  await page.locator('#join-with').selectOption(ordinaryJoinWith);
+  await page.waitForFunction(() => window.__accountSavedPreferences.length === 2 && document.querySelector('#save-status span').textContent === '设置已保存');
+  const afterOrdinarySave = await page.evaluate(async () => ({
+    portable: await window.BrclioPreferences.read(), persisted: await window.BrclioHost.getSettings(),
+    saved: window.__accountSavedPreferences.at(-1),
+  }));
+  assert.deepEqual(afterOrdinarySave.portable, { ...beforeFailedApply.portable, joinWith: ordinaryJoinWith }, 'a later ordinary save must not adopt values from the failed cloud apply');
+  assert.deepEqual(afterOrdinarySave.persisted, { ...beforeFailedApply.persisted, joinWith: ordinaryJoinWith });
+  assert.equal(afterOrdinarySave.saved.quoteMode, 'single');
+  await page.locator('#account-button').click();
+  await page.locator('#account-apply:not(:disabled)').waitFor();
+  await page.evaluate(() => { window.__accountDeferNextSave = true; });
+  await page.locator('#account-apply').click();
+  await page.waitForFunction(() => typeof window.__accountFinishDeferredSave === 'function');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.getElementById('account-dialog').open);
+  await page.locator('#quote-mode').selectOption('auto');
+  assert.equal(await page.locator('#quote-mode').inputValue(), 'auto', 'a later local edit can occur after Escape while the cloud write remains pending');
+  await page.evaluate(() => { window.__accountFinishDeferredSave(); });
+  await page.waitForFunction(() => window.__accountSavedPreferences.length === 4 && document.querySelector('#save-status span').textContent === '设置已保存' && document.querySelector('.account-root').getAttribute('aria-busy') === 'false');
+  const afterPendingApplyEdit = await page.evaluate(async () => ({
+    portable: await window.BrclioPreferences.read(), persisted: await window.BrclioHost.getSettings(),
+    saved: window.__accountSavedPreferences,
+  }));
+  assert.equal(afterPendingApplyEdit.saved[2].quoteMode, 'double', 'the deferred write must be the cloud candidate');
+  assert.equal(afterPendingApplyEdit.saved[3].quoteMode, 'auto', 'the later local edit must queue after the pending cloud candidate');
+  assert.deepEqual(afterPendingApplyEdit.portable, { ...afterOrdinarySave.portable, quoteMode: 'auto' }, 'a completed older cloud apply must not replace a newer local edit in memory');
+  assert.deepEqual(afterPendingApplyEdit.persisted, { ...afterOrdinarySave.persisted, quoteMode: 'auto' }, 'the newer local edit must be the final persisted format');
+  assert.equal(await page.locator('#quote-mode').inputValue(), 'auto', 'the control must agree with the newer persisted local format');
+  await page.locator('#copy-preview').click();
+  assert.equal(await page.evaluate(() => window.__accountCopiedText), await page.locator('#path-preview').innerText(), 'copying must use the current local preview after the deferred apply completes');
+  await page.locator('#quote-mode').selectOption('single');
+  await page.waitForFunction(() => window.__accountSavedPreferences.length === 5 && document.querySelector('#save-status span').textContent === '设置已保存');
+  await page.evaluate(() => {
+    window.BrclioHost.saveSettings = window.__accountOriginalSaveSettings;
+    window.BrclioHost.copyText = window.__accountOriginalCopyText;
+    delete window.__accountOriginalSaveSettings;
+    delete window.__accountOriginalCopyText;
+    delete window.__accountSavedPreferences;
+    delete window.__accountCopiedText;
+    delete window.__accountFailNextSave;
+    delete window.__accountDeferNextSave;
+    delete window.__accountFinishDeferredSave;
+  });
+  cloud.preferences.quoteMode = 'single';
+  await page.locator('#account-button').click();
+  await page.locator('#account-profile-name').filter({ hasText: 'brclio_test' }).waitFor();
+  await page.locator('#account-apply:not(:disabled)').waitFor();
   const firstUser = user;
   user = { id: 'second-user', username: 'second_user', email: 'second@example.com' };
   cloud.preferences.quoteMode = 'double';
@@ -257,5 +343,5 @@ try {
   await page.locator('#account-device-approve').click();
   await page.locator('#account-device-detail').filter({ hasText: '已确认客户端登录' }).waitFor();
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: ['email code and registration', 'password fields cleared after login', 'email password login and logout', 'portable preference upload and apply preserve local base folder', 'cross-tab account changes and in-flight response identity cannot silently apply another account data', 'CSRF protected mutations', 'standalone account preference editor', 'explicit authenticated device approval', 'Google browser handoff and callback retain device context', 'Google accounts can edit nickname and username with draft preservation', 'first password setup, current password validation, password confirmation and secret field clearing', 'cross-tab identity changes abort profile edits and clear drafts', 'duplicate email gives a prefilled login action', 'nickname preferred in shared app header', 'canceled Google flow can complete client login with password fallback', '1440 / 900 / 390 / 320 settings layout'], consoleErrors: errors }, null, 2));
+  console.log(JSON.stringify({ passed: ['email code and registration', 'password fields cleared after login', 'email password login and logout', 'portable preference upload and apply preserve local base folder', 'failed cloud apply preserves local memory, controls, preview, copied text and subsequent ordinary saves', 'a local edit after Escape wins over an older pending cloud apply in memory, persisted settings and controls', 'cross-tab account changes and in-flight response identity cannot silently apply another account data', 'CSRF protected mutations', 'standalone account preference editor', 'explicit authenticated device approval', 'Google browser handoff and callback retain device context', 'Google accounts can edit nickname and username with draft preservation', 'first password setup, current password validation, password confirmation and secret field clearing', 'cross-tab identity changes abort profile edits and clear drafts', 'duplicate email gives a prefilled login action', 'nickname preferred in shared app header', 'canceled Google flow can complete client login with password fallback', '1440 / 900 / 390 / 320 settings layout'], consoleErrors: errors }, null, 2));
 } finally { await context.close(); await browser.close(); }

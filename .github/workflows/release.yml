@@ -249,6 +249,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -283,6 +286,11 @@ jobs:
         run: |
           bash gradlew --no-daemon testDebugUnitTest lintRelease assembleRelease
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
+      - name: Verify Android signing certificate continuity against the latest stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: node scripts/verify-android-signing.mjs --apk android/app/build/outputs/apk/release/app-release.apk --apksigner "$ANDROID_HOME/build-tools/35.0.0/apksigner" --version "$RELEASE_VERSION" --temp-dir "$RUNNER_TEMP"
       - name: Name the release APK
         env:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}

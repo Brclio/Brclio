@@ -17,6 +17,8 @@
 
 同一 Android 应用后续更新必须继续使用同一把签名 key；妥善离线备份 keystore 和密码。流水线缺少任何签名 Secret 会失败，绝不发布 unsigned 或 debug APK。签名文件只写入临时目录，并在作业结束时删除。
 
+Android 上传前还运行 `scripts/verify-android-signing.mjs`：用只读 `github.token` 查询 `Brclio/Brclio` 最新已公开稳定版，要求恰好一份符合官方命名与下载地址的 APK，并按固定 asset ID 下载到 `RUNNER_TEMP`；核对文件大小及 GitHub 提供的 SHA-256 digest。工具只用 `apksigner verify --print-certs` 读取新旧 APK 的单一签名证书，要求 SHA-256 证书指纹相同；不安装或执行下载的 APK。元数据、下载、验签或指纹比较失败均阻止上传，日志只输出公钥证书指纹及固定状态，临时旧 APK 始终清理。该检查不需要读取 keystore 或密码，四项签名 Secret 保持原样；计划轮换签名 key 时须另行设计和审查兼容升级流程，不能绕过本门禁。参见 [Android apksigner](https://developer.android.com/tools/apksigner) 和 [GitHub 最新正式 Release API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)。
+
 macOS 默认采用完整的 ad-hoc 签名，以验证应用及嵌套组件的完整性；该模式关闭 hardened runtime，尚未使用 Developer ID 和 Apple notarization。浏览器下载后的首次启动仍可能需要在系统设置的“隐私与安全性”中允许打开。Windows 安装包尚未使用 Authenticode 签名。SHA-256 清单用于检查下载是否完整，代码签名完整性、运行能力和 Gatekeeper 信任分别验收。
 
 FinderSync 扩展位于 `Brclio.app/Contents/PlugIns/BrclioFinderSync.appex`。顶层 `afterPack` hook 调用唯一的 Swift 编译脚本，先以独立的 App Sandbox 权限签名扩展，再由 electron-builder 封装并签名容器。electron-builder 26 默认跳过 `Contents/PlugIns` 的自动重签；因此扩展必须提前拥有完整的 bundle 签名，不能依赖 Swift linker 签名或 Electron 的继承权限。当前 hook 仅支持容器与扩展均为 ad-hoc 的模式，未来切换 Developer ID 时必须同时升级两者的签名流程。
