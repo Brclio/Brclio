@@ -94,4 +94,20 @@ class UpdateNodeSelectorTest {
         val future=pool.submit<Boolean>{runCatching{selector.select(listOf(node(1)),System.currentTimeMillis()+8000)}.isFailure}
         assertTrue(started.await(2,TimeUnit.SECONDS));selector.close();assertTrue(future.get(2,TimeUnit.SECONDS));assertEquals(1,count.get());pool.shutdownNow()
     }
+    @Test fun closeToleratesConcurrentTrackersShrinkingAndAlwaysStopsTheExecutor() {
+        for (field in listOf("bridges","requests")) {
+            val selector=UpdateNodeSelector()
+            val shrinking=object:AbstractMutableSet<Any>() {
+                override val size get()=1
+                override fun add(element:Any)=false
+                override fun iterator()=mutableSetOf<Any>().iterator()
+            }
+            UpdateNodeSelector::class.java.getDeclaredField(field).apply{isAccessible=true}.set(selector,shrinking)
+            val executor=UpdateNodeSelector::class.java.getDeclaredField("executor").apply{isAccessible=true}.get(selector) as java.util.concurrent.ExecutorService
+            try {
+                selector.close()
+                assertTrue("Closing a shrinking $field tracker must stop probe workers",executor.isShutdown)
+            } finally {selector.close();executor.shutdownNow()}
+        }
+    }
 }

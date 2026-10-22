@@ -22,7 +22,7 @@ class UpdateRetryPolicyTest {
     }
     @Test fun tenRetriesMeanExactlyElevenAttemptsWithBoundedBackoffAndCleanupBeforeWaiting() {
         val clock = Clock(); val states = mutableListOf<UpdateRetryState>(); var attempts = 0; var cleanups = 0
-        val failure = runCatching { clock.runner.run<Unit>("download", 600_000, { false }, {
+        val failure = runCatching { clock.runner.run<Unit>("download", null, { false }, {
             states.add(it)
             if (it.retrying) assertEquals(attempts, cleanups)
         }, { cleanups++ }) { attempts++; throw UpdateNetworkFailure("fixture network") } }.exceptionOrNull()
@@ -53,13 +53,27 @@ class UpdateRetryPolicyTest {
         } }.exceptionOrNull() is UpdateStopped)
         assertEquals(1, attempts); assertEquals(1, cleanups)
     }
-    @Test fun deadlineCanEndDownloadBeforeTheRetryLimitWithoutStartingAnotherAttempt() {
+    @Test fun checkDeadlineCanStopBeforeTheRetryLimitWithoutStartingAnotherAttempt() {
         val clock = Clock(); var attempts = 0; var cleanups = 0; val states = mutableListOf<UpdateRetryState>()
-        val failure = runCatching { clock.runner.run<Unit>("download", 50, { false }, states::add, { cleanups++ }) {
+        val failure = runCatching { clock.runner.run<Unit>("check", 50, { false }, states::add, { cleanups++ }) {
             attempts++; throw UpdateNetworkFailure("fixture")
         } }.exceptionOrNull()
         assertTrue(failure is UpdateRetryExhausted); assertEquals(50L, clock.now)
         assertEquals(1, attempts); assertEquals(1, cleanups); assertFalse(states.last().retryExhausted)
+    }
+    @Test fun downloadsRemainRetryBoundAfterHoursWithoutAnElapsedTimeLimit() {
+        val clock = Clock(); var attempts = 0; var cleanups = 0; val states = mutableListOf<UpdateRetryState>()
+        val failure = runCatching { clock.runner.run<Unit>("download", null, { false }, states::add, { cleanups++ }) {
+            attempts++; clock.now += 15 * 60_000L
+            throw UpdateNetworkFailure("fixture per-connection timeout")
+        } }.exceptionOrNull()
+        assertTrue(failure is UpdateRetryExhausted)
+        assertEquals(11, attempts); assertEquals(11, cleanups)
+        assertEquals(11 * 15 * 60_000L + 42_000L, clock.now)
+        assertEquals(10, states.last().retryCount); assertTrue(states.last().retryExhausted)
+        states.clear()
+        assertEquals("manual retry", clock.runner.run("download", null, { false }, states::add, {}) { "manual retry" })
+        assertTrue(states.all { it.retryCount == 0 && !it.retryExhausted })
     }
     @Test fun securityCancellationValidationAndLocalIoNeverReplay() {
         for (failure in listOf(

@@ -41,11 +41,12 @@ class UpdateResumeStoreTest {
     @Test fun actualRunnerPreservesBytesAcrossElevenFailuresThenManualRetryResumes() = fixture { directory, store ->
         var now = 0L; var attempts = 0; var manifestReads = 0
         val runner = UpdateRetryController({ now }, { now += it })
-        val failure = runCatching { runner.run<Unit>("download", 600_000, { false }, {}, {}) {
+        val failure = runCatching { runner.run<Unit>("download", null, { false }, {}, {}) {
             manifestReads++; val session = UpdateResumeStore(directory, name).prepare(binding()); attempts++
             if (session.offset == 0L) fresh(session) else session.accept(UpdateResumeResponse(206,
                 "bytes ${session.offset}-${payload.lastIndex}/${payload.size}", etag = "\"fixture-v1\""))
             val index = session.offset.toInt(); session.append(byteArrayOf(payload[index]), 1)
+            now += 90_000 // Progress and recovery remain valid well after the former ten-minute cap.
             throw UpdateNetworkFailure("fixture connection reset")
         } }.exceptionOrNull()
         assertTrue(failure is UpdateRetryExhausted); assertEquals(11, attempts); assertEquals(11, manifestReads)
@@ -55,6 +56,22 @@ class UpdateResumeStoreTest {
         session.accept(UpdateResumeResponse(206, "bytes 11-${payload.lastIndex}/${payload.size}"))
         val suffix = payload.copyOfRange(11, payload.size); session.append(suffix, suffix.size)
         session.endResponse(); assertArrayEquals(payload, session.finish().readBytes())
+    }
+    @Test fun continuouslyProgressingDownloadCompletesAfterTenMinutesWithoutRetrying() = fixture { _, store ->
+        var now = 0L; var attempts = 0; var cleanups = 0; val states = mutableListOf<UpdateRetryState>()
+        val actual = UpdateRetryController({ now }, { now += it }).run("download", null, { false }, states::add, { cleanups++ }) {
+            attempts++
+            val session = store.prepare(binding()); fresh(session)
+            payload.forEach { byte ->
+                now += 20_000
+                session.append(byteArrayOf(byte), 1)
+                assertEquals(session.offset, store.partial.length())
+            }
+            session.endResponse(); session.finish().readBytes()
+        }
+        assertTrue(now > 10 * 60_000L)
+        assertArrayEquals(payload, actual); assertEquals(1, attempts); assertEquals(1, cleanups)
+        assertTrue(states.all { it.retryCount == 0 && !it.retrying && !it.retryExhausted })
     }
     @Test fun changedChecksumOrSizeDiscardsTheOldBindingBeforeAnyAppend() = fixture { _, store ->
         partial(store, 8)
@@ -142,12 +159,12 @@ class UpdateResumeStoreTest {
             } finally { outside.delete() }
         }
     }
-    @Test fun deadlineAndCancellationKeepDurablePrefixForTheNextManualOperation() = fixture { _, store ->
-        var now = 0L; val states = mutableListOf<UpdateRetryState>()
-        val failure = runCatching { UpdateRetryController({ now }, { now += it }).run<Unit>("download", 50, { false }, states::add, {}) {
-            partial(store, 4); now = 50; throw UpdateNetworkFailure("fixture timeout")
+    @Test fun cancellationKeepsDurablePrefixForTheNextManualOperationWithoutATotalDeadline() = fixture { _, store ->
+        var now = 0L; var cancelled = false; val states = mutableListOf<UpdateRetryState>()
+        val failure = runCatching { UpdateRetryController({ now }, { now += it }).run<Unit>("download", null, { cancelled }, states::add, {}) {
+            partial(store, 4); now = 60 * 60_000L; cancelled = true; throw UpdateNetworkFailure("fixture timeout")
         } }.exceptionOrNull()!!
-        assertTrue(UpdateResumeStore.preserve(failure)); assertFalse(states.last().retryExhausted)
+        assertTrue(failure is UpdateStopped); assertTrue(UpdateResumeStore.preserve(failure)); assertFalse(states.last().retryExhausted)
         assertEquals(4, store.prepare(binding()).offset)
         assertTrue(UpdateResumeStore.preserve(UpdateStopped()))
         assertFalse(UpdateResumeStore.preserve(java.io.IOException("fixture disk")))

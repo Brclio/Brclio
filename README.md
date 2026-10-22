@@ -6,7 +6,7 @@
 
 ![Brclio 界面预览](docs/screenshots/desktop-preview.png)
 
-## 主要功能（v0.1.11）
+## 主要功能（v0.1.15）
 
 - 桌面复制快捷键：在前台 Finder／资源管理器中选中文件或文件夹后，按 macOS `Option+P`、Windows `Alt+P` 直接复制所选路径，沿用保存的格式。可在“通用设置 → 复制所选路径”中修改组合键或恢复默认；发生占用时保留原组合并提示。
 
@@ -25,6 +25,8 @@
 v0.1.9 加入内置更新代理：检测到系统代理时优先沿用系统网络；可以在版本更新和关于窗口临时关闭，完全退出后重新启动默认恢复开启。管理员可在综合客户端后台维护订阅，全局配置保存在私有程序资料仓库 `BrclioData/BrclioData`，详见[更新代理与后台说明](docs/update-proxy.md)。
 
 v0.1.14 支持断点续传：网络中断后保留已下载部分，自动重试、手动继续及重启后下载同一安装包都会恢复匹配进度。首次失败后最多自动重试 10 次；完成后仍校验整个安装包的 SHA-256。
+
+v0.1.15 移除下载的 10 分钟总时限：有数据持续到达就继续下载；单次连接或读取空闲超时仍触发重试，最多自动重试 10 次。
 
 Brclio 介绍与正式版本下载主页位于 [tools.brclio.com](https://tools.brclio.com)，用户账号位于 [/account](https://tools.brclio.com/account)，管理后台位于 [/admin](https://tools.brclio.com/admin)。`cloudflare/` 提供单一 Worker 的账号与客户端更新服务；服务端凭据留在正确 Cloudflare 账号的环境配置中。账号、昵称、个人设置与用户所属的各程序数据存入 `BrclioData/BrclioUserData`，全局代理配置等程序资料存入 `BrclioData/BrclioData`，详见[客户端服务部署说明](docs/client-services.md)。后端上线、新客户端安装包发布和已安装客户端升级分别验证。
 

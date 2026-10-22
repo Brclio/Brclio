@@ -159,13 +159,18 @@ test('installer connection timeout retries the complete attempt and does not wai
   assert.equal(f.calls.filter(value=>value.url===manifestURL).length,2);assert.equal(assets,2);
 });
 
-test('download hard deadline also bounds backoff and stops before using the remaining attempts', async t => {
+test('download backoff may exceed ten minutes but still stops at exactly eleven failed attempts', async t => {
   t.mock.timers.enable({apis:['setTimeout']});
-  const f=await fixture(t,async url=>{if(url===API_URL)return new Response(JSON.stringify(release));throw networkError();},{downloadTimeout:50,retryDelay:100});
+  const f=await fixture(t,async url=>{if(url===API_URL)return new Response(JSON.stringify(release));throw networkError();},{retryDelay:120000});
   await f.updater.check();const downloading=f.updater.download();
-  await until(()=>f.updater.state().retrying);
-  t.mock.timers.tick(50);
-  const result=await downloading;assert.equal(result.status,'error');assert.equal(result.retryCount,0);assert.equal(result.retryExhausted,false);assert.match(result.error,/下载超时.*手动重试/);
-  assert.equal(f.calls.filter(value=>value.url===manifestURL).length,1);
+  const manifestCalls=()=>f.calls.filter(value=>value.url===manifestURL).length;
+  for(let attempt=1;attempt<=10;attempt++){
+    await until(()=>f.updater.state().message===`连接未成功，稍后自动重试 ${attempt}/10。`&&manifestCalls()===attempt);
+    t.mock.timers.tick(119999);assert.equal(manifestCalls(),attempt);
+    t.mock.timers.tick(1);await until(()=>manifestCalls()===attempt+1);
+  }
+  const result=await downloading;assert.equal(result.status,'error');assert.equal(result.retryCount,10);assert.equal(result.retryExhausted,true);assert.match(result.error,/自动重试 10 次.*手动重试/);
+  assert.equal(manifestCalls(),11);assert.equal(f.operations.filter(value=>value.kind==='download'&&value.active).length,11);
+  assert.equal(f.operations.filter(value=>value.kind==='download'&&!value.active).length,1);
   assert.deepEqual(await fs.readdir(f.directory),[]);
 });

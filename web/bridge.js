@@ -17,7 +17,7 @@
   function native(method, payload = {}) {
     return new Promise((resolve, reject) => {
       const id = String(++nextId);
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error('系统操作尚未完成，请重试。')); }, ['pickPaths', 'downloadUpdate'].includes(method) ? 900000 : method === 'accountGoogle' ? 330000 : method === 'checkForUpdates' ? 90000 : 60000);
+      const timer = method === 'downloadUpdate' ? null : setTimeout(() => { pending.delete(id); reject(new Error('系统操作尚未完成，请重试。')); }, method === 'pickPaths' ? 900000 : method === 'accountGoogle' ? 330000 : method === 'checkForUpdates' ? 90000 : 60000);
       pending.set(id, { resolve, reject, timer });
       try { window.AndroidBridge.postMessage(JSON.stringify({ id, method, payload })); }
       catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
@@ -40,7 +40,7 @@
     },
     accountGoogle: async () => { location.assign('/api/account/google/start'); return { redirecting: true }; },
     accountCancelGoogle: async () => ({ canceled: true }),
-    getPlatform: async () => ({ platform: 'browser', version: '0.1.11', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
+    getPlatform: async () => ({ platform: 'browser', version: '0.1.15', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
     getSettings: async () => { const saved = localStorage.getItem(STORE); return saved ? JSON.parse(saved) : {}; },
     saveSettings: async settings => { localStorage.setItem(STORE, JSON.stringify(settings)); return settings; },
     copyText: async text => {
@@ -60,7 +60,7 @@
     onPaths: () => () => {},
     getUpdateProxyState: async () => ({ enabled: true, supported: false, route: 'direct' }),
     setUpdateProxyEnabled: async () => { throw new Error('请在客户端中设置更新代理。'); },
-    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.1.11' }),
+    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.1.15' }),
     downloadUpdate: async () => { throw new Error('请在客户端中下载安装包。'); },
     installUpdate: async () => { throw new Error('请在客户端中安装更新。'); },
     onUpdateState: () => () => {},

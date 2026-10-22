@@ -51,7 +51,7 @@ internal class UpdateRetryController(
 ) {
     fun <T> run(
         stage: String,
-        deadline: Long,
+        deadline: Long?,
         isCancelled: () -> Boolean,
         onState: (UpdateRetryState) -> Unit,
         cleanup: () -> Unit,
@@ -59,9 +59,10 @@ internal class UpdateRetryController(
     ): T {
         var retries = 0
         var lastFailure: Throwable? = null
+        fun deadlineReached() = deadline != null && now() >= deadline
         fun active() {
             if (isCancelled() || Thread.currentThread().isInterrupted) throw UpdateStopped()
-            if (now() >= deadline) {
+            if (deadlineReached()) {
                 onState(UpdateRetryState(retries, retryExhausted = false, retryStage = stage,
                     message = "更新已达到操作时限，请点击重试重新开始。"))
                 throw UpdateRetryExhausted(lastFailure)
@@ -80,14 +81,15 @@ internal class UpdateRetryController(
                 if (isCancelled() || Thread.currentThread().isInterrupted || failure is InterruptedException) throw UpdateStopped()
                 if (!UpdateRetryPolicy.canRetry(failure)) throw failure
                 lastFailure = failure
-                if (retries >= UpdateRetryPolicy.LIMIT || now() >= deadline) {
+                if (retries >= UpdateRetryPolicy.LIMIT || deadlineReached()) {
                     onState(UpdateRetryState(retries, retryExhausted = retries >= UpdateRetryPolicy.LIMIT, retryStage = stage,
-                        message = if (now() >= deadline) "更新已达到操作时限，请点击重试重新开始。"
+                        message = if (deadlineReached()) "更新已达到操作时限，请点击重试重新开始。"
                         else "自动重试 ${UpdateRetryPolicy.LIMIT} 次后仍未完成，请点击重试重新开始。"))
                     throw UpdateRetryExhausted(failure)
                 }
                 retries++
-                val waitUntil = minOf(deadline, now() + UpdateRetryPolicy.delayMillis(retries))
+                val backoffEnd = now() + UpdateRetryPolicy.delayMillis(retries)
+                val waitUntil = deadline?.let { minOf(it, backoffEnd) } ?: backoffEnd
                 onState(UpdateRetryState(retries, retrying = true, retryStage = stage,
                     message = "连接暂未成功，稍后进行第 $retries/${UpdateRetryPolicy.LIMIT} 次自动重试…"))
                 while (now() < waitUntil) {

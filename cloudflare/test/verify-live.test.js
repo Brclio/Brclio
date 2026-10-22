@@ -18,7 +18,16 @@ const release={tag_name:'v0.1.8',draft:false,prerelease:false,assets:[...install
 const node={uuid:'00112233-4455-6677-8899-aabbccddeeff',host:'vpn.example.com',port:443,path:'/tunnel',servername:'vpn.example.com',wsHost:'vpn.example.com',dialAddress:'104.17.1.1'};
 const configuration={version:1,ttlSeconds:600,nodes:[node]};
 
-async function run({large=false,failStage,challenge=false,badRedirect=false,rawError=false}={}){
+function clockFixture(){
+  let now=0,nextId=0;const timers=new Map(),delays=[];
+  return{get now(){return now;},get pending(){return timers.size;},delays,
+    setTimeout(callback,delay){const id=++nextId;timers.set(id,{callback,at:now+delay});delays.push(delay);return id;},
+    clearTimeout(id){timers.delete(id);},
+    advance(milliseconds){const end=now+milliseconds;for(;;){const due=[...timers].filter(([,value])=>value.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!due)break;now=due[1].at;timers.delete(due[0]);due[1].callback();}now=end;},
+  };
+}
+
+async function run({large=false,failStage,challenge=false,badRedirect=false,rawError=false,clock,chunkDelayMs=0,headerDelayMs=0}={}){
   const processFixture={argv:['node','verify-live.mjs',...(large?['--large']:[])],env:{}};
   const selected=installers[large?1:0],calls=[];let report,closed=0;
   const fetchImpl=async(url,options)=>{
@@ -37,17 +46,35 @@ async function run({large=false,failStage,challenge=false,badRedirect=false,rawE
     if(current==='metadata')return Response.json(release);
     if(current==='manifest')return new Response(manifest);
     assert.equal(url,selected.browser_download_url);let remaining=selected.size;
-    return new Response(new ReadableStream({pull(controller){if(!remaining){controller.close();return;}const size=Math.min(remaining,block.length);remaining-=size;controller.enqueue(block.subarray(0,size));}}),{headers:{'Content-Length':String(selected.size)}});
+    const checkCancelled=()=>{if(options.signal.aborted)throw Object.assign(Error('fixture request cancelled'),{name:'AbortError'});};
+    clock?.advance(headerDelayMs);checkCancelled();
+    return new Response(new ReadableStream({pull(controller){if(!remaining){controller.close();return;}clock?.advance(chunkDelayMs);checkCancelled();const size=Math.min(remaining,block.length);remaining-=size;controller.enqueue(block.subarray(0,size));}},{highWaterMark:0}),{headers:{'Content-Length':String(selected.size)}});
   };
   await vm.runInNewContext(`(async()=>{${source}\n})()`,{assert,createHash,officialTarget,publicHTTPS,redirectTarget,smokeResponseDiagnostic,parseProxyConfiguration,bootstrapFallbackOrigin,fetch:fetchImpl,nativeHTTPSRequest,
     selectNativeNodes:async(nodes,signal)=>{assert.equal(nodes.length,1);assert.ok(signal instanceof AbortSignal);return{nodes,candidates:1,reachable:1,latencyMs:7};},
-    createSelectedBridge:async()=>({native:true,close:async()=>{closed++;}}),process:processFixture,URL,Headers,AbortSignal,AbortController,Uint8Array,TextDecoder,Date,setTimeout,clearTimeout,console:{log:value=>{report=JSON.parse(value);}}});
+    createSelectedBridge:async()=>({native:true,close:async()=>{closed++;}}),process:processFixture,URL,Headers,AbortSignal,AbortController,Uint8Array,TextDecoder,
+    Date:clock?{now:()=>clock.now}:Date,setTimeout:clock?clock.setTimeout:setTimeout,clearTimeout:clock?clock.clearTimeout:clearTimeout,console:{log:value=>{report=JSON.parse(value);}}});
   return{report,calls,closed,exitCode:processFixture.exitCode};
 }
 
 for(const large of [false,true])test(`native smoke ${large?'large':'standard'} refreshes each operation and validates complete GitHub metadata, manifest and installer SHA`,async()=>{
   const result=await run({large});assert.equal(result.exitCode,undefined);assert.equal(result.report.ok,true);assert.equal(result.report.asset,installers[large?1:0].name);assert.equal(result.report.bytes,installers[large?1:0].size);assert.equal(result.report.configurationRefreshes,2);assert.equal(result.report.retryCount,0);assert.equal(result.report.downloadMode,'client-native-vless-wss-stream');assert.equal(result.report.manifestVerified,true);
   assert.equal(result.calls.filter(item=>item.kind==='configuration').length,2);assert.equal(result.calls.filter(item=>item.kind==='native').length,3);assert.equal(result.closed,2);assert.ok(!result.calls.some(item=>item.url?.includes('/api/update?')));
+});
+
+test('native smoke completes a continuously progressing download beyond ten minutes with its full SHA and no total deadline',async()=>{
+  const clock=clockFixture(),result=await run({large:true,clock,chunkDelayMs:1000});
+  assert.equal(result.report.ok,true);assert.equal(result.exitCode,undefined);assert.ok(result.report.durationMs>10*60*1000);
+  assert.equal(result.report.bytes,installers[1].size);assert.equal(result.report.sha256,installers[1].digest.slice(7));assert.equal(result.report.manifestVerified,true);
+  assert.deepEqual(result.report.defaultTimeoutsMs,{checkAndManifest:20000,idle:45000,downloadTotal:null});assert.equal(result.report.timeoutOverrides,false);
+  assert.ok(clock.delays.includes(20000)&&clock.delays.includes(45000));assert.ok(clock.delays.every(delay=>[20000,45000].includes(delay)));
+  assert.equal(clock.pending,0);assert.equal(result.closed,2);
+});
+
+for(const stalled of ['headers','body'])test(`native smoke retains the installer ${stalled==='headers'?'20-second connection':'45-second idle'} timeout without a total deadline`,async()=>{
+  const clock=clockFixture(),result=await run({clock,headerDelayMs:stalled==='headers'?20001:0,chunkDelayMs:stalled==='body'?45001:0});
+  assert.equal(result.exitCode,1);assert.equal(result.report.ok,false);assert.equal(result.report.stage,'installer');assert.equal(result.report.errorEnum,'timeout_or_cancelled');assert.equal(result.report.bytes,0);
+  assert.equal(result.report.defaultTimeoutsMs.downloadTotal,null);assert.equal(clock.pending,0);assert.equal(result.closed,2);
 });
 
 for(const failStage of ['bootstrap','metadata','manifest','installer'])test(`native smoke preserves safe structured ${failStage} HTTP failure evidence`,async()=>{

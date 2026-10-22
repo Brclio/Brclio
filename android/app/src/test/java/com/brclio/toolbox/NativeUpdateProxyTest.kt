@@ -42,10 +42,11 @@ class NativeUpdateProxyTest {
             directory.deleteRecursively()
         }
     }
-    private class Fixture(private val outer: SSLContext, inner: SSLContext, private val hang: Boolean=false, private val wrongAccept: Boolean=false, private val deniedStatus: Int?=null) : AutoCloseable {
+    private class Fixture(private val outer: SSLContext, inner: SSLContext, private val hang: Boolean=false, private val wrongAccept: Boolean=false, private val deniedStatus: Int?=null, private val oneWayChunks: Int=0) : AutoCloseable {
         val encryptedClientHello = CountDownLatch(1)
         val blockedRequest = CountDownLatch(1)
         val innerRequests=AtomicInteger()
+        val responseBody=if(oneWayChunks>0)ByteArray(oneWayChunks*1024){(it%251).toByte()}else "verified-through-two-real-TLS-layers".toByteArray()
         private val pool=Executors.newCachedThreadPool { task -> Thread(task,"offline-tls-fixture").apply { isDaemon=true } }
         private val sockets=java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
         private val origin=(inner.serverSocketFactory.createServerSocket(0,8,java.net.InetAddress.getLoopbackAddress()) as SSLServerSocket)
@@ -60,9 +61,15 @@ class NativeUpdateProxyTest {
                             socket.soTimeout=4000
                             val headers=UpdateTunnelProtocol.readHeaders(socket.getInputStream());innerRequests.incrementAndGet()
                             if(hang){blockedRequest.countDown();CountDownLatch(1).await();return@execute}
-                            val body="verified-through-two-real-TLS-layers".toByteArray()
+                            val body=responseBody
                             socket.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray())
-                            if(!headers.startsWith("HEAD "))socket.getOutputStream().write(body)
+                            if(!headers.startsWith("HEAD ")) {
+                                if(oneWayChunks>0) repeat(oneWayChunks) { chunk ->
+                                    if(chunk>0)Thread.sleep(250)
+                                    socket.getOutputStream().write(body,chunk*1024,1024)
+                                    socket.getOutputStream().flush()
+                                } else socket.getOutputStream().write(body)
+                            }
                             socket.getOutputStream().flush()
                         }catch(_:Exception){}finally{socket.close();sockets.remove(socket)}
                     }
@@ -93,6 +100,9 @@ class NativeUpdateProxyTest {
                 check(String(first,23,hostSize)=="github.com")
                 val tls=first.copyOfRange(23+hostSize,first.size)
                 check(tls[0].toInt()==22) // Actual inner TLS ClientHello, never an HTTP request in cleartext.
+                // This test server must also allow a one-way response after its
+                // client finishes sending; production upstream idle limits remain unchanged.
+                if(oneWayChunks>0)socket.soTimeout=0
                 encryptedClientHello.countDown()
                 destination=Socket("127.0.0.1",origin.localPort);sockets.add(destination)
                 val target=destination
@@ -132,6 +142,34 @@ class NativeUpdateProxyTest {
             val connection=request(proxy,valid.context.socketFactory)
             try{assertEquals("verified-through-two-real-TLS-layers",connection.inputStream.bufferedReader().readText());assertTrue(fixture.encryptedClientHello.await(1,TimeUnit.SECONDS));assertEquals(1,fixture.innerRequests.get())}finally{connection.disconnect()}
         }}
+    }
+    @Test fun downloadTunnelUsesRealTlsWithoutSchedulingAnOperationLifetimeTimer() {
+        Fixture(valid.context,valid.context).use { fixture ->
+            val previousTimers=Thread.getAllStackTraces().keys.filter { it.isAlive&&it.name=="Brclio-update-deadline" }.toSet()
+            NativeUpdateProxy(listOf(node()),null,valid.context.socketFactory){InetSocketAddress("127.0.0.1",fixture.port)}.use { proxy ->
+                val connection=request(proxy,valid.context.socketFactory)
+                try {
+                    assertEquals("verified-through-two-real-TLS-layers",connection.inputStream.bufferedReader().readText())
+                    assertTrue("A download tunnel must not schedule a total-lifetime shutdown",Thread.getAllStackTraces().keys.none {
+                        it.isAlive&&it.name=="Brclio-update-deadline"&&it !in previousTimers
+                    })
+                } finally { connection.disconnect() }
+            }
+        }
+    }
+    @Test fun continuousOneWayDownloadOutlivesThirtySecondsWithoutClientWrites() {
+        Fixture(valid.context,valid.context,oneWayChunks=132).use { fixture ->
+            NativeUpdateProxy(listOf(node()),null,valid.context.socketFactory){InetSocketAddress("127.0.0.1",fixture.port)}.use { proxy ->
+                val connection=request(proxy,valid.context.socketFactory)
+                val started=System.nanoTime()
+                try {
+                    val actual=connection.inputStream.use { it.readBytes() }
+                    assertArrayEquals("Continuous download bytes must survive an idle upload direction",fixture.responseBody,actual)
+                    assertTrue("The real response must exceed the former 30-second directional timeout",TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started)>=32_000)
+                    assertEquals(1,fixture.innerRequests.get())
+                } finally { connection.disconnect() }
+            }
+        }
     }
     @Test fun websocketDenialsAndRedirectsRemainPermanentAcrossTheLocalConnectBoundary() {
         for(status in listOf(403,429,302)) Fixture(valid.context,valid.context,deniedStatus=status).use { fixture ->

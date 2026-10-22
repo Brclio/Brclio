@@ -8,6 +8,7 @@ const args = process.argv.slice(2);
 const requestHeaders = {'User-Agent': 'Brclio-Updater/1.0', Accept: 'application/vnd.github+json, application/octet-stream;q=0.9', 'Accept-Encoding': 'identity'};
 const origin = args.find(arg => arg.startsWith('https://')) || process.env.BRCLIO_CLIENT_SERVICE_URL || process.env.BRCLIO_UPDATE_SERVICE_URL || 'https://tools.brclio.com';
 const started = Date.now();
+const defaultTimeoutsMs = {checkAndManifest: 20000, idle: 45000, downloadTotal: null};
 const progress = {stage: 'setup', bytes: 0, segments: 0, retryCount: 0, configurationRefreshes: 0, bootstrapAttempts: 0, nodesProbed: 0, reachableNodes: 0, selectedLatencyMs: null};
 let service, activeResponse, errorEnum = 'invalid_service_origin';
 const emptyDiagnostic = () => ({status: null, cfRay: null, cfMitigatedEnum: null, serverEnum: 'missing', routeEnum: 'missing'});
@@ -110,7 +111,7 @@ async function verify() {
   assert.equal(officialTarget(asset.browser_download_url).href, expectedBase + encodeURIComponent(asset.name));
   assert.equal(officialTarget(manifest.browser_download_url).href, expectedBase + 'SHA256SUMS.txt');
 
-  const download = new AbortController(), totalTimer = setTimeout(() => download.abort(), 10 * 60 * 1000);
+  const download = new AbortController();
   let headerTimer, idleTimer, digest;
   try {
     bridge = await operationBridge(AbortSignal.any([download.signal, AbortSignal.timeout(20000)]));
@@ -138,9 +139,9 @@ async function verify() {
     } finally { await reader.cancel().catch(() => {}); }
     assert.equal(progress.bytes, asset.size); digest = hash.digest('hex');
     assert.equal('sha256:' + digest, asset.digest); assert.equal(digest, selected[0].hash); progress.segments = 1;
-  } finally { clearTimeout(totalTimer); clearTimeout(headerTimer); clearTimeout(idleTimer); await bridge?.close(); }
+  } finally { clearTimeout(headerTimer); clearTimeout(idleTimer); await bridge?.close(); }
   return {ok: true, service: service.origin, release: release.tag_name, asset: asset.name, bytes: progress.bytes, sha256: digest,
-    manifestVerified: true, downloadMode: 'client-native-vless-wss-stream', configurationRefreshes: progress.configurationRefreshes,
+    manifestVerified: true, downloadMode: 'client-native-vless-wss-stream', defaultTimeoutsMs, timeoutOverrides: false, configurationRefreshes: progress.configurationRefreshes,
     nodesProbed: progress.nodesProbed, reachableNodes: progress.reachableNodes, selectedLatencyMs: progress.selectedLatencyMs, retryCount: 0, durationMs: Date.now() - started};
 }
 
@@ -149,6 +150,6 @@ catch (error) {
   await cancel(activeResponse);
   const fallback = ['AbortError', 'TimeoutError'].includes(error?.name) || error?.code === 'CANCELLED' ? 'timeout_or_cancelled'
     : error?.name === 'SyntaxError' ? 'invalid_json' : error?.code === 'ERR_ASSERTION' ? 'validation_failed' : 'unexpected_error';
-  console.log(JSON.stringify({ok: false, service: publicServiceOrigin(), ...progress, ...responseDiagnostic, errorEnum: errorEnum || fallback, durationMs: Date.now() - started}, null, 2));
+  console.log(JSON.stringify({ok: false, service: publicServiceOrigin(), ...progress, ...responseDiagnostic, defaultTimeoutsMs, timeoutOverrides: false, errorEnum: errorEnum || fallback, durationMs: Date.now() - started}, null, 2));
   process.exitCode = 1;
 }

@@ -23,7 +23,7 @@ const { _electron: electron } = require('@playwright/test');
     systemDetectionControlled: 'DIRECT in isolated test factory only; existing OS/default session proxy unchanged',
     systemSettingsModified: false, tlsVerificationModified: false, installerInstalled: false,
     controlledDisconnect: interruptAfterBytes > 0, interruptAfterBytes,
-    defaultTimeoutsMs: { checkAndManifest: 20000, idle: 45000, downloadTotal: 600000 }, timeoutOverrides: false };
+    defaultTimeoutsMs: { checkAndManifest: 20000, idle: 45000, downloadTotal: null }, timeoutOverrides: false };
   try {
     application = await electron.launch({ cwd: root, args: [...(process.platform === 'linux' ? ['--no-sandbox'] : []), root],
       env: { ...process.env, BRCLIO_USER_DATA: temporary } });
@@ -151,7 +151,7 @@ const { _electron: electron } = require('@playwright/test');
           && result.interruptedOffset === input.interruptAfterBytes
           && result.requests.some(value => value.requestKind === 'installer' && value.status === 206 && value.partialResponseValid && value.rangeOffset === result.interruptedOffset);
         result.partialFiles = (await fsp.readdir(directory).catch(() => [])).filter(name => name.endsWith('.part') || name.endsWith('.part.json')).length;
-        if (downloaded.status !== 'downloaded') { result.failure = downloaded.error === '下载超时或连接中断，请重新下载。' ? 'native_download_timeout_or_interrupted' : 'native_download_failed'; return result; }
+        if (downloaded.status !== 'downloaded') { result.failure = downloaded.retryExhausted ? 'native_download_retries_exhausted' : 'native_download_failed'; return result; }
         const filename = path.join(directory, result.assetName), hash = crypto.createHash('sha256'); result.actualBytes = (await fsp.stat(filename)).size;
         for await (const bytes of fs.createReadStream(filename)) hash.update(bytes); result.actualSHA256 = hash.digest('hex');
         summarizeOperations();

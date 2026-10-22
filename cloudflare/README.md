@@ -219,8 +219,8 @@ local CONNECT/WSS bridge and Node’s native TLS to read **GitHub** metadata,
 metadata/manifest digests, exact installer length and full SHA-256. `--large`
 selects an installer larger than 100 MiB. It saves and executes no installer and
 sends no installer/manifest requests to the Worker. It reports safe JSON on both
-success and failure and exits nonzero on failure. The existing 20-second check,
-45-second download idle and 10-minute total budgets remain enforced.
+success and failure and exits nonzero on failure. The existing 20-second check and 45-second download idle timeouts remain enforced.
+Downloads have no total-duration limit; active transfers continue while bytes arrive.
 
 The release workflow installs root production dependencies and Cloudflare test
 dependencies before running both sizes. Every Windows/macOS build additionally

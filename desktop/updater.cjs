@@ -90,7 +90,7 @@ function retryable(error) {
 }
 function resumableFailure(error) {
   return retryable(error) || error?.name === 'AbortError' || error?.code === 'ABORT_ERR' ||
-    ['BRCLIO_UPDATE_DEADLINE','BRCLIO_UPDATE_RETRY_EXHAUSTED'].includes(error?.code);
+    error?.code === 'BRCLIO_UPDATE_RETRY_EXHAUSTED';
 }
 function delay(milliseconds, signal) {
   if (milliseconds === 0) return abortable(Promise.resolve(), signal);
@@ -200,7 +200,6 @@ function createUpdater(options) {
       const destination = path.join(directory, selected.assetName);
       const resume = createResumeStore(directory,selected);
       const controller = new AbortController();
-      const totalTimer = setTimeout(() => controller.abort(updateError('下载超时或连接中断，请手动重试。', 'BRCLIO_UPDATE_DEADLINE', 'TimeoutError')), options.downloadTimeout || 10 * 60 * 1000);
       change({ status: 'downloading', error: null, totalBytes: selected.size, retryCount: 0,
         retrying: false, retryExhausted: false, retryStage: 'download', message: undefined, canInstall: false });
       const progress = (count, extra = {}) => change({downloadedBytes:count, progress:Math.min(99,Math.floor(count*100/selected.size)), resumable:count>0, ...extra});
@@ -283,7 +282,7 @@ function createUpdater(options) {
           finally {
             clearTimeout(idleTimer); clearTimeout(progressTimer); child.abort();
             // Do not begin a fresh route until the old body/file are closed.
-            // Cleanup cannot extend the hard deadline or remove a later file.
+            // Cleanup has its own idle limit and cannot remove a later file.
             const cleanup = new AbortController();
             const abortCleanup = () => cleanup.abort(controller.signal.reason);
             controller.signal.addEventListener('abort', abortCleanup, { once: true });
@@ -295,7 +294,9 @@ function createUpdater(options) {
             try { await abortable(cancelled, cleanup.signal); }
             catch (error) { attemptError = error; }
             finally {
-              try { reader?.releaseLock(); } catch (error) { attemptError = error; }
+              try { reader?.releaseLock(); } catch (error) {
+                if (attemptError?.name !== 'AbortError' && attemptError?.code !== 'ABORT_ERR') attemptError = error;
+              }
               try { await abortable(closed, cleanup.signal); } catch (error) { attemptError = error; }
               clearTimeout(cleanupTimer); controller.signal.removeEventListener('abort', abortCleanup);
               controller.signal.removeEventListener('abort', abortChild);
@@ -327,7 +328,7 @@ function createUpdater(options) {
           try {progress(await resume.preview());} catch {await resume.clear().catch(()=>{});progress(0,{resumable:false});}
         } else {await resume.clear().catch(()=>{});progress(0,{resumable:false});}
         return failure(finalError);
-      } finally { clearTimeout(totalTimer); await options.onOperation?.('download', false); }
+      } finally { await options.onOperation?.('download', false); }
     })();
     downloading = operation;
     operation.then(() => { if (downloading === operation) downloading = null; }, () => { if (downloading === operation) downloading = null; });

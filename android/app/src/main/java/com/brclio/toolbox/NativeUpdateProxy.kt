@@ -27,7 +27,7 @@ import javax.net.ssl.SSLSocketFactory
 /** Operation-scoped local CONNECT proxy. Neither Android's proxy nor its TLS trust is changed. */
 internal class NativeUpdateProxy(
     private val nodes: List<UpdateProxyNode>,
-    deadlineMillis: Long,
+    deadlineMillis: Long?,
     private val tlsFactory: SSLSocketFactory = SSLSocketFactory.getDefault() as SSLSocketFactory,
     private val connectAddress: (UpdateProxyNode) -> InetSocketAddress = { InetSocketAddress(it.dialAddress, it.port) },
 ) : AutoCloseable {
@@ -44,7 +44,8 @@ internal class NativeUpdateProxy(
 
     init {
         require(nodes.isNotEmpty())
-        timer.schedule({ close() }, maxOf(1L, deadlineMillis - System.currentTimeMillis()), TimeUnit.MILLISECONDS)
+        // Probes/checks are bounded; a progressing installer transfer has no total lifetime cap.
+        deadlineMillis?.let { timer.schedule({ close() }, maxOf(1L, it - System.currentTimeMillis()), TimeUnit.MILLISECONDS) }
         executor.execute {
             while (!closed.get()) {
                 val socket = try { server.accept() } catch (_: Exception) { break }
@@ -105,6 +106,10 @@ internal class NativeUpdateProxy(
             if (count < 0) throw EOFException()
             val prefix = UpdateTunnelProtocol.vlessRequest(selected ?: throw EOFException(), host)
             UpdateTunnelProtocol.writeFrame(remoteOut, 2, prefix + first.copyOf(count))
+            // Downloads can keep receiving without sending more TLS records. The
+            // upstream read timeout owns download idle detection; close() cancels
+            // this otherwise idle client-to-upstream reader explicitly.
+            local.soTimeout = 0
             executor.execute {
                 try {
                     val buffer = ByteArray(16 * 1024)

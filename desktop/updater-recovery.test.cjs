@@ -225,49 +225,60 @@ test('HTTP, complete-length integrity, limits, request, reader and disk failures
   }
 });
 
-test('an idle timeout starts a fresh attempt while the hard total deadline never restarts', async t => {
-  for (const mode of ['idle-recovery', 'total-during-retry']) await t.test(mode, async t => {
-    t.mock.timers.enable({ apis: ['setTimeout'] });
-    let firstWaiting = false, secondWaiting = false, rejectFirst, secondSignal;
-    const total = mode === 'total-during-retry' ? 100 : 400;
-    const idle = mode === 'total-during-retry' ? 400 : 40;
-    const f = await fixture(t, (attempt, init) => {
-      if (mode === 'idle-recovery') return attempt === 1 ? pendingBody(init.signal, { prefixBytes: true, waiting: () => { firstWaiting = true; } }) : new Response(payload);
-      if (attempt === 2) { secondSignal = init.signal; return pendingBody(init.signal, { waiting: () => { secondWaiting = true; } }); }
-      let prefixPending = true;
-      return new Response(new ReadableStream({ pull(controller) {
-        if (prefixPending) { prefixPending = false; controller.enqueue(payload.subarray(0, 7)); return; }
-        firstWaiting = true;
-        return new Promise(resolve => { rejectFirst = () => { controller.error(networkError()); resolve(); }; });
-      } }, { highWaterMark: 0 }));
-    }, { downloadTimeout: total, idleTimeout: idle });
-    await f.updater.check();
-    const downloading = f.updater.download();
-    await until(() => firstWaiting);
-    if (mode === 'idle-recovery') {
-      t.mock.timers.tick(idle);
-      const recovered = await downloading;
-      assert.equal(recovered.status, 'downloaded'); assert.equal(recovered.retryCount, 1); assert.equal(f.assets().length, 2);
-    } else {
-      const beforeFailure = 60;
-      const deadline = total;
-      t.mock.timers.tick(beforeFailure); rejectFirst();
-      await until(() => secondWaiting);
-      t.mock.timers.tick(deadline - beforeFailure - 1);
-      assert.equal(secondSignal.aborted, false);
-      t.mock.timers.tick(1);
-      assert.equal(secondSignal.aborted, true, 'recovery must not restart the original deadline');
-      const failed = await downloading;
-      assert.equal(failed.status, 'error'); assert.equal(failed.retryCount, 1); assert.equal(f.assets().length, 2);
+test('an idle timeout preserves the prefix and resumes only the missing suffix on a fresh attempt', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let firstWaiting = false, firstSignal;
+  const f = await fixture(t, (attempt, init) => {
+    if (attempt === 1) {
+      firstSignal = init.signal;
+      return pendingBody(init.signal, { prefixBytes: true, waiting: () => { firstWaiting = true; } });
     }
-    if (mode === 'total-during-retry') {
-      assert.deepEqual(await fs.readdir(f.directory), [assetName + '.part', assetName + '.part.json']);
-      assert.equal((await f.updater.install()).status, 'error'); assert.equal(f.installs(), 0);
-    }
-  });
+    assert.equal(firstSignal.aborted, true);
+    assert.equal(new Headers(init.headers).get('range'), 'bytes=7-');
+    return new Response(payload.subarray(7), { status: 206, headers: {
+      'Content-Range': `bytes 7-${payload.length - 1}/${payload.length}`, 'Content-Length': String(payload.length - 7),
+    } });
+  }, { idleTimeout: 40 });
+  await f.updater.check();
+  const downloading = f.updater.download();
+  await until(() => firstWaiting);
+  assert.deepEqual(await fs.readFile(path.join(f.directory, assetName + '.part')), payload.subarray(0, 7));
+  t.mock.timers.tick(39); assert.equal(firstSignal.aborted, false);
+  t.mock.timers.tick(1);
+  const recovered = await downloading;
+  assert.equal(recovered.status, 'downloaded'); assert.equal(recovered.retryCount, 1); assert.equal(recovered.resumedBytes, 7);
+  assert.equal(f.assets().length, 2); assert.equal(f.calls.filter(call => call.url === manifestURL).length, 2);
+  assert.deepEqual(await fs.readFile(path.join(f.directory, assetName)), payload);
+  assert.deepEqual(await fs.readdir(f.directory), [assetName]);
 });
 
-test('a hanging failed-reader cancellation is bounded by the master idle timer and cannot start recovery', async t => {
+test('a continuously progressing download can exceed ten minutes and still verify the complete package', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let stream, reads = 0, signal;
+  const f = await fixture(t, (_attempt, init) => {
+    signal = init.signal;
+    return new Response(new ReadableStream({ start(controller) { stream = controller; }, pull() { reads++; } }, { highWaterMark: 0 }));
+  });
+  await f.updater.check();
+  const downloading = f.updater.download();
+  await until(() => reads === 1);
+  for (let offset = 0; offset < 21; offset++) {
+    t.mock.timers.tick(30000);
+    assert.equal(signal.aborted, false, 'receiving data within the idle limit must keep the attempt alive');
+    assert.equal(f.updater.state().status, 'downloading');
+    stream.enqueue(payload.subarray(offset, offset + 1));
+    await until(() => reads === offset + 2);
+  }
+  assert.deepEqual(await fs.readFile(path.join(f.directory, assetName + '.part')), payload.subarray(0, 21));
+  stream.enqueue(payload.subarray(21)); await until(() => reads === 23); stream.close();
+  const result = await downloading;
+  assert.equal(result.status, 'downloaded'); assert.equal(result.retryCount, 0); assert.equal(result.canInstall, true);
+  assert.equal(result.downloadedBytes, payload.length); assert.equal(f.assets().length, 1);
+  assert.deepEqual(await fs.readFile(path.join(f.directory, assetName)), payload);
+  assert.equal(f.installs(), 0);
+});
+
+test('a hanging failed-reader cancellation is bounded by the cleanup idle timer and cannot start recovery', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let cancelCalls = 0, reads = 0;
   const f = await fixture(t, () => {
@@ -277,7 +288,7 @@ test('a hanging failed-reader cancellation is bounded by the master idle timer a
       cancel() { cancelCalls++; return new Promise(() => {}); }, releaseLock() {},
     }; } } });
     return result;
-  }, { idleTimeout: 40, downloadTimeout: 120 });
+  }, { idleTimeout: 40 });
   await f.updater.check();
   const downloading = f.updater.download();
   await until(() => cancelCalls > 0);
@@ -289,10 +300,10 @@ test('a hanging failed-reader cancellation is bounded by the master idle timer a
   assert.equal((await f.updater.install()).status, 'error'); assert.equal(f.installs(), 0);
 });
 
-test('a hanging file-close receipt obeys the master deadline and its late failure cannot delete a later partial file', async t => {
+test('a hanging file-close receipt obeys the cleanup idle limit and its late failure cannot delete a later partial file', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let closing = false, rejectLateClose, partialRemovals = 0;
-  const f = await fixture(t, () => brokenBody(), { idleTimeout: 40, downloadTimeout: 120 });
+  const f = await fixture(t, () => brokenBody(), { idleTimeout: 40 });
   const open = fs.open, remove = fs.rm;
   t.mock.method(fs, 'open', async (filename, ...args) => {
     const handle = await open(filename, ...args);
@@ -329,8 +340,7 @@ test('a hanging file-close receipt obeys the master deadline and its late failur
   assert.equal((await f.updater.install()).status, 'error'); assert.equal(f.installs(), 0);
 });
 
-test('master cancellation stays authoritative when reader release also throws during cleanup', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+test('explicit cancellation stays authoritative when reader release also throws during cleanup', async t => {
   let reading = false, reads = 0;
   const f = await fixture(t, () => {
     const result = new Response(payload);
@@ -338,19 +348,18 @@ test('master cancellation stays authoritative when reader release also throws du
       read() {
         if (++reads === 1) return Promise.resolve({ done: false, value: payload.subarray(0, 7) });
         reading = true;
-        return new Promise(() => {}); // Intentionally ignores child abort; the master still owns the deadline.
+        return Promise.reject(abortError());
       },
       cancel: async () => {}, releaseLock() { throw new Error('fixture secondary release-lock failure'); },
     }; } } });
     return result;
-  }, { idleTimeout: 400, downloadTimeout: 40 });
+  });
   await f.updater.check();
   const downloading = f.updater.download();
   await until(() => reading);
-  t.mock.timers.tick(40);
   const result = await downloading;
   assert.equal(result.status, 'error'); assert.equal(result.retryCount, 0); assert.equal(result.canInstall, false);
-  assert.match(result.error, /下载超时/); assert.doesNotMatch(result.error, /release-lock/);
+  assert.match(result.error, /fixture aborted/); assert.doesNotMatch(result.error, /release-lock/);
   assert.equal(f.assets().length, 1); assert.deepEqual(await fs.readdir(f.directory), [assetName + '.part', assetName + '.part.json']);
   assert.equal((await f.updater.install()).status, 'error'); assert.equal(f.installs(), 0);
 });

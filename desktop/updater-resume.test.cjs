@@ -29,7 +29,6 @@ function fixture(root,asset,options={}){
     },onState:state=>states.push(state),onOperation:(kind,active)=>operations.push([kind,active]),...options.updater});
   return {updater,calls,states,operations};
 }
-async function until(condition){const limit=performance.now()+3000;while(!condition()){if(performance.now()>limit)throw Error('fixture condition not reached');await new Promise(setImmediate);}}
 
 test('an interrupted attempt requests only the missing suffix, rehashes the prefix and never duplicates bytes',async t=>{
   const root=await directory(t),offset=13;
@@ -119,26 +118,15 @@ test('server segments may end before total and each next attempt resumes at the 
   });await f.updater.check();const result=await f.updater.download();assert.equal(result.status,'downloaded');assert.equal(sent,bytes.length-5);assert.deepEqual(await fs.readFile(path.join(root,assetName)),bytes);
 });
 
-test('cancellation and hard timeout retain their completed prefix without enabling installation',async t=>{
-  t.mock.timers.enable({apis:['setTimeout']});
-  for(const timeout of [false,true]){
-    const root=await directory(t);let waiting=false,signal;
-    const f=fixture(root,init=>{signal=init.signal;let sent=false;return new Response(new ReadableStream({pull(c){if(!sent){sent=true;c.enqueue(bytes.subarray(0,7));return;}waiting=true;
-      if(!timeout){c.error(Object.assign(Error('用户取消。'),{name:'AbortError'}));return;}
-      return new Promise(resolve=>init.signal.addEventListener('abort',()=>{c.error(network());resolve();},{once:true}));
-    }},{highWaterMark:0}),{headers:{etag:'"stable"'}});},{updater:timeout?{downloadTimeout:30,idleTimeout:200}: {}});
-    await f.updater.check();const pending=f.updater.download();await until(()=>waiting);
-    if(timeout){
-      // Advance the original operation deadline only after the prefix is on disk.
-      assert.deepEqual(await fs.readFile(path.join(root,assetName+'.part')),bytes.subarray(0,7));
-      t.mock.timers.tick(29);assert.equal(signal.aborted,false);
-      t.mock.timers.tick(1);assert.equal(signal.aborted,true);
-      assert.equal(signal.reason.code,'BRCLIO_UPDATE_DEADLINE');
-    }
-    const result=await pending;
-    assert.equal(result.status,'error');assert.equal(result.canInstall,false);assert.equal(result.resumable,true);assert.equal(result.downloadedBytes,7);assert.deepEqual(await fs.readFile(path.join(root,assetName+'.part')),bytes.subarray(0,7));
-    assert.equal(result.retryCount,0);assert.equal(result.retryExhausted,false);
-  }
+test('cancellation retains its completed prefix without retrying or enabling installation',async t=>{
+  const root=await directory(t);
+  const f=fixture(root,()=>{let sent=false;return new Response(new ReadableStream({pull(c){
+    if(!sent){sent=true;c.enqueue(bytes.subarray(0,7));return;}
+    c.error(Object.assign(Error('用户取消。'),{name:'AbortError'}));
+  }},{highWaterMark:0}),{headers:{etag:'"stable"'}});});
+  await f.updater.check();const result=await f.updater.download();
+  assert.equal(result.status,'error');assert.equal(result.canInstall,false);assert.equal(result.resumable,true);assert.equal(result.downloadedBytes,7);assert.deepEqual(await fs.readFile(path.join(root,assetName+'.part')),bytes.subarray(0,7));
+  assert.equal(result.retryCount,0);assert.equal(result.retryExhausted,false);assert.match(result.error,/用户取消/);
 });
 
 test('complete-length bad hashes and modifications during append fail final on-disk verification without retry',async t=>{

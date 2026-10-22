@@ -79,12 +79,11 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         check(!UpdatePolicy.isNewer(currentVersion, release.version)) { "不能下载早于当前版本的安装包。" }
         downloaded = null
         downloadedSha256 = null
-        val deadline = System.currentTimeMillis() + 10 * 60_000L
         val store = UpdateResumeStore(directory, release.apk.name)
         var bootstrapAddress = UpdateProxyConfig.ADDRESS
         publish("downloading", release)
         try {
-            UpdateRetryController().run("download", deadline, { closed }, { retry ->
+            UpdateRetryController().run("download", null, { closed }, { retry ->
                 retryState = retry
                 if (retry.retrying) downloadMessage = null
                 publish("downloading", release)
@@ -93,17 +92,17 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 try {
                     val address = bootstrapAddress
                     bootstrapAddress = UpdateProxyConfig.ADDRESS
-                    val route = try { prepareNetwork(deadline, address) }
+                    val route = try { prepareNetwork(null, address) }
                     catch (failure: UpdateBootstrapFailure) { bootstrapAddress = failure.nextAddress; throw failure }
-                    val checksum = UpdatePolicy.expectedChecksum(readSmall(release.checksums.url, 256 * 1024, route, deadline), release.apk.name)
+                    val checksum = UpdatePolicy.expectedChecksum(readSmall(release.checksums.url, 256 * 1024, route), release.apk.name)
                     val binding = UpdateResumeBinding(release.version, release.apk.name, release.apk.url, release.apk.size, checksum)
-                    val session = store.prepare(binding) { checkActive(deadline) }
+                    val session = store.prepare(binding) { checkActive() }
                     partial = session
                     resumeProgress = session.offset
                     resumedBytes = session.offset
                     resumable = session.offset > 0
                     publish("downloading", release)
-                    val response = open(release.apk.url, route, deadline, session.requestHeaders(), rangeDownload = true)
+                    val response = open(release.apk.url, route, requestHeaders = session.requestHeaders(), rangeDownload = true)
                     val plan = session.accept(UpdateResumeResponse(response.responseCode, response.getHeaderField("Content-Range"),
                         response.getHeaderField("Content-Length"), response.getHeaderField("Content-Encoding"),
                         response.getHeaderField("Content-Type"), response.getHeaderField("ETag")))
@@ -118,10 +117,10 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                         try {
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
-                                checkActive(deadline)
+                                checkActive()
                                 val count = remote { input.read(buffer) }
                                 if (count < 0) break
-                                checkActive(deadline)
+                                checkActive()
                                 session.append(buffer, count)
                                 resumeProgress = session.offset
                                 resumable = session.offset > 0
@@ -133,7 +132,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                         } finally { runCatching { input.close() } }
                         session.endResponse()
                     }
-                    checkActive(deadline)
+                    checkActive()
                     // Session verification re-reads the actual on-disk file. Android
                     // package identity/version/signature are checked before promotion.
                     session.verifyComplete()
@@ -291,9 +290,9 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         }
     }
 
-    private fun checkActive(deadline: Long) {
+    private fun checkActive(deadline: Long? = null) {
         if (closed || Thread.currentThread().isInterrupted) throw UpdateStopped()
-        if (System.currentTimeMillis() >= deadline) throw UpdateNetworkFailure("更新连接超时。")
+        if (deadline != null && System.currentTimeMillis() >= deadline) throw UpdateNetworkFailure("更新连接超时。")
     }
 
     private fun closeConnection() {
@@ -323,22 +322,24 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
     }
 
     /** Every attempt freshly resolves routing, configuration and every candidate. */
-    private fun prepareNetwork(deadline: Long, bootstrapAddress: String): UpdateProxyRoute {
+    private fun prepareNetwork(deadline: Long?, bootstrapAddress: String): UpdateProxyRoute {
         checkActive(deadline)
         val route = currentProxyRoute()
         if (route != UpdateProxyRoute.BUILTIN) return route
-        val loader = UpdateProxyBootstrap(deadline, { closed }, address = bootstrapAddress)
+        // Each route preparation remains bounded independently of installer transfer time.
+        val preparationDeadline = deadline ?: (System.currentTimeMillis() + 60_000L)
+        val loader = UpdateProxyBootstrap(preparationDeadline, { closed }, address = bootstrapAddress)
         bootstrap = loader
         val nodes = try { loader.fetch() } finally { loader.close(); bootstrap = null }
         val selector = UpdateNodeSelector()
         nodeSelector = selector
-        val selected = try { selector.select(nodes, deadline) } finally { selector.close(); nodeSelector = null }
+        val selected = try { selector.select(nodes, preparationDeadline) } finally { selector.close(); nodeSelector = null }
         nativeProxy = NativeUpdateProxy(listOf(selected), deadline)
         checkActive(deadline)
         return route
     }
 
-    private fun open(address: String, route: UpdateProxyRoute, deadline: Long, requestHeaders: Map<String, String> = emptyMap(), rangeDownload: Boolean = false): HttpsURLConnection {
+    private fun open(address: String, route: UpdateProxyRoute, deadline: Long? = null, requestHeaders: Map<String, String> = emptyMap(), rangeDownload: Boolean = false): HttpsURLConnection {
         check(UpdateProxyPolicy.allowedSource(address)) { "更新下载地址不受信任。" }
         var url = address
         repeat(6) {
@@ -349,10 +350,10 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 UpdateProxyRoute.DIRECT -> URL(url).openConnection(Proxy.NO_PROXY)
                 UpdateProxyRoute.BUILTIN -> URL(url).openConnection(nativeProxy?.proxy ?: error("内置更新代理已停止。"))
             }
-            val remaining = maxOf(1, deadline - System.currentTimeMillis())
+            val remaining = deadline?.let { maxOf(1, it - System.currentTimeMillis()) }
             val request = (opened as HttpsURLConnection).apply {
-                connectTimeout = minOf(15_000L, remaining).toInt()
-                readTimeout = minOf(30_000L, remaining).toInt()
+                connectTimeout = (remaining?.let { minOf(15_000L, it) } ?: 15_000L).toInt()
+                readTimeout = (remaining?.let { minOf(30_000L, it) } ?: 30_000L).toInt()
                 instanceFollowRedirects = false
                 useCaches = false
                 setRequestProperty("Connection", "close")
@@ -363,7 +364,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 requestHeaders.forEach { (name, value) -> setRequestProperty(name, value) }
             }
             connection = request
-            connectionDeadline = deadlineWorker.schedule({ request.disconnect() }, remaining, TimeUnit.MILLISECONDS)
+            connectionDeadline = remaining?.let { deadlineWorker.schedule({ request.disconnect() }, it, TimeUnit.MILLISECONDS) }
             checkActive(deadline)
             val code = remote { request.responseCode }
             val mitigated = request.getHeaderField("cf-mitigated")
@@ -389,7 +390,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         error("更新服务器重定向次数过多。")
     }
 
-    private fun readSmall(address: String, limit: Int, route: UpdateProxyRoute, deadline: Long): String {
+    private fun readSmall(address: String, limit: Int, route: UpdateProxyRoute, deadline: Long? = null): String {
         val request = open(address, route, deadline)
         val output = ByteArrayOutputStream()
         try {

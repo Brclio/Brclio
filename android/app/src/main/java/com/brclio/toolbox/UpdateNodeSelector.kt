@@ -89,9 +89,10 @@ internal class UpdateNodeSelector(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         // Close the transport first: disconnect can wait for a blocked HttpsURLConnection read.
-        bridges.toList().forEach { it.close() }
-        requests.toList().forEach { it.disconnect() }
-        executor.shutdownNow()
+        try {
+            bridges.forEach { it.close() }
+            requests.forEach { it.disconnect() }
+        } finally { executor.shutdownNow() }
     }
 
     companion object {
