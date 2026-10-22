@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const { createReadStream } = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const {createResumeStore,responsePlan} = require('./update-resume.cjs');
 
 const REPOSITORY = 'Brclio/Brclio';
 const API_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
@@ -87,6 +88,10 @@ function retryable(error) {
   if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') return false;
   return error?.code === 'BRCLIO_UPDATE_NETWORK' || error?.name === 'TimeoutError' && !error.code;
 }
+function resumableFailure(error) {
+  return retryable(error) || error?.name === 'AbortError' || error?.code === 'ABORT_ERR' ||
+    ['BRCLIO_UPDATE_DEADLINE','BRCLIO_UPDATE_RETRY_EXHAUSTED'].includes(error?.code);
+}
 function delay(milliseconds, signal) {
   if (milliseconds === 0) return abortable(Promise.resolve(), signal);
   let timer;
@@ -99,7 +104,7 @@ function createUpdater(options) {
   const architecture = options.architecture || process.arch;
   const publish = options.onState || (() => {});
   let state = { status: 'idle', currentVersion, version: null, notes: '', progress: 0,
-    downloadedBytes: 0, totalBytes: 0, retryLimit: RETRY_LIMIT, retryCount: 0, retrying: false, retryExhausted: false, retryStage: null,
+    downloadedBytes: 0, totalBytes: 0, resumable: false, resumedBytes: 0, retryLimit: RETRY_LIMIT, retryCount: 0, retrying: false, retryExhausted: false, retryStage: null,
     error: null, assetName: null, manualInstall: false, canInstall: false, releaseURL: RELEASE_URL };
   let release = null; let verified = null; let checking = null; let downloading = null; let installing = null;
   function snapshot() { return { ...state }; }
@@ -111,7 +116,6 @@ function createUpdater(options) {
     for (let attempt = 0; attempt <= RETRY_LIMIT; attempt++) {
       signal?.throwIfAborted();
       change({ retryCount: attempt, retrying: attempt > 0, retryExhausted: false, retryStage: kind,
-        ...(kind === 'download' ? { downloadedBytes: 0, progress: 0 } : {}),
         message: attempt > 0 ? `正在自动重试 ${attempt}/${RETRY_LIMIT}，请稍候。` : undefined });
       try { return await run(); }
       catch (error) {
@@ -127,14 +131,18 @@ function createUpdater(options) {
     }
   }
 
-  async function request(url, signal) {
-    const response = await abortable(Promise.resolve().then(() => fetchURL(url, { signal, redirect: 'follow', headers: { Accept: 'application/vnd.github+json', 'User-Agent': `Brclio/${currentVersion}` } })), signal);
+  async function request(url, signal, extra = {}) {
+    const response = await abortable(Promise.resolve().then(() => fetchURL(url, { signal, redirect: 'follow', headers: { Accept: 'application/vnd.github+json', 'User-Agent': `Brclio/${currentVersion}`, 'Accept-Encoding':'identity', ...extra.headers } })), signal);
     const blocked = requestBlockMessage(response);
     if (blocked) {
       void Promise.resolve().then(() => response.body?.cancel()).catch(() => {});
       throw updateError(blocked, 'BRCLIO_UPDATE_SECURITY');
     }
-    if (!response.ok) {
+    if (response.status===206 && !new Headers(extra.headers).has('range')) {
+      void Promise.resolve().then(() => response.body?.cancel()).catch(() => {});
+      throw updateError('服务器返回了未请求的续传范围，已停止。','BRCLIO_UPDATE_SECURITY');
+    }
+    if (!response.ok && !(extra.allow416 && response.status === 416)) {
       void Promise.resolve().then(() => response.body?.cancel()).catch(() => {});
       if (response.status === 404) throw updateError('正式版本尚未发布，请稍后检查。', 'BRCLIO_UPDATE_ROUTE');
       if (response.status === 403 || response.status === 429) throw updateError('GitHub 暂时限制请求，请稍后重试。', 'BRCLIO_UPDATE_SECURITY');
@@ -190,22 +198,24 @@ function createUpdater(options) {
       if (!release || compareVersions(release.version, currentVersion) <= 0) return failure(new Error('请先检查更新，确认有可用的新版本。'));
       const selected = release;
       const destination = path.join(directory, selected.assetName);
-      const partial = `${destination}.part`;
+      const resume = createResumeStore(directory,selected);
       const controller = new AbortController();
       const totalTimer = setTimeout(() => controller.abort(updateError('下载超时或连接中断，请手动重试。', 'BRCLIO_UPDATE_DEADLINE', 'TimeoutError')), options.downloadTimeout || 10 * 60 * 1000);
-      change({ status: 'downloading', error: null, progress: 0, downloadedBytes: 0, totalBytes: selected.size, retryCount: 0,
+      change({ status: 'downloading', error: null, totalBytes: selected.size, retryCount: 0,
         retrying: false, retryExhausted: false, retryStage: 'download', message: undefined, canInstall: false });
+      const progress = (count, extra = {}) => change({downloadedBytes:count, progress:Math.min(99,Math.floor(count*100/selected.size)), resumable:count>0, ...extra});
       try {
         verified = null;
         await abortable(fs.mkdir(directory, { recursive: true }), controller.signal);
+        progress(await resume.preview(),{resumedBytes:0});
         return await attempts('download', async () => {
           controller.signal.throwIfAborted();
           const child = new AbortController();
           const abortChild = () => child.abort(controller.signal.reason);
           controller.signal.addEventListener('abort', abortChild, { once: true });
-          let idleTimer, response, reader, output, expected, attemptError, reused = false;
+          let idleTimer, progressTimer, response, reader, output, expected, attemptError, reused = false, metadata, plan;
           let count = 0; let lastUpdate = 0;
-          const hash = crypto.createHash('sha256');
+          let hash;
           const refreshIdle = () => {
             clearTimeout(idleTimer);
             idleTimer = setTimeout(() => child.abort(updateError('安装包传输连接超时。', 'BRCLIO_UPDATE_NETWORK', 'TimeoutError')), options.idleTimeout || 45000);
@@ -218,40 +228,60 @@ function createUpdater(options) {
           };
           try {
             await network(() => options.onOperation?.('download', true, [selected.checksumURL, selected.downloadURL]));
-            await abortable(fs.rm(partial, { force: true }), controller.signal);
             expected = await network(async () => {
               const manifest = await request(selected.checksumURL, child.signal);
               return checksumFor(await abortable(manifest.text(), child.signal), selected.assetName);
             });
             if (selected.digest && selected.digest !== expected) throw new Error('GitHub 发布校验值与 SHA256SUMS 不一致，已停止。');
-            const existing = await abortable(fs.stat(destination).catch(error => { if (error.code === 'ENOENT') return null; throw error; }), controller.signal);
+            const existing = await abortable(fs.lstat(destination).catch(error => { if (error.code === 'ENOENT') return null; throw error; }), controller.signal);
+            if (existing && (!existing.isFile() || existing.nlink!==1)) throw updateError('更新安装包缓存不是独立的普通文件，已停止。','BRCLIO_UPDATE_SECURITY');
             if (existing?.size === selected.size && await abortable(fileDigest(destination), controller.signal) === expected) {
-              reused = true; count = selected.size;
+              reused = true; count = selected.size; await resume.clear();
             } else {
-              response = await network(() => request(selected.downloadURL, child.signal));
-              if (!response.body) throw new Error('安装包下载内容为空。');
-              reader = response.body.getReader();
-              output = await abortable(fs.open(partial, 'wx', 0o600), controller.signal);
-              refreshIdle();
-              while (true) {
-                const item = await abortable(reader.read(), child.signal);
-                child.signal.throwIfAborted();
-                if (item.done) break;
-                const chunk = item.value;
-                if (chunk.length) refreshIdle();
-                count += chunk.length;
-                if (count > selected.size || count > MAX_DOWNLOAD) throw new Error('安装包大小与发布信息不一致，已停止。');
-                hash.update(chunk);
-                await abortable(output.writeFile(chunk), controller.signal);
-                if (Date.now() - lastUpdate >= 100) {
-                  change({ downloadedBytes: count, progress: Math.min(99, Math.floor(count * 100 / selected.size)) });
-                  lastUpdate = Date.now();
+              const prefix = await abortable(resume.prepare(expected,controller.signal),controller.signal);
+              output = prefix.handle; hash = prefix.hash; count = prefix.count; metadata = prefix.metadata;
+              progress(count,{resumedBytes:count});
+              const headers = count ? {Range:`bytes=${count}-`,...(metadata.etag?{'If-Range':metadata.etag}:{})} : {};
+              response = await network(() => request(selected.downloadURL, child.signal,{headers,allow416:true}));
+              plan = responsePlan(response,count,selected,metadata);
+              if (response.status === 416) {
+                if (!plan.complete) throw updateError('服务器拒绝续传范围，请手动重新下载。','BRCLIO_UPDATE_SECURITY');
+              } else {
+                if (plan.restarted) {
+                  await output.truncate(0); hash = crypto.createHash('sha256'); count = 0;
+                  progress(0,{resumedBytes:0,message:'服务器未接受续传，正在重新下载。'});
+                }
+                metadata = {...metadata,etag:plan.etag}; await resume.save(metadata);
+                if (!response.body) throw new Error('安装包下载内容为空。');
+                reader = response.body.getReader();
+                let received = 0;
+                refreshIdle();
+                while (true) {
+                  const item = await abortable(reader.read(), child.signal);
+                  child.signal.throwIfAborted();
+                  if (item.done) break;
+                  const chunk = item.value;
+                  if (chunk.length) refreshIdle();
+                  if (received+chunk.length>plan.bytes || count+chunk.length>selected.size || count+chunk.length>MAX_DOWNLOAD)
+                    throw updateError('安装包大小或续传范围与发布信息不一致，已停止。','BRCLIO_UPDATE_SECURITY');
+                  let written=0;
+                  while(written<chunk.length){
+                    const result=await abortable(output.write(chunk,written,chunk.length-written,count+written),controller.signal);
+                    if(!result.bytesWritten)throw updateError('无法写入更新文件。','BRCLIO_UPDATE_LOCAL');
+                    written+=result.bytesWritten;
+                  }
+                  hash.update(chunk); count += chunk.length; received += chunk.length;
+                  if (Date.now() - lastUpdate >= 100) {
+                    clearTimeout(progressTimer); progressTimer = null;
+                    progress(count);
+                    lastUpdate = Date.now();
+                  } else if (!progressTimer) progressTimer = setTimeout(() => {progressTimer=null;progress(count);lastUpdate=Date.now();},100-(Date.now()-lastUpdate));
                 }
               }
             }
           } catch (error) { attemptError = child.signal.aborted ? child.signal.reason : error; }
           finally {
-            clearTimeout(idleTimer); child.abort();
+            clearTimeout(idleTimer); clearTimeout(progressTimer); child.abort();
             // Do not begin a fresh route until the old body/file are closed.
             // Cleanup cannot extend the hard deadline or remove a later file.
             const cleanup = new AbortController();
@@ -260,7 +290,7 @@ function createUpdater(options) {
             if (controller.signal.aborted) abortCleanup();
             const cleanupTimer = setTimeout(() => cleanup.abort(updateError('更新连接清理超时，请手动重试。', 'BRCLIO_UPDATE_CLEANUP')), options.idleTimeout || 45000);
             const cancelled = Promise.resolve().then(() => reader ? reader.cancel() : response?.body?.cancel()).catch(() => {});
-            const closed = Promise.resolve().then(() => output?.close());
+            const closed = resume.closing(Promise.resolve().then(async () => {try {await output?.sync();} finally {await output?.close();}}));
             closed.catch(() => {});
             try { await abortable(cancelled, cleanup.signal); }
             catch (error) { attemptError = error; }
@@ -273,25 +303,29 @@ function createUpdater(options) {
           }
           controller.signal.throwIfAborted();
           if (attemptError) {
-            await fs.rm(partial, { force: true });
+            if (!resumableFailure(attemptError)) await resume.clear();
+            else progress(await resume.preview());
             throw attemptError;
           }
           if (!reused) {
             if (count < selected.size) {
-              await fs.rm(partial, { force: true });
+              progress(count);
               throw updateError('安装包连接提前结束。', 'BRCLIO_UPDATE_NETWORK');
             }
             if (count !== selected.size || hash.digest('hex') !== expected) throw new Error('安装包 SHA256 校验失败，请重新下载。');
-            await abortable(fs.rename(partial, destination), controller.signal);
+            const disk = await abortable(resume.verify(expected,controller.signal),controller.signal);
+            await abortable(resume.finish(destination,disk),controller.signal);
           }
           controller.signal.throwIfAborted();
           verified = { filename: destination, expected, size: selected.size };
-          return change({ status: 'downloaded', progress: 100, downloadedBytes: count, canInstall: true, retrying: false, retryExhausted: false, message: undefined });
+          return change({ status: 'downloaded', progress: 100, downloadedBytes: count, resumable:false, canInstall: true, retrying: false, retryExhausted: false, message: undefined });
         }, controller.signal);
       } catch (error) {
         const finalError = controller.signal.aborted ? controller.signal.reason : error;
         controller.abort();
-        await fs.rm(partial, { force: true }).catch(() => {});
+        if (resumableFailure(finalError)) {
+          try {progress(await resume.preview());} catch {await resume.clear().catch(()=>{});progress(0,{resumable:false});}
+        } else {await resume.clear().catch(()=>{});progress(0,{resumable:false});}
         return failure(finalError);
       } finally { clearTimeout(totalTimer); await options.onOperation?.('download', false); }
     })();

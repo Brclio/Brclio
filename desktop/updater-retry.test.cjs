@@ -121,14 +121,15 @@ test('a known security rejection stays permanent even when response cancellation
   }
 });
 
-test('manifest and installer failures consume one shared download budget and clean partial bytes before refreshing the route', async t => {
+test('manifest and installer failures share one budget and retain a usable prefix while refreshing the route', async t => {
   let manifests=0, assets=0, routes=0;
   let f;
   f=await fixture(t,async url=>{
     if(url===API_URL)return new Response(JSON.stringify(release));
     if(url===manifestURL){
       assert.equal(routes,++manifests);
-      await assert.rejects(fs.stat(path.join(f.directory,assetName+'.part')),{code:'ENOENT'});
+      if(manifests<3)await assert.rejects(fs.stat(path.join(f.directory,assetName+'.part')),{code:'ENOENT'});
+      else assert.deepEqual(await fs.readFile(path.join(f.directory,assetName+'.part')),payload.subarray(0,5));
       if(manifests===1)throw networkError();
       return new Response(`${digest}  ${assetName}`);
     }

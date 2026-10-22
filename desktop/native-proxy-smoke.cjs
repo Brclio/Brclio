@@ -5,7 +5,9 @@ const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:pa
 const {_electron:electron}=require('@playwright/test');
 (async()=>{const root=path.resolve(__dirname,'..'),temporary=await fs.mkdtemp(path.join(os.tmpdir(),'brclio-native-proxy-smoke-'));let app;
 try{
- app=await electron.launch({cwd:root,args:[...(process.platform==='linux'?['--no-sandbox']:[]),root],env:{...process.env,BRCLIO_USER_DATA:temporary}});
+ const driver=path.join(temporary,'driver.cjs');
+ await fs.writeFile(driver,`const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(path.join(temporary,'profile'))});app.whenReady().then(()=>new BrowserWindow({show:false}));app.on('window-all-closed',()=>{});`);
+ app=await electron.launch({cwd:root,args:[...(process.platform==='linux'?['--no-sandbox']:[]),driver]});
  const result=await app.evaluate(async({app,session,net:electronNet},root)=>{
   const load=process.getBuiltinModule('node:module').createRequire(root+'/package.json');
   const fs=load('node:fs'),fsp=load('node:fs/promises'),crypto=load('node:crypto'),path=load('node:path'),net=load('node:net');
@@ -70,6 +72,10 @@ try{
    return{ok:actualDigest===digest&&!installed&&proxyNativeUnexpected===0&&closed.every(Boolean),actualElectron:true,externalNetworkRequests:false,defaultTimeoutsOverridden:false,configurationRequests,firstCheckAndDownloadFreshConfigurations:configurationRequests===8,probesPerPrimaryOperation:16,primaryProbeCount:wireRequests.slice(0,37).filter(x=>x.method==='HEAD').length,probeURL:'https://github.com/robots.txt',probeConcurrencyBound:16,continuousBytes:payload.length,fullSHA256:actualDigest,allRequestsOfficial:wireRequests.every(x=>/^https:\/\/(?:github\.com|api\.github\.com|release-assets\.githubusercontent\.com|objects\.githubusercontent\.com)\//.test(x.url)),rangeRequests:wireRequests.filter(x=>x.range).length,allBridgeListenersClosed:closed.every(Boolean),primaryBridgeCount:firstOperationPorts,http2Used:relay.requests.some(value=>value.httpVersion==='2.0'),http1RedirectVerified:true,http2ChecksumAndInstallerRedirectsVerified:true,nativeRedirectReturnedBeforeFollow:true,unsafeRedirectNeverFollowed:true,truncatedBodyRejected:true,innerWrongHostnameRejected:true,untrustedWSSRejected:true,cancellationStopsTunnel:true,installed:false};
   }finally{await router.close();for(const value of sessionsToClose){await value.closeAllConnections();value.setCertificateVerifyProc(null);}await relay.close();}
  },root);
+ Object.assign(result,await app.evaluate(async(electron,root)=>{
+  const load=process.getBuiltinModule('node:module').createRequire(root+'/package.json');
+  return{resume:await load('./test/native-resume-verifier.cjs').verifyNativeResume(electron,root)};
+ },root));
  // Exercise the exact release-install fixture in real Electron. Its original
  // net.fetch delegates dynamically to net.request, which a VM stub cannot model.
  Object.assign(result,await app.evaluate(async({app,net,session},root)=>{
@@ -89,7 +95,7 @@ try{
    return{macInstallerFixtureRealFileBytes:actual.length,macInstallerFixtureSHA256:digest,macInstallerFixtureNativeFileRequests:nativeFileRequests,macInstallerFixtureReadVerified:true};
   }finally{await fs.rm(filename,{force:true});}
  },root));
- assert.equal(result.ok,true);assert.equal(result.rangeRequests,0);assert.equal(result.primaryBridgeCount,32);assert.equal(result.firstCheckAndDownloadFreshConfigurations,true);
+ assert.equal(result.ok,true);assert.equal(result.rangeRequests,0);assert.equal(result.primaryBridgeCount,32);assert.equal(result.firstCheckAndDownloadFreshConfigurations,true);assert.equal(result.resume.passed,true);
  await fs.mkdir(path.join(root,'artifacts'),{recursive:true});await fs.writeFile(path.join(root,'artifacts/desktop-native-proxy-offline.json'),JSON.stringify(result,null,2)+'\n');
  console.log(JSON.stringify(result,null,2));
 }finally{await app?.close();await fs.rm(temporary,{recursive:true,force:true});}})().catch(error=>{console.error(error.message);process.exitCode=1;});

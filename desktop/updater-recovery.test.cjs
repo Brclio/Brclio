@@ -59,7 +59,7 @@ async function fixture(t, asset, options = {}) {
     retryDelay: 0,
     fetch: async (url, init) => {
       calls.push({ url, init });
-      assert.equal(new Headers(init.headers).get('range'), null);
+      if (url !== assetURL) assert.equal(new Headers(init.headers).get('range'), null);
       if (url === API_URL) return new Response(JSON.stringify(release));
       if (url === manifestURL) return new Response(`${digest}  ${assetName}\n`);
       assert.equal(url, assetURL, 'recovery must retain the selected release URL');
@@ -98,7 +98,7 @@ test('healthy concurrent downloads share one promise, one manifest and one insta
   assert.equal(f.installs(), 0);
 });
 
-test('one body read rejection refreshes the whole route and manifest, then restarts from zero with a fresh hash', async t => {
+test('one body read rejection refreshes route and manifest and safely restarts when the server ignores Range', async t => {
   let firstSignal, firstWasAborted = false;
   const f = await fixture(t, (attempt, init) => {
     if (attempt === 1) {
@@ -135,17 +135,17 @@ test('ten automatic retries stop at eleven complete attempts and a manual downlo
   assert.equal(f.assets().length, 11); assert.equal(f.calls.filter(call => call.url === manifestURL).length, 11);
   assert.equal(f.operations.filter(value => value.kind === 'download' && value.active).length, 11);
   assert.equal(f.operations.filter(value => value.kind === 'download' && !value.active).length, 1);
-  assert.deepEqual(await fs.readdir(f.directory), []);
+  assert.deepEqual(await fs.readdir(f.directory), [assetName + '.part', assetName + '.part.json']);
   failing = false;
   const recovered = await f.updater.download();
   assert.equal(recovered.status, 'downloaded'); assert.equal(recovered.retryCount, 0); assert.equal(recovered.retryExhausted, false);
 });
 
-test('a short normal EOF is cleaned before the next route and a complete retry passes its full hash', async t => {
+test('a short normal EOF is preserved for the next route and a complete retry passes its full hash', async t => {
   let f, routes = 0;
   f = await fixture(t, attempt => new Response(attempt === 1 ? payload.subarray(0, -1) : payload), {
     onOperation: async (kind, active) => {
-      if (kind === 'download' && active && ++routes > 1) await assert.rejects(fs.stat(path.join(f.directory, assetName + '.part')), {code: 'ENOENT'});
+      if (kind === 'download' && active && ++routes > 1) assert.deepEqual(await fs.readFile(path.join(f.directory, assetName + '.part')), payload.subarray(0,-1));
     }
   });
   await f.updater.check();
@@ -156,13 +156,13 @@ test('a short normal EOF is cleaned before the next route and a complete retry p
   assert.deepEqual(await fs.readdir(f.directory), [assetName]);
 });
 
-test('short normal EOF exhausts only the shared eleven-attempt budget and leaves no installable data', async t => {
+test('short normal EOF exhausts only the shared eleven-attempt budget and preserves resumable data', async t => {
   const f = await fixture(t, () => new Response(payload.subarray(0, -1)));
   await f.updater.check();
   const result = await failedWithoutInstall(f, 10);
   assert.equal(result.retryExhausted, true); assert.match(result.error, /连接提前结束.*自动重试 10 次.*手动重试/);
   assert.equal(f.assets().length, 11); assert.equal(f.calls.filter(call => call.url === manifestURL).length, 11);
-  assert.deepEqual(await fs.readdir(f.directory), []);
+  assert.deepEqual(await fs.readdir(f.directory), [assetName + '.part', assetName + '.part.json']);
 });
 
 test('HTTP, complete-length integrity, limits, request, reader and disk failures never enter recovery', async t => {
@@ -186,7 +186,7 @@ test('HTTP, complete-length integrity, limits, request, reader and disk failures
           }; } } });
           return result;
         }
-        if (mode === 'remove') return brokenBody({ onFailure: () => { readFailed = true; } });
+        if (mode === 'remove') return brokenBody({error:Object.assign(Error('unsafe response'),{code:'BRCLIO_UPDATE_SECURITY'}),onFailure: () => { readFailed = true; } });
         if (mode === 'get-reader') {
           const result = new Response(payload);
           Object.defineProperty(result, 'body', { value: { getReader() { throw new Error('fixture cannot acquire reader'); }, cancel: async () => {} } });
@@ -200,7 +200,7 @@ test('HTTP, complete-length integrity, limits, request, reader and disk failures
           if (!filename.endsWith('.part')) return open(filename, ...args);
           if (mode === 'open') throw ioError();
           const handle = await open(filename, ...args);
-          if (mode === 'write') t.mock.method(handle, 'writeFile', async () => { throw ioError(); });
+          if (mode === 'write') t.mock.method(handle, 'write', async () => { throw ioError(); });
           if (mode === 'close') {
             const close = handle.close.bind(handle);
             t.mock.method(handle, 'close', async () => { await close(); throw ioError(); });
@@ -209,8 +209,8 @@ test('HTTP, complete-length integrity, limits, request, reader and disk failures
         });
       }
       if (mode === 'remove') {
-        const remove = fs.rm;
-        t.mock.method(fs, 'rm', async (filename, ...args) => {
+        const remove = fs.unlink;
+        t.mock.method(fs, 'unlink', async (filename, ...args) => {
           if (filename.endsWith('.part') && readFailed) throw ioError();
           return remove(filename, ...args);
         });
@@ -218,8 +218,9 @@ test('HTTP, complete-length integrity, limits, request, reader and disk failures
       await f.updater.check();
       const failure = await failedWithoutInstall(f, 0);
       if (mode === 'bad-hash') { assert.match(failure.error, /SHA256/); assert.equal(failure.retryExhausted, false); }
-      assert.equal(f.assets().length, 1);
-      if (mode !== 'remove') assert.deepEqual(await fs.readdir(f.directory), []);
+      assert.equal(f.assets().length, mode === 'open' ? 0 : 1);
+      if (['request-abort','reader-abort','reader-abort-code'].includes(mode)) assert.deepEqual(await fs.readdir(f.directory), [assetName + '.part', assetName + '.part.json']);
+      else if (mode !== 'remove') assert.deepEqual(await fs.readdir(f.directory), []);
     });
   }
 });
@@ -260,7 +261,7 @@ test('an idle timeout starts a fresh attempt while the hard total deadline never
       assert.equal(failed.status, 'error'); assert.equal(failed.retryCount, 1); assert.equal(f.assets().length, 2);
     }
     if (mode === 'total-during-retry') {
-      assert.deepEqual(await fs.readdir(f.directory), []);
+      assert.deepEqual(await fs.readdir(f.directory), [assetName + '.part', assetName + '.part.json']);
       assert.equal((await f.updater.install()).status, 'error'); assert.equal(f.installs(), 0);
     }
   });
@@ -350,6 +351,6 @@ test('master cancellation stays authoritative when reader release also throws du
   const result = await downloading;
   assert.equal(result.status, 'error'); assert.equal(result.retryCount, 0); assert.equal(result.canInstall, false);
   assert.match(result.error, /下载超时/); assert.doesNotMatch(result.error, /release-lock/);
-  assert.equal(f.assets().length, 1); assert.deepEqual(await fs.readdir(f.directory), []);
+  assert.equal(f.assets().length, 1); assert.deepEqual(await fs.readdir(f.directory), [assetName + '.part', assetName + '.part.json']);
   assert.equal((await f.updater.install()).status, 'error'); assert.equal(f.installs(), 0);
 });

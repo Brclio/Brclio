@@ -16,7 +16,6 @@ import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.URL
 import java.security.MessageDigest
-import java.security.DigestOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -34,6 +33,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
     @Volatile private var state = JSONObject().put("status", "up-to-date").put("currentVersion", currentVersion)
         .put("retryCount", 0).put("retryLimit", UpdateRetryPolicy.LIMIT).put("retrying", false)
         .put("retryExhausted", false).put("retryStage", JSONObject.NULL).put("message", JSONObject.NULL)
+        .put("resumable", false).put("resumedBytes", 0)
     @Volatile private var connection: HttpsURLConnection? = null
     @Volatile private var bootstrap: UpdateProxyBootstrap? = null
     @Volatile private var nodeSelector: UpdateNodeSelector? = null
@@ -43,14 +43,14 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
     private var latest: UpdateRelease? = null
     private var downloaded: File? = null
     private var downloadedSha256: String? = null
-
-    init {
-        // An interrupted previous process never leaves an installable unverified package.
-        directory.listFiles()?.forEach { if (it.isFile) it.delete() }
-    }
+    @Volatile private var resumeProgress = 0L
+    @Volatile private var resumedBytes = 0L
+    @Volatile private var resumable = false
+    @Volatile private var downloadMessage: String? = null
 
     fun check(callback: (JSONObject?, String?) -> Unit) = run(callback) {
         retryState = UpdateRetryState(retryStage = "check")
+        resumeProgress = 0; resumedBytes = 0; resumable = false; downloadMessage = null
         latest = null
         publish("checking")
         // Each attempt has a fresh 60s budget; the whole loop is still bounded.
@@ -74,68 +74,90 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
 
     fun download(callback: (JSONObject?, String?) -> Unit) = run(callback) {
         retryState = UpdateRetryState(retryStage = "download")
+        downloadMessage = null
         val release = latest ?: error("请先检查更新。")
         check(!UpdatePolicy.isNewer(currentVersion, release.version)) { "不能下载早于当前版本的安装包。" }
-        downloaded?.let { check(!it.exists() || it.delete()) { "无法删除上次的安装包。" } }
         downloaded = null
         downloadedSha256 = null
         val deadline = System.currentTimeMillis() + 10 * 60_000L
-        val temporary = File(directory, "${release.apk.name}.part")
-        val target = File(directory, release.apk.name)
+        val store = UpdateResumeStore(directory, release.apk.name)
         var bootstrapAddress = UpdateProxyConfig.ADDRESS
-        publish("downloading", release, 0, release.apk.size)
-        UpdateRetryController().run("download", deadline, { closed }, { retry ->
-            retryState = retry
-            publish("downloading", release, 0, release.apk.size)
-        }, {
-            closeNetwork()
-            check(!temporary.exists() || temporary.delete()) { "无法清理未完成的安装包。" }
-        }) {
-            check(!target.exists() || target.delete()) { "无法清理旧安装包。" }
-            val address = bootstrapAddress
-            bootstrapAddress = UpdateProxyConfig.ADDRESS
-            val route = try { prepareNetwork(deadline, address) }
-            catch (failure: UpdateBootstrapFailure) { bootstrapAddress = failure.nextAddress; throw failure }
-            val checksum = UpdatePolicy.expectedChecksum(readSmall(release.checksums.url, 256 * 1024, route, deadline), release.apk.name)
-            val digest = MessageDigest.getInstance("SHA-256")
-            var received = 0L
-            var lastProgress = 0L
-            fun progress(bytes: Long) {
-                received = bytes
-                val now = System.currentTimeMillis()
-                if (now - lastProgress >= 150) {
-                    publish("downloading", release, received, release.apk.size)
-                    lastProgress = now
+        publish("downloading", release)
+        try {
+            UpdateRetryController().run("download", deadline, { closed }, { retry ->
+                retryState = retry
+                if (retry.retrying) downloadMessage = null
+                publish("downloading", release)
+            }, ::closeNetwork) {
+                var partial: UpdateResumeStore.Session? = null
+                try {
+                    val address = bootstrapAddress
+                    bootstrapAddress = UpdateProxyConfig.ADDRESS
+                    val route = try { prepareNetwork(deadline, address) }
+                    catch (failure: UpdateBootstrapFailure) { bootstrapAddress = failure.nextAddress; throw failure }
+                    val checksum = UpdatePolicy.expectedChecksum(readSmall(release.checksums.url, 256 * 1024, route, deadline), release.apk.name)
+                    val binding = UpdateResumeBinding(release.version, release.apk.name, release.apk.url, release.apk.size, checksum)
+                    val session = store.prepare(binding) { checkActive(deadline) }
+                    partial = session
+                    resumeProgress = session.offset
+                    resumedBytes = session.offset
+                    resumable = session.offset > 0
+                    publish("downloading", release)
+                    val response = open(release.apk.url, route, deadline, session.requestHeaders(), rangeDownload = true)
+                    val plan = session.accept(UpdateResumeResponse(response.responseCode, response.getHeaderField("Content-Range"),
+                        response.getHeaderField("Content-Length"), response.getHeaderField("Content-Encoding"),
+                        response.getHeaderField("Content-Type"), response.getHeaderField("ETag")))
+                    if (plan.restarted) {
+                        resumedBytes = 0; resumeProgress = 0; resumable = false
+                        downloadMessage = "服务器未接受续传，本次已从头重新下载。"
+                        publish("downloading", release)
+                    }
+                    if (!plan.complete) {
+                        val input = remote { response.inputStream }
+                        var lastProgress = 0L
+                        try {
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                checkActive(deadline)
+                                val count = remote { input.read(buffer) }
+                                if (count < 0) break
+                                checkActive(deadline)
+                                session.append(buffer, count)
+                                resumeProgress = session.offset
+                                resumable = session.offset > 0
+                                if (System.currentTimeMillis() - lastProgress >= 150) {
+                                    publish("downloading", release)
+                                    lastProgress = System.currentTimeMillis()
+                                }
+                            }
+                        } finally { runCatching { input.close() } }
+                        session.endResponse()
+                    }
+                    checkActive(deadline)
+                    // Session verification re-reads the actual on-disk file. Android
+                    // package identity/version/signature are checked before promotion.
+                    session.verifyComplete()
+                    verifyPackage(store.partial, release)
+                    downloaded = session.finish()
+                    downloadedSha256 = checksum
+                    resumeProgress = release.apk.size; resumable = false
+                } catch (failure: Exception) {
+                    if (closed || Thread.currentThread().isInterrupted || UpdateResumeStore.preserve(failure)) {
+                        partial?.let { resumeProgress = it.offset; resumable = it.offset > 0 }
+                    } else {
+                        store.clear()
+                        resumeProgress = 0; resumedBytes = 0; resumable = false
+                    }
+                    throw failure
                 }
             }
-            // Only remote connection/read exceptions are retryable. Disk writes,
-            // checksum/signature failures and installation are never replayed.
-            DigestOutputStream(temporary.outputStream(), digest).use { output ->
-                val response = open(release.apk.url, route, deadline)
-                val input = remote { response.inputStream }
-                try {
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        checkActive(deadline)
-                        val count = remote { input.read(buffer) }
-                        if (count < 0) break
-                        checkActive(deadline)
-                        check(received + count <= release.apk.size) { "安装包大小超过发布记录。" }
-                        output.write(buffer, 0, count)
-                        progress(received + count)
-                    }
-                } finally { runCatching { input.close() } }
+        } catch (failure: Exception) {
+            if (!closed && !Thread.currentThread().isInterrupted && !UpdateResumeStore.preserve(failure)) {
+                store.clear(); resumeProgress = 0; resumedBytes = 0; resumable = false
             }
-            checkActive(deadline)
-            if (received < release.apk.size) throw UpdateNetworkFailure("安装包连接提前结束。")
-            check(received == release.apk.size) { "安装包大小与发布记录不符。" }
-            check(digest.digest().hex() == checksum) { "安装包 SHA-256 校验失败，已删除下载文件。" }
-            verifyPackage(temporary, release)
-            check(temporary.renameTo(target)) { "无法保存已验证的安装包。" }
-            downloaded = target
-            downloadedSha256 = checksum
+            throw failure
         }
-        publish("downloaded", release, release.apk.size, release.apk.size)
+        publish("downloaded", release)
     }
 
     fun install(callback: (JSONObject?, String?) -> Unit) = run(callback) {
@@ -204,7 +226,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         }
     }
 
-    private fun publish(status: String, release: UpdateRelease? = latest, received: Long = 0, total: Long = 0, error: String? = null): JSONObject {
+    private fun publish(status: String, release: UpdateRelease? = latest, received: Long = if (retryState.retryStage == "download") resumeProgress else 0, total: Long = if (retryState.retryStage == "download") release?.apk?.size ?: 0 else 0, error: String? = null): JSONObject {
         val next = JSONObject().put("status", status).put("currentVersion", currentVersion)
             .put("version", release?.version ?: currentVersion)
             .put("notes", release?.notes ?: "")
@@ -215,7 +237,9 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
             .put("retryCount", retryState.retryCount).put("retryLimit", retryState.retryLimit)
             .put("retrying", retryState.retrying).put("retryExhausted", retryState.retryExhausted)
             .put("retryStage", retryState.retryStage ?: JSONObject.NULL)
-            .put("message", retryState.message ?: JSONObject.NULL)
+            .put("resumable", retryState.retryStage == "download" && resumable)
+            .put("resumedBytes", if (retryState.retryStage == "download") resumedBytes else 0)
+            .put("message", (if (retryState.retryStage == "download") downloadMessage else null) ?: retryState.message ?: JSONObject.NULL)
         state = next
         onMain { emit(next) }
         return next
@@ -314,7 +338,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         return route
     }
 
-    private fun open(address: String, route: UpdateProxyRoute, deadline: Long): HttpsURLConnection {
+    private fun open(address: String, route: UpdateProxyRoute, deadline: Long, requestHeaders: Map<String, String> = emptyMap(), rangeDownload: Boolean = false): HttpsURLConnection {
         check(UpdateProxyPolicy.allowedSource(address)) { "更新下载地址不受信任。" }
         var url = address
         repeat(6) {
@@ -336,6 +360,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 setRequestProperty("User-Agent", "Brclio-Android/$currentVersion")
                 setRequestProperty("Accept", "application/vnd.github+json")
                 setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                requestHeaders.forEach { (name, value) -> setRequestProperty(name, value) }
             }
             connection = request
             connectionDeadline = deadlineWorker.schedule({ request.disconnect() }, remaining, TimeUnit.MILLISECONDS)
@@ -352,7 +377,7 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
                 check(destination != null) { "更新服务器重定向缺少地址。" }
                 url = try { URL(URL(url), destination).toString() } catch (_: Exception) { error("更新下载地址不受信任。") }
             } else {
-                if (code != HttpURLConnection.HTTP_OK) {
+                if (code != HttpURLConnection.HTTP_OK && !(rangeDownload && code in setOf(206, 416))) {
                     closeConnection()
                     val message = UpdateProxyPolicy.responseError(code, UpdateProxyRoute.DIRECT)
                     if (code == 408 || code in 500..599) throw UpdateNetworkFailure(message)
@@ -412,7 +437,6 @@ class AndroidUpdater(private val activity: Activity, private val emit: (JSONObje
         closeNetwork()
         worker.shutdownNow()
         deadlineWorker.shutdownNow()
-        directory.listFiles()?.filter { it.name.endsWith(".part") }?.forEach(File::delete)
     }
 
     private fun ByteArray.hex() = joinToString("") { "%02x".format(it) }

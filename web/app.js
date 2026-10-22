@@ -398,9 +398,12 @@
     const status = updateState.status;
     const busy = updatePending || ['checking', 'downloading', 'preparing', 'restarting', 'installing'].includes(status);
     const retryDownload = status === 'error' && updateState.retryStage === 'download' && !updateState.canInstall;
+    const canResume = retryDownload && updateState.resumable && Number(updateState.downloadedBytes) > 0;
     const retryCount = Math.min(10, Math.max(0, Number(updateState.retryCount) || 0));
     const retryTitle = ['checking', 'downloading'].includes(status) && retryCount > 0
-      ? `正在自动重试（${retryCount}/10）…` : status === 'error' && updateState.retryExhausted && retryCount === 10 ? '自动重试已用完，请手动重试。' : null;
+      ? `正在自动重试（${retryCount}/10）…` : status === 'error' && updateState.retryExhausted && retryCount === 10
+        ? canResume ? '自动重试已用完，可继续下载。' : '自动重试已用完，请手动重试。'
+        : canResume ? '下载暂未完成，可继续下载。' : null;
     $('#check-update').disabled = busy || proxyPending;
     $('#check-update').textContent = status === 'checking' ? '正在检查…' : '检查更新';
     $('#download-update').hidden = status !== 'available' && !retryDownload;
@@ -410,26 +413,26 @@
     const percent = Math.max(0, Math.min(100, Number(updateState.progress) || 0));
     const version = updateState.version ? `v${updateState.version}` : '新版本';
     const titles = { idle: '保持顺手，也保持最新。', checking: '正在检查 GitHub 最新版本…', 'up-to-date': '已经是最新版本。', available: `${version} 已经准备好。`, downloading: `正在下载 ${version}…`, downloaded: '安装包已下载，校验通过。', preparing: '正在准备覆盖安装…', restarting: '正在更新，Brclio 即将重新打开…', installed: '更新完成，欢迎回来。', error: '这次更新未完成，可以重试。', unsupported: '请在客户端中检查和安装更新。', installing: '请在系统安装界面中继续。' };
-    const details = { idle: platform.platform === 'android' ? '检查新版本后，下载安装包并确认系统安装。完成后如未自动返回，请点击系统“打开”。' : '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.13'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
+    const details = { idle: platform.platform === 'android' ? '检查新版本后，下载安装包并确认系统安装。完成后如未自动返回，请点击系统“打开”。' : '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.14'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
     const detail = updateState.requiresPermission ? '请在系统设置中允许 Brclio 安装应用，然后返回并再次点击安装。' : status === 'error' ? updateState.error || '网络连接失败，请检查网络后重试。' : updateState.message || details[status] || details.idle;
     // Both entry points reflect the same native update without changing views.
     ['update', 'about-update'].forEach(prefix => {
       $(`#${prefix}-status-title`).textContent = retryTitle || titles[status] || titles.idle;
       $(`#${prefix}-status-detail`).textContent = detail;
-      $(`#${prefix}-progress`).hidden = status !== 'downloading';
+      $(`#${prefix}-progress`).hidden = status !== 'downloading' && !canResume;
       $(`#${prefix}-progress-bar`).value = percent;
       $(`#${prefix}-progress-label`).textContent = `${Math.round(percent)}%`;
       $(`#${prefix}-notes`).hidden = !updateState.notes || !['available', 'downloaded'].includes(status);
       $(`#${prefix}-notes`).textContent = (updateState.notes || '').slice(0, 1600);
     });
-    const aboutLabels = { checking: '正在检查…', 'up-to-date': '重新检查', available: '下载并安装更新', downloading: `正在下载… ${Math.round(percent)}%`, downloaded: '安装更新', preparing: '正在准备安装…', restarting: '正在重启…', installing: '正在安装…', error: updateState.canInstall ? '重试安装' : retryDownload ? '重新下载' : '重新检查' };
+    const aboutLabels = { checking: '正在检查…', 'up-to-date': '重新检查', available: '下载并安装更新', downloading: `${Number(updateState.resumedBytes) > 0 ? '正在续传' : '正在下载'}… ${Math.round(percent)}%`, downloaded: '安装更新', preparing: '正在准备安装…', restarting: '正在重启…', installing: '正在安装…', error: updateState.canInstall ? '重试安装' : canResume ? '继续下载' : retryDownload ? '重新下载' : '重新检查' };
     $('#about-update').textContent = aboutLabels[status] || '检查更新';
     $('#about-update').disabled = busy || proxyPending;
     $('#about-update').setAttribute('aria-busy', String(busy));
     $('#about-update').classList.toggle('button-primary', status === 'available' || status === 'downloaded' || (status === 'error' && updateState.canInstall));
     $('#about-update').classList.toggle('button-outline', !$('#about-update').classList.contains('button-primary'));
     $('#about-update-status').hidden = status === 'idle';
-    $('#download-update').textContent = retryDownload ? '重新下载并安装' : '下载并安装更新';
+    $('#download-update').textContent = canResume ? '继续下载并安装' : retryDownload ? '重新下载并安装' : '下载并安装更新';
     $('#install-update').textContent = status === 'error' ? '重试安装' : '安装更新';
     renderUpdateProxy();
   }
@@ -438,7 +441,7 @@
     updatePending = true;
     try {
       if (method === 'checkForUpdates') renderUpdate({ status: 'checking' });
-      else if (method === 'downloadUpdate') renderUpdate({ ...updateState, status: 'downloading', progress: 0, retryCount: 0, retrying: false, retryExhausted: false, message: null, error: null });
+      else if (method === 'downloadUpdate') renderUpdate({ ...updateState, status: 'downloading', ...(!updateState.resumable ? { progress: 0, downloadedBytes: 0, resumedBytes: 0 } : { resumedBytes: updateState.downloadedBytes }), retryCount: 0, retrying: false, retryExhausted: false, message: null, error: null });
       else if (method === 'installUpdate') renderUpdate({ ...updateState, status: 'preparing' });
       const state = await host[method]();
       if (method === 'downloadUpdate' && state?.status === 'downloaded') {
@@ -493,12 +496,12 @@
         catch (error) { shortcutStatus = { supported: true, accelerator: settings.copyShortcut, registered: false, error: error.message }; }
       }
       if (samples[platform.platform]) { samplePlatform = platform.platform; $$('[data-sample]').forEach(button => button.classList.toggle('active', button.dataset.sample === samplePlatform)); }
-      $$('.version').forEach(item => { item.textContent = `v${platform.version || '0.1.13'}`; });
-      $('#current-version').textContent = `v${platform.version || '0.1.13'}`;
-      $('#about-dialog .subtle-tag').textContent = `VERSION ${platform.version || '0.1.13'}`;
+      $$('.version').forEach(item => { item.textContent = `v${platform.version || '0.1.14'}`; });
+      $('#current-version').textContent = `v${platform.version || '0.1.14'}`;
+      $('#about-dialog .subtle-tag').textContent = `VERSION ${platform.version || '0.1.14'}`;
       $('#update-platform-hint').textContent = platform.platform === 'darwin' ? '下载校验后自动覆盖当前安装并重新打开。尚未公证，首次运行可能需要在系统设置中允许打开。' : platform.platform === 'android' ? '需确认系统安装；系统限制自动打开时，请点击安装器的“打开”。' : platform.platform === 'browser' ? '浏览器仅提供界面预览；在线更新在 Windows、macOS 和安卓客户端中使用。' : '下载校验后覆盖当前安装并自动打开，保留设置和右键菜单。';
       $('#platform-label').textContent = platformNames[platform.platform] || platform.platform;
-      $('#environment-detail').textContent = `${platformNames[platform.platform] || platform.platform} · v${platform.version || '0.1.13'}`;
+      $('#environment-detail').textContent = `${platformNames[platform.platform] || platform.platform} · v${platform.version || '0.1.14'}`;
       if (platform.platform === 'browser' || platform.platform === 'android' || platform.packaged === false) {
         $('#launch-at-login').disabled = true;
         $('#login-hint').textContent = platform.platform === 'android' ? '安卓端无需常驻，按需打开即可。' : platform.packaged === false ? '开机启动可在安装版客户端中设置。' : '开机启动可在桌面客户端中设置。';

@@ -115,10 +115,18 @@ challenge, and select the fastest successful end-to-end path. Each candidate has
 route stays fixed for that attempt. Recoverable network, bootstrap, node-selection
 and interrupted-download failures permit at most ten automatic retries after
 the initial attempt. Each retry refreshes configuration and probes again when
-the built-in route is selected. It closes and deletes partial downloads, reads
-the manifest again, and starts with a new hash and byte count, without Range.
-All download attempts share the original ten-minute total deadline. Success
-stops retries; exhaustion leaves a manual retry action. Certificate, address,
+the built-in route is selected. From v0.1.14, clients retain identity-bound
+partial downloads across network failures, manual retries and process restarts.
+After rereading the manifest, they request only the remaining bytes with Range
+and an optional strong If-Range validator. A 206 response must match the exact
+offset, pinned total size, segment length and identity encoding before append.
+The final on-disk file still requires full size and SHA-256 verification.
+An ignored Range returning 200 is explicitly reported and safely handled as a
+complete replacement, never appended; changed identity or integrity failures
+invalidate the old partial file.
+All automatic download attempts share the original ten-minute total deadline.
+Success stops retries; exhaustion preserves a resumable prefix and leaves a
+manual continue action. Certificate, address,
 format, integrity, filesystem and cancellation errors stop immediately.
 Installation is never automatically repeated.
 

@@ -122,6 +122,26 @@ try {
   assert.deepEqual(await page.evaluate(() => window.__updateCalls), ['check', 'check', 'download', 'download']);
   await page.evaluate(() => window.__finishDownload({ status: 'error', retryStage: 'download', retryCount: 0, retryExhausted: false, error: '下载已取消。' }));
   await page.locator('#about-update-proxy:enabled').waitFor();
+  await page.evaluate(() => window.__emitUpdate({ status: 'error', version: '0.1.14', retryStage: 'download', retryCount: 10, retryExhausted: true, resumable: true, resumedBytes: 40, downloadedBytes: 40, totalBytes: 100, progress: 40, error: '自动重试已用完，已下载的部分已保留，请继续下载。' }));
+  assert.equal(await page.locator('#about-update').innerText(), '继续下载');
+  assert.equal(await page.locator('#download-update').textContent(), '继续下载并安装');
+  assert.equal(await page.locator('#about-update-status-title').innerText(), '自动重试已用完，可继续下载。');
+  assert.equal(await page.locator('#about-update-progress').isVisible(), true);
+  assert.equal(await page.locator('#update-progress').isHidden(), false);
+  assert.equal(await page.locator('#about-update-progress-label').innerText(), '40%');
+  await page.locator('#about-dialog [data-close]').click();
+  await page.locator('#about-button').click();
+  assert.equal(await page.locator('#about-update-progress-label').innerText(), '40%');
+  await page.locator('#about-update').click();
+  assert.equal(await page.locator('#about-update-progress-label').innerText(), '40%');
+  assert.equal(await page.locator('#about-update').innerText(), '正在续传… 40%');
+  assert.equal(await page.locator('#about-update-proxy').isEnabled(), false);
+  await page.evaluate(() => window.__emitUpdate({ status: 'downloading', version: '0.1.14', retryStage: 'download', retryCount: 2, retrying: true, resumable: true, resumedBytes: 40, downloadedBytes: 65, totalBytes: 100, progress: 65 }));
+  assert.equal(await page.locator('#about-update-status-title').innerText(), '正在自动重试（2/10）…');
+  assert.equal(await page.locator('#about-update-progress-label').innerText(), '65%');
+  await page.evaluate(() => window.__finishDownload({ status: 'error', version: '0.1.14', retryStage: 'download', retryCount: 2, resumable: true, resumedBytes: 40, downloadedBytes: 65, totalBytes: 100, progress: 65, error: '连接中断，已保留下载进度。' }));
+  await page.locator('#about-update-proxy:enabled').waitFor();
+  assert.equal(await page.locator('#about-update').innerText(), '继续下载');
   await page.locator('#about-update-proxy').uncheck();
   await page.waitForFunction(() => !document.querySelector('#about-update-proxy').disabled);
   await page.reload();
@@ -139,7 +159,7 @@ try {
     await page.locator('#about-dialog [data-close]').click();
   }
   assert.deepEqual(errors, []);
-  console.log('Passed: proxy switches synchronize, system route remains visible, automatic retry counts and exhaustion appear in both panels, manual retry invokes the correct operation, controls stay locked, and fresh runs and narrow layouts work.');
+  console.log('Passed: proxy and retry state synchronize; interrupted downloads retain progress, offer continue actions, and keep the cumulative percent during manual and automatic retries; busy locking, fresh runs and narrow layouts work.');
 } finally {
   await browser?.close(); server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));

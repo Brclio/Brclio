@@ -59,7 +59,7 @@ test('single-frame and accumulated fragmented messages above 8 MiB fail closed a
   assert.equal((await updater.check()).status,'available');
   const failed=await updater.download();
   assert.equal(failed.status,'error');assert.equal(failed.canInstall,false);assert.equal(partialWasWritten,true);
-  assert.ok(failed.downloadedBytes>0&&failed.downloadedBytes<body.length);assert.deepEqual(await fs.readdir(directory),[]);
+  assert.equal(failed.downloadedBytes,0);assert.equal(failed.resumable,false);assert.deepEqual(await fs.readdir(directory),[]);
   assert.ok(Math.max(...relay.wsMessages)>8*1024*1024);
   if(wsFragmentBytes)assert.ok(Math.max(...relay.wsFrames)<=wsFragmentBytes);else assert.ok(Math.max(...relay.wsFrames)>8*1024*1024);
   assert.ok(relay.wsErrorCodes.includes('WS_ERR_UNSUPPORTED_MESSAGE_LENGTH'));

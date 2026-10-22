@@ -94,9 +94,9 @@ jobs:
       - name: Verify actual system-proxy routing and bounded retries through real Electron
         working-directory: .
         run: xvfb-run -a node desktop/system-proxy-live.cjs > artifacts/production-update-system-proxy.json
-      - name: Verify the complete large installer through real Electron and the native proxy
+      - name: Verify interrupted download resumption of the complete large installer through real Electron
         working-directory: .
-        run: xvfb-run -a node desktop/native-proxy-live.cjs > artifacts/production-update-electron-large.json
+        run: xvfb-run -a node desktop/native-proxy-live.cjs --interrupt-after-bytes=262144 > artifacts/production-update-electron-large.json
       - name: Save production download verification
         if: always()
         uses: actions/upload-artifact@v4
@@ -138,7 +138,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run sync
-      - name: Verify the real Electron native TLS proxy bridge and continuous downloads
+      - name: Verify real Electron native TLS, continuous downloads, and interrupted download resumption
         run: npm run test:native-proxy
       - name: Check the full Xcode toolchain for FinderSync
         if: matrix.platform == 'mac'

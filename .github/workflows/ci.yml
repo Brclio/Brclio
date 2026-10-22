@@ -110,7 +110,7 @@ jobs:
           node scripts/verify-account-ui.mjs
       - run: node scripts/verify-host-contracts.mjs
       - run: node scripts/verify-update-proxy-ui.mjs
-      - name: Verify native updater TLS, local proxy, node selection, and cancellation
+      - name: Verify native updater TLS, proxy selection, interrupted download resumption, and cancellation
         run: xvfb-run -a npm run test:native-proxy
       - uses: actions/upload-artifact@v4
         if: always()
