@@ -56,17 +56,78 @@ export async function readConfig(env, {fresh = false, fetchImpl = fetch, tokenPr
   configCache = {repo, expires: Date.now() + 15000, value: config};
   return config;
 }
+function subscriptionAwait(promise, signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, {once: true});
+    Promise.resolve(promise).then(value => {
+      signal.removeEventListener('abort', abort);
+      if (signal.aborted) reject(signal.reason); else resolve(value);
+    }, error => { signal.removeEventListener('abort', abort); reject(error); });
+    if (signal.aborted) abort();
+  });
+}
+function subscriptionFailure(code, retryDelay = null, status) {
+  return Object.assign(new Error(code === 'unsupported_document' ? '订阅没有兼容节点' : '无法读取代理订阅'), {subscriptionCode: code, retryDelay, status});
+}
+function subscriptionRetryDelay(response) {
+  if (![400, 408, 429, 500, 502, 503, 504].includes(response.status)) return null;
+  const retryAfter = response.headers.get('retry-after');
+  if (retryAfter === null) return 100;
+  const value = retryAfter.trim(), timestamp = Date.parse(value);
+  const delay = /^\d+$/.test(value) ? Number(value) * 1000
+    : Number.isFinite(timestamp) && new Date(timestamp).toUTCString() === value ? timestamp - Date.now() : NaN;
+  return Number.isFinite(delay) ? Math.max(100, delay) : null;
+}
 export async function readSubscription(url, fetchImpl = fetch) {
   publicHTTPS(url);
-  let response;
-  try { response = await fetchImpl(url, {headers: {'User-Agent': 'clash.meta', Accept: 'text/yaml, text/plain, */*', 'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache'}, redirect: 'manual', signal: AbortSignal.timeout(10000)}); } catch { diagnostic('subscription','fetch_failed'); throw new Error('无法读取代理订阅'); }
-  if (!response.ok || Number(response.headers.get('content-length')) > 1024 * 1024) { diagnostic('subscription','http_response',response.status); await response.body?.cancel(); throw new Error('无法读取代理订阅'); }
-  const reader = response.body.getReader(); const chunks = []; let length = 0;
+  // Both attempts, response bodies, cancellation and backoff share one budget.
+  const controller = new AbortController(), signal = controller.signal, deadline = Date.now() + 10000;
+  const timer = setTimeout(() => controller.abort(), 10000);
+  const options = {headers: {'User-Agent': 'clash.meta', Accept: 'text/yaml, text/plain, */*', 'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache'}, redirect: 'manual', signal};
   try {
-    while (true) { const {done, value} = await reader.read(); if (done) break; length += value.length; if (length > 1024 * 1024) throw new Error('代理订阅过大'); chunks.push(value); }
-  } finally { await reader.cancel().catch(() => {}); }
-  const bytes = new Uint8Array(length); let offset = 0; for (const b of chunks) {bytes.set(b, offset); offset += b.length;}
-  try { return parseSubscription(decoder.decode(bytes)); } catch { diagnostic('subscription','unsupported_document'); throw new Error('订阅没有兼容节点'); }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (Date.now() >= deadline) controller.abort();
+        signal.throwIfAborted();
+        let response;
+        try { response = await subscriptionAwait(fetchImpl(url, options), signal); }
+        catch { throw subscriptionFailure('fetch_failed', 100); }
+        if (!response.ok || Number(response.headers.get('content-length')) > 1024 * 1024) {
+          const oversized = Number(response.headers.get('content-length')) > 1024 * 1024;
+          await subscriptionAwait(response.body?.cancel(), signal).catch(() => {});
+          throw subscriptionFailure('http_response', oversized ? null : subscriptionRetryDelay(response), response.status);
+        }
+        if (!response.body) throw subscriptionFailure('unsupported_document');
+        const reader = response.body.getReader(), chunks = []; let length = 0;
+        try {
+          while (true) {
+            const {done, value} = await subscriptionAwait(reader.read(), signal); if (done) break;
+            length += value.length;
+            if (length > 1024 * 1024) throw subscriptionFailure('response_too_large');
+            chunks.push(value);
+          }
+        } catch (error) { throw error?.subscriptionCode ? error : subscriptionFailure('fetch_failed', 100); }
+        finally { await subscriptionAwait(reader.cancel(), signal).catch(() => {}); }
+        const bytes = new Uint8Array(length); let offset = 0;
+        for (const chunk of chunks) {bytes.set(chunk, offset); offset += chunk.length;}
+        let nodes;
+        try { nodes = parseSubscription(decoder.decode(bytes)); }
+        catch { throw subscriptionFailure('unsupported_document'); }
+        if (Date.now() >= deadline) controller.abort();
+        signal.throwIfAborted();
+        return nodes;
+      } catch (error) {
+        const delay = error?.retryDelay;
+        if (attempt === 0 && !signal.aborted && Number.isFinite(delay) && delay >= 0 && Date.now() + delay < deadline) {
+          await subscriptionAwait(new Promise(resolve => setTimeout(resolve, delay)), signal).catch(() => {});
+          continue;
+        }
+        diagnostic('subscription', error?.subscriptionCode || 'fetch_failed', error?.status);
+        throw new Error(error?.subscriptionCode === 'unsupported_document' ? '订阅没有兼容节点' : '无法读取代理订阅');
+      }
+    }
+  } finally { clearTimeout(timer); }
 }
 export async function getNodes(env, fetchImpl = fetch, {fresh = false, tokenProvider = githubInstallationToken} = {}) {
   let config;

@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {setImmediate} from 'node:timers/promises';
 import {readConfig as readConfigImpl,writeConfig as writeConfigImpl,getNodes as getNodesImpl,clearConfigCache,CONFIG_PATH,NODES_CACHE_TTL_MS} from '../src/config.js';
 const installationToken = 'fixture-installation-token';
 const tokenProvider = async (_env, repository) => { assert.equal(repository, 'BrclioData/BrclioData'); return installationToken; };
@@ -133,4 +134,18 @@ test('native operation refresh bypasses both the private-file and subscription c
   const fetchImpl=async target=>{if(String(target).includes('subscription.example')){subscriptions++;return new Response(subscription);}privateReads++;return Response.json(file('sha',env.PROXY_SUBSCRIPTION_URL));};
   const first=await getNodes(env,fetchImpl);assert.equal(await getNodes(env,fetchImpl),first);
   const refreshed=await getNodes(env,fetchImpl,{fresh:true});assert.notEqual(refreshed,first);assert.equal(privateReads,2);assert.equal(subscriptions,2);clearConfigCache();
+});
+test('a failed fresh subscription still reads current GitHub config and never returns previously cached nodes',async t=>{
+  clearConfigCache();t.mock.timers.enable({apis:['Date','setTimeout'],now:50000});
+  let privateReads=0,subscriptions=0,unavailable=false;
+  const fetchImpl=async target=>{
+    if(String(target).includes('subscription.example')){subscriptions++;return unavailable?new Response('',{status:400}):new Response(subscription);}
+    privateReads++;return Response.json(file('sha',env.PROXY_SUBSCRIPTION_URL));
+  };
+  try{
+    const cached=await getNodes(env,fetchImpl);assert.equal(cached.length,1);unavailable=true;
+    const rejected=assert.rejects(getNodes(env,fetchImpl,{fresh:true}),/无法读取代理订阅/);
+    await setImmediate();t.mock.timers.tick(100);await rejected;
+    assert.equal(privateReads,2);assert.equal(subscriptions,3);
+  }finally{t.mock.timers.reset();clearConfigCache();}
 });
