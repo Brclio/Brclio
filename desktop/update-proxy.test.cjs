@@ -14,17 +14,17 @@ function fixture(overrides = {}) {
   const calls = [], configurations = [], states = [], resolved = [], bridges = [], probes = [];
   const resolve = async (kind, url) => { resolved.push([kind,url]); return overrides.resolve ? overrides.resolve(kind,url) : 'DIRECT'; };
   const fetch = (kind, sessionId) => async (url, init) => {
-    if (init.method === 'HEAD') { probes.push({kind,url,init,sessionId}); return overrides.probe ? overrides.probe(url,init,sessionId) : new Response(null,{status:200}); }
+    if (init.method === 'HEAD' && url === PROBE_URL) { probes.push({kind,url,init,sessionId}); return overrides.probe ? overrides.probe(url,init,sessionId) : new Response(null,{status:200}); }
     calls.push({kind,url,init,sessionId});
     if (url === CONFIG_URL || url === CONFIG_FALLBACK_URL) return overrides.configFetch ? overrides.configFetch(url,init) : new Response(JSON.stringify(configuration()));
     return overrides.fetch ? overrides.fetch(kind,url,init) : new Response(kind);
   };
   const sessions = {
     [SYSTEM_PARTITION]: {setProxy:async config=>configurations.push(['system',config]),resolveProxy:url=>resolve('system',url),fetch:fetch('system')},
-    [DIRECT_PARTITION]: {setProxy:async config=>configurations.push(['direct',config]),fetch:fetch('config')},
+    [DIRECT_PARTITION]: {setProxy:async config=>configurations.push(['direct',config]),fetch:(url,init)=>fetch([CONFIG_URL,CONFIG_FALLBACK_URL].includes(url)?'config':'direct')(url,init)},
     [BUILTIN_PARTITION]: {setProxy:async config=>configurations.push(['builtin',config]),closeAllConnections:async()=>{},fetch:fetch('builtin')},
   };
-  const router = createUpdateProxy({whenReady:async()=>{},defaultSession:()=>({resolveProxy:url=>resolve('native',url)}),
+  const router = createUpdateProxy({whenReady:async()=>{},defaultSession:()=>({resolveProxy:url=>resolve('native',url),setProxy:()=>{throw Error('Default session proxy must not change');}}),
     fromPartition:(name,options)=>{assert.equal(options.cache,false);assert.ok(!name.startsWith('persist:'));return sessions[name] || (name.startsWith(BUILTIN_PARTITION + '-') ? {...sessions[BUILTIN_PARTITION],fetch:fetch('builtin',name)} : undefined);},
     netFetch:fetch('native'),onState:s=>states.push(s),createBridge:async options=>{
       const bridge={proxyRules:'http://127.0.0.1:12345',closed:false,close:async()=>{bridge.closed=true;}};
@@ -51,10 +51,109 @@ test('built-in fetch bootstraps only small config, then requests original GitHub
 });
 test('system/CLI proxy wins and disables bootstrap without modifying OS settings',async()=>{
   for(const native of [true,false]){
-    const {router,calls,bridges}=fixture({resolve:kind=>kind===(native?'native':'system')?'SOCKS5 localhost:1080':'DIRECT'});
-    assert.equal((await router.state()).route,'system');
+    const {router,calls,bridges,configurations}=fixture({resolve:kind=>kind===(native?'native':'system')?'SOCKS5 localhost:1080':'DIRECT'});
+    const state=await router.state();assert.equal(state.route,'system');assert.equal(Object.hasOwn(state,'fallbackFrom'),false);
     assert.equal(await(await router.fetch(API_URL)).text(),native?'native':'system');
     assert.equal(calls.length,1);assert.equal(calls[0].url,API_URL);assert.equal(bridges.length,0);
+    assert.deepEqual(configurations,[['system',{mode:'system'}],['direct',{mode:'direct'}]]);
+  }
+});
+test('native connection failures retry once through isolated DIRECT and pin the remaining official operation',async()=>{
+  const cdn='https://release-assets.githubusercontent.com/release?signature=public';
+  for(const native of [true,false])for(const code of ['ERR_CONNECTION_CLOSED','ERR_PROXY_CONNECTION_FAILED']){
+    const controller=new AbortController();
+    const {router,calls,bridges,probes,configurations}=fixture({resolve:kind=>kind===(native?'native':'system')?'PROXY localhost:7890':'DIRECT',fetch:async(kind,url,init)=>{
+      assert.equal(init.signal,controller.signal);
+      if(kind!=='direct')throw Error('net::'+code);
+      return url===downloadURL?new Response(null,{status:302,headers:{location:cdn}}):new Response('ok');
+    }});
+    router.setBusy(true,[API_URL,checksumURL,downloadURL]);
+    assert.equal(await(await router.fetch(API_URL,{signal:controller.signal})).text(),'ok');
+    const state=await router.state();assert.equal(state.route,'direct');assert.equal(state.fallbackFrom,'system');
+    await(await router.fetch(checksumURL,{signal:controller.signal})).text();
+    const download=await router.fetch(downloadURL,{signal:controller.signal});assert.equal(download.url,cdn);await download.text();
+    assert.deepEqual(calls.map(value=>[value.kind,value.url]),[[native?'native':'system',API_URL],['direct',API_URL],['direct',checksumURL],['direct',downloadURL],['direct',cdn]]);
+    assert.ok(calls.every(value=>value.init.redirect==='manual'&&value.init.credentials==='omit'));
+    assert.equal(bridges.length,0);assert.equal(probes.length,0);
+    assert.deepEqual(configurations,[['system',{mode:'system'}],['direct',{mode:'direct'}]]);
+    await router.setBusy(false);
+    for(let refresh=0;refresh<2;refresh++){
+      const completed=await router.state();assert.equal(completed.route,'direct');assert.equal(completed.fallbackFrom,'system');
+    }
+  }
+});
+test('HEAD can fail over using an explicit native code and a failed DIRECT attempt never loops',async()=>{
+  for(const fails of [false,true]){
+    const {router,calls,bridges}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async kind=>{
+      if(kind!=='direct'||fails)throw Object.assign(Error('Native connection failed'),{code:'ERR_PROXY_CONNECTION_FAILED'});
+      return new Response(null,{status:200});
+    }});
+    if(fails)await assert.rejects(router.fetch(API_URL,{method:'HEAD'}),/更新服务连接失败/);
+    else assert.equal((await router.fetch(API_URL,{method:'HEAD'})).status,200);
+    assert.deepEqual(calls.map(value=>value.kind),['native','direct']);assert.equal(bridges.length,0);
+  }
+});
+test('fallback state resets for new operations, standalone selections and toggle changes',async()=>{
+  let failures=0;
+  const {router,states}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async kind=>{
+    if(kind==='native'&&failures++<3)throw Error('net::ERR_CONNECTION_CLOSED');
+    return new Response('ok');
+  }});
+  await(await router.fetch(API_URL)).text();assert.equal(states.at(-1).fallbackFrom,'system');
+  const completed=await router.state();assert.equal(completed.route,'direct');assert.equal(completed.fallbackFrom,'system');
+  router.setBusy(true,[API_URL]);assert.equal(Object.hasOwn(await router.state(),'fallbackFrom'),false);
+  await(await router.fetch(API_URL)).text();assert.equal(states.at(-1).fallbackFrom,'system');
+  await router.setBusy(false);
+  assert.equal(Object.hasOwn(await router.setEnabled(false),'fallbackFrom'),false);
+  await(await router.fetch(API_URL)).text();assert.equal(states.at(-1).fallbackFrom,'system');
+  await(await router.fetch(API_URL)).text();assert.equal(states.at(-1).route,'system');assert.equal(Object.hasOwn(states.at(-1),'fallbackFrom'),false);
+});
+test('aborts, certificate failures, unknown failures and requests with a body never fall back',async()=>{
+  const failures=[
+    ()=>Error('net::ERR_CERT_AUTHORITY_INVALID'),
+    ()=>Object.assign(Error('net::ERR_CONNECTION_CLOSED'),{code:'ERR_CERT_DATE_INVALID'}),
+    ()=>Error('net::ERR_CONNECTION_CLOSED net::ERR_CERT_COMMON_NAME_INVALID'),
+    ()=>Error('Unknown native failure'),
+    ()=>Error('Unknown failure mentioning ERR_CONNECTION_CLOSED'),
+    ()=>Object.assign(Error('net::ERR_CONNECTION_CLOSED'),{name:'AbortError'}),
+    ()=>Object.assign(Error('net::ERR_CONNECTION_CLOSED'),{name:'TimeoutError'}),
+    ()=>Error('net::ERR_ABORTED'),
+  ];
+  for(const failure of failures){
+    const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>{throw failure();}});
+    await assert.rejects(router.fetch(API_URL));assert.deepEqual(calls.map(value=>value.kind),['native']);
+  }
+  for(const init of [{method:'POST'},{method:'GET',body:'payload'},{method:'HEAD',body:'payload'}]){
+    const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>{throw Error('net::ERR_CONNECTION_CLOSED');}});
+    await assert.rejects(router.fetch(API_URL,init));assert.deepEqual(calls.map(value=>value.kind),['native']);
+  }
+  const controller=new AbortController();
+  const cancelled=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>{controller.abort();throw Error('net::ERR_CONNECTION_CLOSED');}});
+  await assert.rejects(cancelled.router.fetch(API_URL,{signal:controller.signal}),{name:'AbortError'});
+  assert.deepEqual(cancelled.calls.map(value=>value.kind),['native']);
+});
+test('DIRECT fallback shares the original cancellation deadline and never replays a returned body',async()=>{
+  const controller=new AbortController();let directStarted;
+  const started=new Promise(resolve=>{directStarted=resolve;});
+  const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async(kind,_url,init)=>{
+    assert.equal(init.signal,controller.signal);
+    if(kind==='native')throw Error('net::ERR_CONNECTION_CLOSED');
+    directStarted();return new Promise((_resolve,reject)=>init.signal.addEventListener('abort',()=>reject(Object.assign(Error('Cancelled'),{name:'AbortError'})),{once:true}));
+  }});
+  const pending=router.fetch(API_URL,{signal:controller.signal});await started;controller.abort();
+  await assert.rejects(pending,{name:'AbortError'});assert.deepEqual(calls.map(value=>value.kind),['native','direct']);
+  const broken=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>new Response(new ReadableStream({start(value){value.error(Error('net::ERR_CONNECTION_CLOSED'));}}))});
+  const response=await broken.router.fetch(API_URL);await assert.rejects(response.text(),/更新服务连接失败/);
+  assert.deepEqual(broken.calls.map(value=>value.kind),['native']);
+});
+test('HTTP responses and redirect/security rejections never trigger system-to-DIRECT fallback',async()=>{
+  for(const status of [403,407,429,500]){
+    const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>new Response(null,{status})});
+    assert.equal((await router.fetch(API_URL)).status,status);assert.deepEqual(calls.map(value=>value.kind),['native']);
+  }
+  for(const response of [new Response(null,{status:403,headers:{'cf-mitigated':'challenge'}}),new Response(null,{status:302,headers:{location:'https://foreign.invalid/private'}}),Object.defineProperty(new Response('ok'),'redirected',{value:true})]){
+    const {router,calls}=fixture({resolve:()=> 'PROXY localhost:7890',fetch:async()=>response});
+    await assert.rejects(router.fetch(API_URL),/Cloudflare|非官方/);assert.deepEqual(calls.map(value=>value.kind),['native']);
   }
 });
 test('OFF is session-only, new process defaults ON, and busy switches are rejected',async()=>{

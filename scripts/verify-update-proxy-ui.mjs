@@ -29,7 +29,8 @@ try {
     window.__systemProxy = false;
     window.__failProxy = false;
     window.__probeError = null;
-    const proxyState = () => ({ enabled, supported: true, route: window.__systemProxy ? 'system' : enabled ? 'builtin' : 'direct', error: window.__probeError });
+    window.__directFallback = false;
+    const proxyState = () => ({ enabled, supported: true, route: window.__directFallback ? 'direct' : window.__systemProxy ? 'system' : enabled ? 'builtin' : 'direct', ...(window.__directFallback ? { fallbackFrom: 'system' } : {}), error: window.__probeError });
     window.brclio = {
       accountRequest: async ({ path, method = 'GET' }) => {
         if (path === '/api/account/session' && method === 'GET') return { user: null, csrf: null, googleEnabled: false };
@@ -91,6 +92,13 @@ try {
   assert.equal(await page.locator('#update-proxy').isEnabled(), false);
   await page.evaluate(() => window.__finishCheck());
   await page.locator('#about-update-proxy:enabled').waitFor();
+  await page.evaluate(() => { window.__directFallback = true; });
+  await page.locator('#about-dialog [data-close]').click();
+  await page.locator('#about-button').click();
+  await page.waitForFunction(() => document.querySelector('#about-update-proxy-status').textContent.includes('切换为直连'));
+  assert.match(await page.locator('#update-proxy-status').innerText(), /系统代理连接未成功.*切换为直连/);
+  assert.equal(await page.locator('#about-update-proxy').isChecked(), true);
+  await page.evaluate(() => { window.__directFallback = false; });
   await page.locator('#about-update-proxy').uncheck();
   await page.waitForFunction(() => !document.querySelector('#about-update-proxy').disabled);
   await page.reload();
@@ -108,7 +116,7 @@ try {
     await page.locator('#about-dialog [data-close]').click();
   }
   assert.deepEqual(errors, []);
-  console.log('Passed: session-only proxy switches synchronize, reject failed changes, surface detection errors returned after switching, lock during updates, show system route, reset on new process, and fit narrow layouts.');
+  console.log('Passed: session-only proxy switches synchronize, reject failed changes, surface detection errors returned after switching, lock during updates, show system route and direct recovery in both panels, reset on new process, and fit narrow layouts.');
 } finally {
   await browser?.close(); server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));

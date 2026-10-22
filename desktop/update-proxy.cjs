@@ -12,6 +12,10 @@ const SYSTEM_PARTITION = 'brclio-update-system';
 const DIRECT_PARTITION = 'brclio-update-direct';
 const OFFICIAL_HOSTS = new Set(['github.com', 'api.github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com']);
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+const SYSTEM_CONNECTION_FAILURES = new Set([
+  'ERR_PROXY_CONNECTION_FAILED', 'ERR_TUNNEL_CONNECTION_FAILED', 'ERR_SOCKS_CONNECTION_FAILED',
+  'ERR_CONNECTION_CLOSED', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_TIMED_OUT',
+]);
 
 function routingError(message) { const error = new Error(message); error.code = 'BRCLIO_UPDATE_ROUTE'; return error; }
 
@@ -68,6 +72,15 @@ function connectionError(route, signal) {
   return new Error(route === 'builtin' ? '内置更新代理连接失败，可关闭内置代理或稍后重试。' : '更新服务连接失败，请检查网络或系统代理后重试。');
 }
 
+function systemConnectionFailure(failure) {
+  if (['AbortError', 'TimeoutError'].includes(failure?.name)) return false;
+  const code = typeof failure?.code === 'string' ? failure.code : '';
+  const message = typeof failure?.message === 'string' ? failure.message : '';
+  const messageCodes = message.match(/\bERR_[A-Z0-9_]+\b/g) || [];
+  if (code && !SYSTEM_CONNECTION_FAILURES.has(code) || messageCodes.some(value => !SYSTEM_CONNECTION_FAILURES.has(value))) return false;
+  return Boolean(code || /^(?:net::)?ERR_[A-Z0-9_]+$/.test(message) && messageCodes.length);
+}
+
 function abortable(promise, signal) {
   if (!signal) return promise;
   if (signal.aborted) {
@@ -101,17 +114,18 @@ async function configurationBody(response) {
 }
 
 function createUpdateProxy(options) {
-  let enabled = true, busy = false, route = 'builtin', error = null;
+  let enabled = true, busy = false, route = 'builtin', error = null, fallbackFrom;
   let sessionsPromise, operation;
   const scopes = new Set();
   const publish = options.onState || (() => {});
   const bridgeFactory = options.createBridge || createConnectBridge;
   const sessionFetch = options.fetchSession || ((value, url, init) => value.fetch(url, init));
-  function snapshot() { return { enabled, supported: true, route, busy, error }; }
+  function snapshot() { return { enabled, supported: true, route, busy, error, ...(fallbackFrom ? { fallbackFrom } : {}) }; }
   function change(next) {
     if ('enabled' in next) enabled = next.enabled;
     if ('route' in next) route = next.route;
     if ('error' in next) error = next.error;
+    if ('fallbackFrom' in next) fallbackFrom = next.fallbackFrom;
     const state = snapshot(); publish(state); return state;
   }
   function sessions() {
@@ -129,12 +143,14 @@ function createUpdateProxy(options) {
     const resolutions = await abortable(Promise.all(targets.map(async url => ({
       native: usesProxy(await available.native.resolveProxy(url)), system: usesProxy(await available.system.resolveProxy(url)),
     }))), signal);
-    if (resolutions.some(value => value.native)) return { route: 'system', fetch: options.netFetch };
-    if (resolutions.some(value => value.system)) return { route: 'system', fetch: (url, init) => sessionFetch(available.system, url, init) };
+    if (resolutions.some(value => value.native)) return { route: 'system', available, fetch: options.netFetch };
+    if (resolutions.some(value => value.system)) return { route: 'system', available, fetch: (url, init) => sessionFetch(available.system, url, init) };
     return enabled ? { route: 'builtin', available } : { route: 'direct', fetch: options.netFetch };
   }
   async function state() {
-    if (busy) return snapshot();
+    // Idle UI refreshes must retain the route the last operation actually used.
+    // The next operation/selection or explicit toggle rechecks system routing.
+    if (busy || fallbackFrom === 'system') return snapshot();
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 5000);
     try { return change({ route: (await select([API_URL], controller.signal)).route, error: null }); }
     catch { return change({ error: '无法读取当前系统代理设置，请稍后重试。' }); }
@@ -143,7 +159,7 @@ function createUpdateProxy(options) {
   async function setEnabled(value) {
     if (typeof value !== 'boolean') throw new TypeError('内置代理开关必须为开启或关闭。');
     if (busy) throw new Error('正在检查或下载更新，请完成后再切换内置代理。');
-    change({ enabled: value, route: value ? 'builtin' : 'direct', error: null });
+    change({ enabled: value, route: value ? 'builtin' : 'direct', error: null, fallbackFrom: undefined });
     return state();
   }
   function dispose(scope) {
@@ -163,7 +179,7 @@ function createUpdateProxy(options) {
   }
   function setBusy(value, targets = []) {
     busy = value === true;
-    if (busy) operation = { targets: targets.map(url => officialURL(url, true)) };
+    if (busy) { fallbackFrom = undefined; operation = { targets: targets.map(url => officialURL(url, true)) }; }
     else { const completed = operation; operation = null; publish(snapshot()); return dispose(completed); }
     publish(snapshot());
   }
@@ -252,13 +268,28 @@ function createUpdateProxy(options) {
     let selected;
     try {
       let target = officialURL(url, true);
-      if (!scope.selection) scope.selection = select(scope.targets.length ? scope.targets : [target], init.signal);
+      if (!scope.selection) { fallbackFrom = undefined; scope.selection = select(scope.targets.length ? scope.targets : [target], init.signal); }
       selected = await abortable(scope.selection, init.signal);
-      change({ route: selected.route, error: null });
-      const request = selected.route === 'builtin' ? await initializeBuiltin(scope, selected, init) : selected.fetch;
+      change({ route: selected.route, error: null, fallbackFrom: selected.fallbackFrom });
+      let request = selected.route === 'builtin' ? await initializeBuiltin(scope, selected, init) : selected.fetch;
       for (let redirects = 0; ; redirects++) {
         if (scope.closed || init.signal?.aborted) throw connectionError(selected.route, { aborted: true });
-        const response = await request(target, { ...init, redirect: 'manual', credentials: 'omit' });
+        const requestOptions = { ...init, redirect: 'manual', credentials: 'omit' };
+        let response;
+        try { response = await request(target, requestOptions); }
+        catch (failure) {
+          if (selected.route !== 'system' || scope.systemFallbackAttempted || scope.closed || init.signal?.aborted ||
+              !['GET', 'HEAD'].includes(init.method || 'GET') || init.body != null || !systemConnectionFailure(failure)) throw failure;
+          // Retry only a failed connection before response headers. Keep the
+          // original signal/deadline and pin this operation to isolated DIRECT.
+          scope.systemFallbackAttempted = true;
+          selected.route = 'direct'; selected.fallbackFrom = 'system';
+          selected.fetch = (url, options) => sessionFetch(selected.available.direct, url, options);
+          request = selected.fetch;
+          change({ route: selected.route, error: null, fallbackFrom: selected.fallbackFrom });
+          if (scope.closed || init.signal?.aborted) throw connectionError(selected.route, { aborted: true });
+          response = await request(target, requestOptions);
+        }
         if (response.redirected) { await cancel(response); throw routingError('下载重定向至非官方地址，已停止。'); }
         const blocked = requestBlockMessage(response);
         if (blocked) { await cancel(response); throw routingError(blocked); }

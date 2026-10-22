@@ -10,6 +10,8 @@
 
 桌面端使用 Electron 系统代理解析，覆盖 HTTP、SOCKS、PAC 与命令行代理设置；Android 还识别活动 VPN、系统 HTTP/PAC 与 Java 代理选择器。客户端不会修改操作系统代理配置。桌面 VPN/TUN 检测受平台解析能力限制。
 
+桌面端从 v0.1.12 起，系统代理在响应头返回前发生明确的连接或代理故障时，会在原有操作时限内使用独立直连会话重试一次，并将本次操作的后续官方请求固定在该会话。取消、证书错误、HTTP 错误、非法跳转和响应正文错误不会触发此切换。两处更新面板会保留最近一次操作已切换直连的提示，下一次操作重新判断系统代理。旧客户端无法获取更新时，需先手动安装新版。
+
 每次检查最新版、每次下载最新版，分别向 `/api/client/update-proxy` 请求最新私库配置与订阅，不沿用上次节点缓存。最多 16 个有效候选全部并发探测原生 HTTPS `HEAD https://github.com/robots.txt`，单点 4 秒、整批 8 秒，在成功路线中选择本机端到端延迟最低者。操作期间锁定路线；不在已传输安装包字节后更换路线或重放正文。
 
 节点配置采用版本 1、最多 32 KiB，只包含 UUID、TLS DNS 名称、端口、路径、SNI、HTTP Host 和 `dialAddress`。不同优选 IP 线路完整保留，超过 16 个有效候选会明确报不支持，不静默截断。DNS 认证名称保持 `host == servername == wsHost`；实际 TCP 连接可使用独立的规范公网 IPv4 或严格公网 DNS `dialAddress`。拒私网、回环、链路本地、保留地址、本地名称与 IPv6。优选 IP 不改变证书认证名称。
@@ -36,6 +38,7 @@ npm run test:hosts
 npm run test:proxy-ui
 npm run test:native-proxy
 npm run test:updates
+npm run test:system-proxy-live
 npm --prefix cloudflare ci
 npm run test:cloudflare
 npm --prefix cloudflare run check
@@ -49,3 +52,5 @@ cd android
 ```
 
 正式发布生产 gate 用 Node 原生传输下载完整小 APK，再用真实 Electron、原始 updater/router/bridge 下载完整大体积 Windows 安装包，分别核对官方元数据/清单 SHA；不安装下载的历史版本。真实 Electron 工厂中的旧 currentVersion 仅用于触发传输验收，报告同时记录实际应用版本。Worker 返回 410 不能算下载通过。发布记录分别保留配置服务部署、各平台原生传输、签名构建、公开 Release 和真实覆盖/自动打开结果。
+
+另用独立临时 Electron 进程检查主机的真实系统代理解析与正式版本检查，不覆盖系统设置或默认会话代理、不下载或安装程序。报告区分未检测到代理、系统代理正常及系统故障后直连恢复；没有系统代理的 CI 主机不能据此声称复现了代理故障。连接故障回退与不可回退场景另由自动化测试验证。

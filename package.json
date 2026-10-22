@@ -1,7 +1,7 @@
 {
   "name": "brclio-toolbox",
   "productName": "Brclio",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Brclio 跨平台工具箱 · 从复制路径开始",
   "author": "Brclio",
   "private": true,
@@ -21,6 +21,7 @@
     "test:updates": "npm run sync && node desktop/update-smoke.cjs",
     "test:native-proxy": "node desktop/native-proxy-smoke.cjs",
     "test:native-proxy-live": "node desktop/native-proxy-live.cjs",
+    "test:system-proxy-live": "node desktop/system-proxy-live.cjs",
     "test:proxy-ui": "npm run sync && node scripts/verify-update-proxy-ui.mjs",
     "test:cloudflare": "npm --prefix cloudflare test",
     "test:accounts": "npm run sync && node scripts/verify-account-ui.mjs"
