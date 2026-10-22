@@ -120,14 +120,24 @@ test('server segments may end before total and each next attempt resumes at the 
 });
 
 test('cancellation and hard timeout retain their completed prefix without enabling installation',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
   for(const timeout of [false,true]){
-    const root=await directory(t);let waiting=false;
-    const f=fixture(root,init=>{let sent=false;return new Response(new ReadableStream({pull(c){if(!sent){sent=true;c.enqueue(bytes.subarray(0,7));return;}waiting=true;
+    const root=await directory(t);let waiting=false,signal;
+    const f=fixture(root,init=>{signal=init.signal;let sent=false;return new Response(new ReadableStream({pull(c){if(!sent){sent=true;c.enqueue(bytes.subarray(0,7));return;}waiting=true;
       if(!timeout){c.error(Object.assign(Error('用户取消。'),{name:'AbortError'}));return;}
       return new Promise(resolve=>init.signal.addEventListener('abort',()=>{c.error(network());resolve();},{once:true}));
     }},{highWaterMark:0}),{headers:{etag:'"stable"'}});},{updater:timeout?{downloadTimeout:30,idleTimeout:200}: {}});
-    await f.updater.check();const pending=f.updater.download();await until(()=>waiting);const result=await pending;
+    await f.updater.check();const pending=f.updater.download();await until(()=>waiting);
+    if(timeout){
+      // Advance the original operation deadline only after the prefix is on disk.
+      assert.deepEqual(await fs.readFile(path.join(root,assetName+'.part')),bytes.subarray(0,7));
+      t.mock.timers.tick(29);assert.equal(signal.aborted,false);
+      t.mock.timers.tick(1);assert.equal(signal.aborted,true);
+      assert.equal(signal.reason.code,'BRCLIO_UPDATE_DEADLINE');
+    }
+    const result=await pending;
     assert.equal(result.status,'error');assert.equal(result.canInstall,false);assert.equal(result.resumable,true);assert.equal(result.downloadedBytes,7);assert.deepEqual(await fs.readFile(path.join(root,assetName+'.part')),bytes.subarray(0,7));
+    assert.equal(result.retryCount,0);assert.equal(result.retryExhausted,false);
   }
 });
 
