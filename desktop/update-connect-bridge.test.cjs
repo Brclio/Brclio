@@ -2,6 +2,8 @@
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('node:crypto'),http=require('node:http');
 const {createConnectBridge,parseProxyConfiguration,targetHost,VlessResponse,nodeLookup,publicIPv4}=require('./update-connect-bridge.cjs');
 const {startRelay,request,node}=require('../test/update-proxy-fixture.cjs');
+const fs=require('node:fs/promises'),fsSync=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {createUpdater,API_URL}=require('./updater.cjs');
 const config=()=>({version:1,ttlSeconds:600,nodes:[{...node}]});
 test('node configuration permits only bounded explicit strict-TLS WSS settings',()=>{
  assert.equal(parseProxyConfiguration(config()).nodes[0].host,node.host);
@@ -27,6 +29,42 @@ test('actual WSS CONNECT and native inner TLS transfer a continuous multi-megaby
  assert.equal(new URL(bridge.proxyRules).hostname,'127.0.0.1');
  const result=await request(bridge.proxyRules);assert.equal(result.status,200);assert.equal(crypto.createHash('sha256').update(result.body).digest('hex'),crypto.createHash('sha256').update(body).digest('hex'));
  assert.deepEqual(relay.destinations,['api.github.com']);assert.equal(relay.requests[0].method,'GET');
+});
+test('legal binary messages above 2 MiB preserve the complete HTTPS response with single-frame and fragmented delivery',async t=>{
+ for(const wsFragmentBytes of [0,64*1024])await t.test(wsFragmentBytes?'fragmented message':'single-frame message',async t=>{
+  const body=Buffer.alloc(5*1024*1024+17,97),expected=crypto.createHash('sha256').update(body).digest('hex');
+  const relay=await startRelay({body,wsMessageBytes:3*1024*1024,wsFragmentBytes});t.after(()=>relay.close());
+  const bridge=await createConnectBridge({nodes:[relay.node],WebSocketClass:relay.WebSocketClass});t.after(()=>bridge.close());
+  const result=await request(bridge.proxyRules);
+  assert.equal(result.status,200);assert.equal(result.body.length,body.length);
+  assert.equal(crypto.createHash('sha256').update(result.body).digest('hex'),expected);
+  assert.ok(Math.max(...relay.wsMessages)>2*1024*1024);assert.ok(Math.max(...relay.wsMessages)<=8*1024*1024);
+  if(wsFragmentBytes)assert.ok(Math.max(...relay.wsFrames)<=wsFragmentBytes);else assert.ok(Math.max(...relay.wsFrames)>2*1024*1024);
+  assert.deepEqual(relay.wsErrorCodes,[]);
+ });
+});
+test('single-frame and accumulated fragmented messages above 8 MiB fail closed and remove actual updater partial files',async t=>{
+ for(const wsFragmentBytes of [0,64*1024])await t.test(wsFragmentBytes?'oversized fragmented message':'oversized single-frame message',async t=>{
+  const body=Buffer.alloc(10*1024*1024+17,98),expected=crypto.createHash('sha256').update(body).digest('hex');
+  const relay=await startRelay({body,wsMessageBytes:9*1024*1024,wsFragmentBytes,wsPrefixBytes:256*1024});t.after(()=>relay.close());
+  const bridge=await createConnectBridge({nodes:[relay.node],WebSocketClass:relay.WebSocketClass});t.after(()=>bridge.close());
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'brclio-ws-size-updater-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const assetName='Brclio-0.2.0-mac-arm64.dmg',prefix='https://github.com/Brclio/Brclio/releases/download/v0.2.0/';
+  const release={tag_name:'v0.2.0',assets:[{name:assetName,size:body.length,browser_download_url:prefix+assetName,digest:`sha256:${expected}`},{name:'SHA256SUMS.txt',browser_download_url:prefix+'SHA256SUMS.txt'}]};
+  let installs=0,partialWasWritten=false;
+  const updater=createUpdater({currentVersion:'0.1.0',directory,platform:'darwin',architecture:'arm64',
+   fetch:async(url,init)=>url===API_URL?new Response(JSON.stringify(release)):url.endsWith('SHA256SUMS.txt')?new Response(`${expected}  ${assetName}`):request(bridge.proxyRules,{signal:init.signal,stream:true}),
+   onState:state=>{if(state.downloadedBytes>0&&fsSync.existsSync(path.join(directory,assetName+'.part')))partialWasWritten=true;},
+   installPackage:async()=>{installs++;return{installerStarted:true};}});
+  assert.equal((await updater.check()).status,'available');
+  const failed=await updater.download();
+  assert.equal(failed.status,'error');assert.equal(failed.canInstall,false);assert.equal(partialWasWritten,true);
+  assert.ok(failed.downloadedBytes>0&&failed.downloadedBytes<body.length);assert.deepEqual(await fs.readdir(directory),[]);
+  assert.ok(Math.max(...relay.wsMessages)>8*1024*1024);
+  if(wsFragmentBytes)assert.ok(Math.max(...relay.wsFrames)<=wsFragmentBytes);else assert.ok(Math.max(...relay.wsFrames)>8*1024*1024);
+  assert.ok(relay.wsErrorCodes.includes('WS_ERR_UNSUPPORTED_MESSAGE_LENGTH'));
+  assert.equal((await updater.install()).status,'error');assert.equal(installs,0);
+ });
 });
 test('untrusted WSS certificates and WSS redirects are rejected before any inner request',async t=>{
  for(const options of [{trustOuter:false},{redirect:true}]){const relay=await startRelay(options);t.after(()=>relay.close());const bridge=await createConnectBridge({nodes:[relay.node],WebSocketClass:relay.WebSocketClass});t.after(()=>bridge.close());await assert.rejects(request(bridge.proxyRules));assert.equal(relay.requests.length,0);assert.equal(relay.destinations.length,0);}

@@ -8,6 +8,9 @@ const { Transform } = require('node:stream');
 const TARGETS = new Set(['api.github.com', 'github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com']);
 const TLS_PORTS = new Set([443, 2053, 2083, 2087, 2096, 8443]);
 const NODE_KEYS = ['dialAddress', 'host', 'path', 'port', 'servername', 'uuid', 'wsHost'];
+// VLESS carries a TCP byte stream: a peer may group many TLS records into one
+// WebSocket message. Keep reassembly bounded while accepting larger batches.
+const MAX_WS_MESSAGE = 8 * 1024 * 1024;
 const FAILURE = '内置更新代理连接失败，可关闭内置代理或稍后重试。';
 function safeError() { return new Error(FAILURE); }
 
@@ -117,7 +120,7 @@ async function createConnectBridge({ nodes, WebSocketClass } = {}) {
           const ws = new WebSocketClass(`wss://${node.host}:${node.port}${node.path}`, {
             headers: { Host: node.wsHost }, servername: node.servername, rejectUnauthorized: true, minVersion: 'TLSv1.2',
             lookup: nodeLookup(node), family: 4,
-            followRedirects: false, perMessageDeflate: false, handshakeTimeout: 5000, maxPayload: 2 * 1024 * 1024, agent: false,
+            followRedirects: false, perMessageDeflate: false, handshakeTimeout: 5000, maxPayload: MAX_WS_MESSAGE, agent: false,
           });
           tunnels.add(ws);
           const abort = () => ws.terminate();
