@@ -112,6 +112,9 @@ test('real workerd authenticates public releases with only the program App token
     try {
       const response = await mf.dispatchFetch('https://runtime-test.example/');
       const value = await response.json();
+      // Workerd may also emit its own startup/compatibility diagnostics. Only
+      // application diagnostics participate in the release failure contract.
+      const diagnostics = () => logs.filter(message => message.includes('release.metadata_failed'));
       if (scenario === 'valid') {
         assert.equal(response.status, 200);
         assert.equal(value.version, '0.1.8');
@@ -129,21 +132,23 @@ test('real workerd authenticates public releases with only the program App token
         assert.equal(refreshed.headers.get('x-fixture-redirects'), 'manual');
         await refreshed.body.cancel();
         assert.deepEqual(calls, ['installation', 'release', 'release']);
-        assert.equal(logs.length, 0);
+        assert.equal(diagnostics().length, 0);
       } else {
         assert.equal(response.status, 502);
         assert.deepEqual(value, {error: 'release_unavailable'});
         assert.deepEqual(calls, scenario === 'authentication-failure' ? ['installation'] : ['installation', 'release']);
         assert.equal(response.headers.get('x-fixture-redirects'), scenario === 'authentication-failure' ? 'manual' : 'manual,manual');
-        assert.equal(logs.length, 1);
-        assert.ok(logs[0].includes(scenario === 'authentication-failure' ? 'release_auth_unavailable' : 'release_upstream_status'),
+        assert.equal(diagnostics().length, 1);
+        assert.ok(diagnostics()[0].includes(scenario === 'authentication-failure' ? 'release_auth_unavailable' : 'release_upstream_status'),
           'failure diagnostics must contain the fixed error classification');
-        if (scenario === 'release-redirect') assert.ok(logs[0].includes('302'), 'redirect failure must retain only its safe status');
-        assert.ok(logs.every(message => !message.includes('upstream-private-marker') &&
-          !credentials.some(credential => message.includes(credential)) &&
+        if (scenario === 'release-redirect') assert.ok(diagnostics()[0].includes('302'), 'redirect failure must retain only its safe status');
+        assert.ok(diagnostics().every(message =>
           !/https?:\/\/|Authorization|PRIVATE KEY|ghs_/.test(message)),
-        'failure diagnostics must not contain credentials, upstream messages or URLs');
+        'application failure diagnostics must not contain credentials or URLs');
       }
+      assert.ok(logs.every(message => !message.includes('upstream-private-marker') &&
+        !credentials.some(credential => message.includes(credential))),
+      'all captured diagnostics must omit credentials and upstream messages');
     } finally {await mf.dispose();}
   });
 });
