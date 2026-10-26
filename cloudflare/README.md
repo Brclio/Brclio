@@ -41,6 +41,11 @@ to the previous Worker identity. Reconnect Builds to the current Worker identity
 and verify its actual deployment before relying on automatic builds. These source
 changes do not establish that the dashboard connection has been restored.
 
+For an existing Worker, saving the repository connection does not immediately
+deploy the current commit. Push a new commit to the production branch to start
+the first build, then verify its commit, deployment, and HTTP gate. Keep preview
+builds disabled to match this Worker's production-only configuration.
+
 The post-deployment gate performs only five fixed, anonymous GET requests:
 homepage, health, account session, client configuration and latest release. It
 validates bounded response bodies, content types and data contracts, including
