@@ -168,6 +168,36 @@ try {
   report.browser.push('Mixed portrait/landscape preview and encoded cover keep the same canvas, letterboxing, frame choice and 5.5% push geometry; drag-and-drop uses the same validated local-material path.');
   await liveAuditContext.close();
 
+  const noAudioContext = await browser.newContext({viewport:{width:1440,height:1060}});
+  const noAudioPage = await noAudioContext.newPage(); noAudioPage.on('pageerror',error=>report.errors.push(error.message));
+  await noAudioPage.route('**/xhs/lib/live-photo-maker.js',async route=>{
+    const response=await route.fetch(),body=await response.text();
+    await route.fulfill({response,body:body
+      .replace('export async function checkLivePhotoSupport(', 'async function checkActualLivePhotoSupport(')
+      .replace('export async function createLivePhoto(', 'async function createActualLivePhoto(')+`
+      export async function checkLivePhotoSupport() { return {...await checkActualLivePhotoSupport(),audioSupported:false}; }
+      export async function createLivePhoto(options) { window.__noAudioInclude=options.includeAudio; return createActualLivePhoto(options); }
+    `});
+  });
+  await noAudioPage.goto(url);await noAudioPage.waitForFunction(()=>document.body.dataset.ready==='true');
+  await noAudioPage.locator('[data-view="xhs"]').first().click();await noAudioPage.locator('#xhs-tab-live').click();
+  await noAudioPage.locator('#xhs-live-support').filter({hasText:'支持本地制作'}).waitFor();
+  await noAudioPage.locator('#xhs-live-files').setInputFiles({name:'no-aac-source.mov',mimeType:'video/quicktime',buffer:Buffer.from(encodedSource,'base64')});
+  await noAudioPage.locator('#xhs-live-source-info').filter({hasText:'视频'}).waitFor();
+  assert.equal(await noAudioPage.locator('#xhs-live-audio').isDisabled(),true,'Loading a video must preserve the unavailable AAC capability.');
+  await noAudioPage.locator('#xhs-live-speed').selectOption('2');await noAudioPage.locator('#xhs-live-speed').selectOption('1');
+  assert.equal(await noAudioPage.locator('#xhs-live-audio').isDisabled(),true,'Returning to 1x must not enable an unavailable AAC encoder.');
+  await noAudioPage.evaluate(()=>{document.getElementById('xhs-live-audio').checked=true});
+  await noAudioPage.locator('#xhs-live-duration').fill('.5');await noAudioPage.locator('#xhs-live-duration').dispatchEvent('change');
+  await noAudioPage.locator('#xhs-live-cover').fill('.2');await noAudioPage.locator('#xhs-live-cover').dispatchEvent('change');
+  await noAudioPage.locator('#xhs-live-format').selectOption('jpeg');await noAudioPage.locator('#xhs-live-generate').click();
+  await noAudioPage.locator('#xhs-live-result').waitFor({timeout:60000});
+  assert.equal(await noAudioPage.evaluate(()=>window.__noAudioInclude),false,'Stale checkbox state must never request unavailable AAC.');
+  assert.doesNotMatch(await noAudioPage.locator('#xhs-live-result-info').textContent(),/保留声音/);
+  assert.equal(await noAudioPage.locator('#xhs-live-audio').isDisabled(),true);
+  report.browser.push('Unavailable AAC stays disabled after video loading, speed changes and real silent generation; stale checked state cannot request an unsupported audio encoder.');
+  await noAudioContext.close();
+
   const nativeContext = await browser.newContext({ viewport: { width: 1440, height: 1060 } });
   const nativePage = await nativeContext.newPage(); nativePage.on('pageerror', error => report.errors.push(error.message));
   await nativePage.route('**/bridge.js', async route => {
