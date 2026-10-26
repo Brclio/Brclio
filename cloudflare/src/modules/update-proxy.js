@@ -1,7 +1,7 @@
 import {readConfig, writeConfig} from '../config.js';
 import {officialTarget} from '../protocol.js';
 import {json, readJSON, rateLimit} from '../http.js';
-import {latestReleaseURL, getOfficialRelease} from '../releases.js';
+import {latestReleaseURL, getOfficialRelease, releaseFailureDetails} from '../releases.js';
 
 export const metadata = Object.freeze({
   id: 'update-proxy',
@@ -47,7 +47,8 @@ export async function handlePublic(request, env, dependencies = {}) {
   try {
     const release = await (dependencies.getOfficialRelease || getOfficialRelease)(env);
     return json(summary ? release.summary : release.metadata, 200, {'Cache-Control': 'public, max-age=60', 'X-Brclio-Route': 'github-metadata'});
-  } catch {
+  } catch (error) {
+    console.warn('release.metadata_failed', releaseFailureDetails(error));
     return json({error: summary ? '暂时无法获取官方正式版本，请稍后重试或前往 GitHub 发布页' : '内置代理暂不可用，请关闭内置代理或稍后重试'}, 502);
   }
 }

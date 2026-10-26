@@ -16,8 +16,45 @@ platform-native TLS to download official GitHub releases.
 
 Deploy through GitHub Builds connected in the verified Cloudflare account. Use
 project root `cloudflare`, build command `npm ci && npm test`, and deploy command
-`npx wrangler deploy`. A local CLI authenticated to another account must not be
-used to deploy this project.
+`npm run deploy`. A local CLI authenticated to another account must not be used
+to deploy this project.
+
+Normal deployments retain `src/entry.js` and Wrangler's existing JavaScript
+and HTML/TXT module packaging. Set `upload_source_maps = false` explicitly in
+`wrangler.toml`. Wrangler 4.151.1 otherwise generates and uploads source maps by
+default. Controlled isolated uploads kept the eight runtime modules byte for
+byte unchanged and removed only the auxiliary source-map part; the initial,
+repeated and strict-upload checks then all returned 200. The observed trigger is
+the additional source-map upload on this service's deployment path.
+
+The explicit source-map setting also applies to a direct Wrangler invocation.
+Use `npm run deploy` to additionally run the npm `postdeploy` HTTP gate.
+
+After a Worker is recreated, the old GitHub Builds connection and history belong
+to the previous Worker identity. Reconnect Builds to the current Worker identity
+and verify its actual deployment before relying on automatic builds. These source
+changes do not establish that the dashboard connection has been restored.
+
+The post-deployment gate performs only five fixed, anonymous GET requests:
+homepage, health, account session, client configuration and latest release. It
+validates bounded response bodies, content types and data contracts, including
+the existing Google/email provider availability and official release asset URLs.
+It sends no Cookie or Authorization header and performs no login or data write.
+The checks share a 60-second deadline; each request has at most 15 seconds and
+each endpoint gets at most three attempts for temporary failures. Any required
+check still failing makes the command exit 1. Wrangler uploads before this hook
+runs, so a failed hook leaves the uploaded version active for operator review
+and recovery.
+
+Run the same read-only gate separately after a direct Wrangler deployment:
+
+```sh
+npm run verify:deployment
+```
+
+Its JSON evidence contains fixed endpoint labels, HTTP statuses, failure enums,
+provider availability booleans and the public release version. Configuration
+nodes, response bodies, URLs, headers and credentials are omitted.
 
 The fallback is an alias of the same Worker. Its host guard permits only `GET
 /api/client/update-proxy` and `GET /api/health`; all other paths and methods,
@@ -188,10 +225,11 @@ npm run check
 npm run bundle:browser
 ```
 
-These commands do not publish. The standalone browser module is
+These commands do not publish. The optional standalone browser export is
 `dist/browser/brclio-client-services.mjs`; its manifest records SHA-256, account,
 route, alias guard, compatibility settings, variable names and native limit
-bindings. The Worker uses `nodejs_compat` and `global_fetch_strictly_public`.
+bindings. Normal Wrangler deployment uses `src/entry.js` and the existing text
+modules. The Worker uses `nodejs_compat` and `global_fetch_strictly_public`.
 
 Tests cover fresh native configuration and subscription reads, legacy cache
 invalidation, strict seven-field configuration, all 16

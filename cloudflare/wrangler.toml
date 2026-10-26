@@ -6,6 +6,9 @@ compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 workers_dev = true
 preview_urls = false
 keep_vars = true
+# The isolated reproducer fails after repeated uploads of this artifact with a map.
+# Explicitly omit map parts and retain all existing runtime modules.
+upload_source_maps = false
 
 [vars]
 GITHUB_DATA_REPOSITORY = "BrclioData/BrclioUserData"

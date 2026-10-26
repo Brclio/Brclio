@@ -8,7 +8,13 @@
 
 同一 Worker 的生产别名 `https://brclio-client-services.aiyuechuang.workers.dev` 仅作为配置引导备用入口：只允许 GET `/api/client/update-proxy` 和 GET `/api/health`，主页、后台、登录和其它路径全部 404。已先部署该限制，再在正确账号控制台启用生产别名，配置持久化为 `workers_dev = true`；预览入口保持关闭。自定义域名上已确认的 Bot Fight Mode 质询不通过关闭整区防护解决。备用域名在各网络中的可达性需实际验证。
 
-GitHub Builds 构建根目录为 `cloudflare`，构建命令 `npm ci && npm test`，部署命令由正确账号执行 `npx wrangler deploy`。本地 CLI 若登录其它账号，不应用于部署。
+GitHub Builds 构建根目录为 `cloudflare`，构建命令 `npm ci && npm test`，部署命令由正确账号执行 `npm run deploy`。本地 CLI 若登录其它账号，不应用于部署。
+
+Wrangler 保持 `src/entry.js` 入口及既有 JavaScript、HTML/TXT 模块打包，在 `wrangler.toml` 中显式设置 `upload_source_maps = false`。Wrangler 4.151.1 默认生成并上传 source map；隔离实验保持八个运行模块逐字节不变，仅移除辅助 source-map 上传部分后，首次、重复和 strict 上传三项均返回 200。该设置也适用于直接调用 Wrangler。
+
+`npm run deploy` 的 `postdeploy` 门禁只向正式入口执行五项匿名 GET：首页、健康检查、匿名账号会话、固定客户端配置和正式版本摘要。门禁校验响应大小、内容类型及数据结构，并确认现有 Google/邮箱入口可用；不携带 Cookie 或 Authorization，不登录或写入用户数据。五项检查共享 60 秒总时限，每次请求最多 15 秒，暂态失败的接口最多尝试三次；任何必需项仍失败即退出 1。上传先于门禁完成，失败时线上已上传的版本仍需维护者复核和恢复。直接运行 Wrangler 后可在 `cloudflare/` 执行 `npm run verify:deployment` 补做同一门禁。输出仅包含固定接口标签、状态、错误枚举、登录入口可用布尔值及公开版本号，不输出配置节点、URL、响应正文、请求头或凭据。
+
+同名重建 Worker 后，旧 GitHub Builds 连接及历史属于原 Worker 身份，需重新连接当前身份并核验实际部署；源码修改本身不代表控制台连接已经恢复。
 
 控制台保留现有 `ADMIN_EMAIL`、`ADMIN_PASSWORD`、`SESSION_SECRET`、`PROXY_SUBSCRIPTION_URL` 配置。账号库为 `GITHUB_DATA_REPOSITORY=BrclioData/BrclioUserData`，程序资料库为 `GITHUB_PROGRAM_DATA_REPOSITORY=BrclioData/BrclioData`；两者独立配置，全局配置缺失时不能回退账号库。GitHub 凭据改为 `GITHUB_APP_ID`、`GITHUB_APP_INSTALLATION_ID` 和 Secret `GITHUB_APP_PRIVATE_KEY`，不再读取个人 `GITHUB_TOKEN`。`keep_vars = true` 保留控制台值；源码、公开 JSON 和日志不得包含秘密值。初次切换前先完成停写、迁移核验和 App 配置，不能提前让线上指向空库。
 
