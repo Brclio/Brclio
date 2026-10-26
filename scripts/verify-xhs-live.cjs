@@ -90,8 +90,16 @@ require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
   await page.locator('#xhs-tab-live').click();
   await page.locator('#xhs-live-support').filter({ hasText: '支持本地制作' }).waitFor();
   const support = await page.evaluate(async () => (await import('./xhs/lib/live-photo-maker.js')).checkLivePhotoSupport());
-  assert.equal(support.supported, true); assert.equal(support.heicSupported, true); assert.equal(support.audioSupported, true);
   report.support = support;
+  assert.equal(support.supported, true, 'The verification runtime must encode H.264.');
+  assert.equal(support.heicSupported, true, 'The local HEIC Worker/WASM must load.');
+  // Linux is the CI host, not a distributed desktop target. Its Electron
+  // build can encode H.264 while lacking the OS AAC encoder. Still exercise
+  // all video/HEIC paths and the disabled-audio UI; keep strict audio coverage
+  // on the macOS/Windows targets rather than claiming that AAC was tested.
+  if (process.platform !== 'linux') assert.equal(support.audioSupported, true, 'The target runtime must encode AAC.');
+  const retainAudio = support.audioSupported === true;
+  report.skipped = retainAudio ? [] : [{feature:'AAC audio retention',reason:'This Linux Electron runtime has no AAC AudioEncoder.'}];
   const images = await page.evaluate(() => ['#d94335', '#3764cc'].map(color => { const canvas = document.createElement('canvas'); canvas.width=320; canvas.height=192; const context=canvas.getContext('2d'); context.fillStyle=color; context.fillRect(0,0,320,192); return canvas.toDataURL('image/png').split(',')[1]; }));
   const imagePaths = images.map((_, index) => path.join(temporary, `image-${index + 1}.png`));
   await Promise.all(images.map((data, index) => fs.writeFile(imagePaths[index], Buffer.from(data, 'base64'))));
@@ -153,13 +161,18 @@ print(String(data:try! JSONSerialization.data(withJSONObject:output),encoding:.u
   await page.locator('#xhs-live-files').setInputFiles(videoPath);
   await page.locator('#xhs-live-source-info').filter({hasText:'视频 · 6.00 秒'}).waitFor();
   await field('start',1);await field('duration',.6);await field('cover',.2);
-  await page.locator('#xhs-live-audio').check();
+  if (retainAudio) await page.locator('#xhs-live-audio').check();
+  else assert.equal(await page.locator('#xhs-live-audio').isDisabled(),true,'Unavailable AAC must disable audio retention.');
   await generate();
-  assert.match(await page.locator('#xhs-live-result-info').textContent(),/保留声音/);
+  const clipInfo = await page.locator('#xhs-live-result-info').textContent();
+  if (retainAudio) assert.match(clipInfo,/保留声音/);
+  else assert.doesNotMatch(clipInfo,/保留声音/);
   const audioMovie=await exportFile('export-mov','audio movie');
-  report.checks.push({name:'trimmed video + HEIC + retained AAC audio',...await inspectMovie(audioMovie,{duration:.6,audio:true,cover:.2})});
-  const pcm=execFileSync('ffmpeg',['-v','error','-i',audioMovie,'-map','0:a','-f','f32le','-acodec','pcm_f32le','-'],{timeout:30000,stdio:['ignore','pipe','pipe']});
-  let sum=0;for(let at=0;at+4<=pcm.length;at+=4)sum+=pcm.readFloatLE(at)**2;const rms=Math.sqrt(sum/(pcm.length/4));assert.ok(rms>.01,'retained audio is audible');report.audioRms=rms;
+  report.checks.push({name:retainAudio?'trimmed video + HEIC + retained AAC audio':'trimmed video + HEIC + unavailable AAC disabled',...await inspectMovie(audioMovie,{duration:.6,audio:retainAudio,cover:.2})});
+  if (retainAudio) {
+    const pcm=execFileSync('ffmpeg',['-v','error','-i',audioMovie,'-map','0:a','-f','f32le','-acodec','pcm_f32le','-'],{timeout:30000,stdio:['ignore','pipe','pipe']});
+    let sum=0;for(let at=0;at+4<=pcm.length;at+=4)sum+=pcm.readFloatLE(at)**2;const rms=Math.sqrt(sum/(pcm.length/4));assert.ok(rms>.01,'retained audio is audible');report.audioRms=rms;
+  }
   await page.locator('#xhs-live-speed').selectOption('2');
   assert.equal(await page.locator('#xhs-live-audio').isDisabled(),true);
   await page.locator('#xhs-live-preview').click();
@@ -183,7 +196,7 @@ print(String(data:try! JSONSerialization.data(withJSONObject:output),encoding:.u
   await generate();
   const largeMovie=await exportFile('export-mov','large source movie');
   assert.equal(await page.evaluate(()=>window.__xhsLargeInputSize),sourceBytes);
-  report.checks.push({name:'real >2 GiB disk video streamed through file document + HEIC/audio clip',sourceBytes,...await inspectMovie(largeMovie,{duration:.6,audio:true,cover:.2})});
+  report.checks.push({name:retainAudio?'real >2 GiB disk video streamed through file document + HEIC/audio clip':'real >2 GiB disk video streamed through file document + silent HEIC clip',sourceBytes,...await inspectMovie(largeMovie,{duration:.6,audio:retainAudio,cover:.2})});
   // Start a long real codec job and cancel through the visible UI immediately.
   await field('duration',2); await field('cover',.5);
   await page.locator('#xhs-live-generate').click();
@@ -196,7 +209,7 @@ print(String(data:try! JSONSerialization.data(withJSONObject:output),encoding:.u
   await page.evaluate(()=>window.scrollTo(0,0));
   await page.screenshot({path:path.join(artifacts,'xhs-live-cancel.png'),fullPage:true});
   const samples=path.join(artifacts,'xhs-live-samples');await fs.mkdir(samples,{recursive:true});
-  for(const [source,name] of [[jpegPackage,'jpeg-pvt.zip'],[heicPackage,'heic-pvt.zip'],[heicPhoto,'cover.HEIC'],[audioMovie,'with-audio.MOV'],[fastMovie,'2x-silent.MOV']]) await fs.copyFile(source,path.join(samples,name));
+  for(const [source,name] of [[jpegPackage,'jpeg-pvt.zip'],[heicPackage,'heic-pvt.zip'],[heicPhoto,'cover.HEIC'],[audioMovie,retainAudio?'with-audio.MOV':'without-aac.MOV'],[fastMovie,'2x-silent.MOV']]) await fs.copyFile(source,path.join(samples,name));
   report.samples=samples;
   report.interceptedNetwork=await electronApp.evaluate(()=>global.__xhsLiveNetwork);
   assert.deepEqual(report.consoleErrors,[]);
@@ -207,5 +220,5 @@ main().catch(error=>{report.error=error.stack||String(error);process.exitCode=1;
   if(electronApp) await electronApp.close().catch(()=>{});
   if(temporary) await fs.rm(temporary,{recursive:true,force:true});
   await fs.writeFile(reportPath,JSON.stringify(report,null,2)+'\n');
-  console.log(JSON.stringify({passed:report.passed,checks:report.checks.length,report:reportPath,...(report.error?{error:report.error.split('\n')[0]}:{})}));
+  console.log(JSON.stringify({passed:report.passed,checks:report.checks.length,support:report.support,skipped:report.skipped,report:reportPath,...(report.error?{error:report.error}:{})}));
 });

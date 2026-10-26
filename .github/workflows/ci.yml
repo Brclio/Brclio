@@ -133,7 +133,9 @@ jobs:
         if: always()
         with:
           name: ui-screenshots
-          path: artifacts/*.png
+          path: |
+            artifacts/*.png
+            artifacts/xhs-*verification.json
           if-no-files-found: ignore
           retention-days: 7
 
