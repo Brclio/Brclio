@@ -30,15 +30,15 @@ class RuntimeLinks(unittest.TestCase):
         (real/"Resources/Info.plist").write_text("framework metadata")
         (real.parent/"Current").symlink_to("3.12",target_is_directory=True)
         framework=real.parent.parent
-        (framework/"Python").symlink_to("Versions/Current/Python")
-        (framework/"Resources").symlink_to("Versions/Current/Resources",target_is_directory=True)
+        (framework/"Python").symlink_to(pathlib.Path("Versions")/"Current"/"Python")
+        (framework/"Resources").symlink_to(pathlib.Path("Versions")/"Current"/"Resources",target_is_directory=True)
         return framework
 
     def assertFramework(self,target):
         framework=target/"_internal/Python.framework"
-        self.assertEqual(os.readlink(framework/"Python"),"Versions/Current/Python")
-        self.assertEqual(os.readlink(framework/"Resources"),"Versions/Current/Resources")
-        self.assertEqual(os.readlink(framework/"Versions/Current"),"3.12")
+        self.assertEqual((framework/"Python").readlink(),pathlib.Path("Versions")/"Current"/"Python")
+        self.assertEqual((framework/"Resources").readlink(),pathlib.Path("Versions")/"Current"/"Resources")
+        self.assertEqual((framework/"Versions/Current").readlink(),pathlib.Path("3.12"))
         self.assertEqual((framework/"Python").read_bytes(),b"native fixture bytes")
 
     def test_both_main_paths_preserve_relative_framework_layout(self):
@@ -112,11 +112,12 @@ class RuntimeLinks(unittest.TestCase):
                 source.mkdir()
                 (source/"payload").write_text("inside")
                 (self.root/"outside").write_text("outside")
-                target={"external":"../outside","absolute":str(source/"payload"),"broken":"missing","cycle":"loop"}[kind]
+                target={"external":pathlib.Path("..")/"outside","absolute":source/"payload","broken":pathlib.Path("missing"),"cycle":pathlib.Path("loop")}[kind]
                 (source/"link").symlink_to(target)
                 if kind=="cycle": (source/"loop").symlink_to("link")
                 destination=self.root/(kind+"-copy")
-                with self.assertRaises(RuntimeError): module.copy_runtime(source,destination)
+                failure={"external":"escapes its root","absolute":"must be relative","broken":"broken or cyclic","cycle":"broken or cyclic"}[kind]
+                with self.assertRaisesRegex(RuntimeError,failure): module.copy_runtime(source,destination)
                 self.assertFalse(destination.exists())
 
     def test_destination_is_checked_before_health_or_publication(self):
@@ -127,10 +128,10 @@ class RuntimeLinks(unittest.TestCase):
         def copied(*args,**kwargs):
             result=real_copytree(*args,**kwargs)
             if pathlib.Path(args[1])==destination:
-                (destination/"injected-link").symlink_to("../outside")
+                (destination/"injected-link").symlink_to(pathlib.Path("..")/"outside")
             return result
         (self.root/"outside").write_text("outside")
-        with patch.object(module.shutil,"copytree",side_effect=copied),self.assertRaises(RuntimeError):
+        with patch.object(module.shutil,"copytree",side_effect=copied),self.assertRaisesRegex(RuntimeError,"escapes its root"):
             module.copy_runtime(source,destination)
 
 unittest.main(argv=["runtime-links"],verbosity=2)
