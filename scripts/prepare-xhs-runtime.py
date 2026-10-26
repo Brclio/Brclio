@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import shutil
@@ -60,6 +61,53 @@ def health(directory):
     return payload
 
 
+def validate_runtime_links(directory):
+    root = directory.resolve(strict=True)
+    for current, directories, files in os.walk(root, followlinks=False):
+        for name in directories + files:
+            link = Path(current) / name
+            if not link.is_symlink():
+                continue
+            relative = link.relative_to(root)
+            target = link.readlink()
+            # A self-contained runtime must remain portable after relocation.
+            if target.is_absolute():
+                raise RuntimeError(f"Runtime symlink must be relative: {relative}")
+            lexical_target = Path(os.path.abspath(link.parent / target))
+            if not lexical_target.is_relative_to(root):
+                raise RuntimeError(f"Runtime symlink escapes its root: {relative}")
+            try:
+                resolved = link.resolve(strict=True)
+            except (OSError, RuntimeError):
+                raise RuntimeError(f"Runtime symlink is broken or cyclic: {relative}") from None
+            if not resolved.is_relative_to(root):
+                raise RuntimeError(f"Runtime symlink escapes its root: {relative}")
+        framework = Path(current)
+        versions = framework / "Versions"
+        if framework.name == "Python.framework" and versions.exists():
+            current_version = versions / "Current"
+            valid = versions.is_dir() and current_version.is_symlink()
+            if valid:
+                version_alias = current_version.readlink()
+                valid = (len(version_alias.parts) == 1 and version_alias.name not in (".", "..")
+                         and current_version.resolve().parent == versions.resolve())
+            for name in ("Python", "Resources"):
+                alias = framework / name
+                valid = valid and alias.is_symlink() and alias.readlink() == Path("Versions/Current") / name
+            valid = valid and (framework / "Python").is_file() and (framework / "Resources").is_dir()
+            if not valid:
+                raise RuntimeError("Versioned Python.framework layout is invalid; rebuild the XHS Python runtime: "
+                                   + str(framework.relative_to(root)))
+
+
+def copy_runtime(source, destination):
+    validate_runtime_links(source)
+    # PyInstaller's macOS frameworks require their relative link layout for
+    # codesign. Dereferencing creates ambiguous framework/application bundles.
+    shutil.copytree(source, destination, dirs_exist_ok=True, symlinks=True)
+    validate_runtime_links(destination)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--copy-from", type=Path, help="Reuse a matching previously built runtime directory")
@@ -72,6 +120,7 @@ def main():
         info = json.loads((runtime / "build-info.json").read_text())
         if info.get("sourceSha256") != fingerprint:
             raise RuntimeError("Python source changed; rebuild the XHS runtime before packaging")
+        validate_runtime_links(target)
         print(json.dumps({"runtime": str(target), "health": health(target), "sourceSha256": fingerprint}))
         return
     runtime.mkdir(parents=True, exist_ok=True)
@@ -83,7 +132,7 @@ def main():
             info = json.loads(info_path.read_text()) if info_path.is_file() else {}
             if info.get("sourceSha256") != fingerprint or info.get("target") != native_target():
                 raise RuntimeError("Imported frozen runtime must have matching build-info sourceSha256 and target; rebuild from current sources instead")
-            shutil.copytree(imported, stage, dirs_exist_ok=True)
+            copy_runtime(imported, stage)
         else:
             environment = runtime / "build-venv"
             if not (environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")).is_file():
@@ -91,7 +140,7 @@ def main():
             python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
             subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check", f"pyinstaller=={PYINSTALLER_VERSION}", f"certifi=={CERTIFI_VERSION}"], check=True)
             subprocess.run([str(python), "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--name", "xhs-python", "--distpath", str(runtime / "build"), "--workpath", str(runtime / "work"), "--specpath", str(runtime), "--paths", str(SOURCE), "--collect-data", "certifi", str(SOURCE / "python-worker.py")], cwd=ROOT, check=True)
-            shutil.copytree(runtime / "build/xhs-python", stage, dirs_exist_ok=True)
+            copy_runtime(runtime / "build/xhs-python", stage)
         result = health(stage)
         # Replace only after a successful native health check, preserving the old
         # usable runtime if compilation or freezing failed.

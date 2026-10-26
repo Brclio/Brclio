@@ -33,40 +33,104 @@ async function poll(callback, timeout = 180000) {
   throw new Error('Timed out waiting for the real Windows update flow.');
 }
 
-async function downloadBaseline(version, directory, { fetch: fetchURL = fetch, wait: pause = wait,
-  readToken = process.env.BRCLIO_WINDOWS_BASELINE_READ_TOKEN } = {}) {
+async function downloadBaseline(version, directory, { fetch: fetchURL = fetch, wait: pause,
+  readToken = process.env.BRCLIO_WINDOWS_BASELINE_READ_TOKEN, signal,
+  requestTimeoutMs = 30000, idleTimeoutMs = 45000 } = {}) {
   const tag = `v${version}`;
   const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'Brclio-Windows-update-CI' };
   if (readToken) headers.Authorization = `Bearer ${readToken}`;
-  let release;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      // The optional Actions read token goes only to this fixed API endpoint.
-      // Do not follow an API redirect or attach it to release asset requests.
-      release = await fetchURL(`https://api.github.com/repos/Brclio/Brclio/releases/tags/${tag}`,
-        { headers, redirect: 'manual', signal: AbortSignal.timeout(30000) });
-    } catch {
-      if (attempt < 3) { await pause(attempt * 1000); continue; }
-      throw new Error(`Official baseline release ${tag} is required; GitHub API transport failed after ${attempt} attempts.`);
-    }
-    if (release.ok) break;
-    const requestId = release.headers.get('x-github-request-id') || 'unavailable';
-    const remaining = release.headers.get('x-ratelimit-remaining') || 'unavailable';
-    const message = `Official baseline release ${tag} is required; GitHub API HTTP ${release.status}, request ID ${requestId}, rate limit remaining ${remaining}.`;
-    await release.body?.cancel().catch(() => {});
-    if (attempt === 3 || ![403, 408, 429, 500, 502, 503, 504].includes(release.status)) throw new Error(message);
-    await pause(attempt * 1000);
+  assert.ok(Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0 && Number.isFinite(idleTimeoutMs) && idleTimeoutMs > 0);
+  const diagnostics = [];
+  report.baselineDownload = { version, requests: diagnostics };
+  const failure = (stage, detail, retryable = false, name = 'Error') => Object.assign(
+    new Error(`Official baseline release ${tag} is required; ${stage} ${detail}`), { baselineFailure: true, retryable, name });
+  const cancelled = stage => failure(stage, 'cancelled.', false, 'AbortError');
+  const discard = body => { try { void Promise.resolve(body?.cancel()).catch(() => {}); } catch {} };
+  const safeHeader = (value, pattern) => value && pattern.test(value) && !(readToken && value.includes(readToken)) ? value : 'unavailable';
+  function within(pending, active, stage) {
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(signal?.aborted ? cancelled(stage) : failure(stage, 'request or body idle timeout.', true));
+      active?.addEventListener('abort', abort, { once: true });
+      Promise.resolve(pending).then(value => { active?.removeEventListener('abort', abort); resolve(value); },
+        error => { active?.removeEventListener('abort', abort); reject(error); });
+      if (active?.aborted) abort();
+    });
   }
-  const parsed = parseRelease(await release.json(), 'win32', 'x64');
+  async function retryDelay(milliseconds, stage) {
+    let timer;
+    try { await within(pause ? Promise.resolve().then(() => pause(milliseconds)) : new Promise(resolve => { timer = setTimeout(resolve, milliseconds); }), signal, stage); }
+    finally { clearTimeout(timer); }
+  }
+  function certificateFailure(error) {
+    for (let current = error, depth = 0; current && depth < 5; current = current.cause, depth++) {
+      if (/^(?:ERR_CERT_|ERR_SSL_|ERR_TLS_|CERT_|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY)/.test(current.code || '')) return true;
+    }
+    return false;
+  }
+  async function requestBytes(url, stage, limit, api = false) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (signal?.aborted) throw cancelled(stage);
+      const controller = new AbortController(), active = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+      let response, reader, headerTimer, idleTimer, retry;
+      const diagnostic = { stage, attempt };
+      diagnostics.push(diagnostic);
+      try {
+        headerTimer = setTimeout(() => controller.abort(), requestTimeoutMs);
+        // Every attempt starts from the canonical URL. The API token is never
+        // passed to asset requests, including their signed CDN redirects.
+        const pending = Promise.resolve().then(() => fetchURL(url, { signal: active, redirect: api ? 'manual' : 'follow', ...(api ? { headers } : {}) }));
+        pending.then(value => { if (active.aborted) discard(value?.body); }, () => {});
+        response = await within(pending, active, stage);
+        clearTimeout(headerTimer);
+        let finalURL;
+        try { finalURL = new URL(response.url || url); }
+        catch { throw failure(stage, 'invalid response URL.'); }
+        const validURL = api ? finalURL.href === url && !response.redirected
+          : finalURL.protocol === 'https:' && ['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'].includes(finalURL.hostname)
+            && !finalURL.username && !finalURL.password && (!finalURL.port || finalURL.port === '443') && !finalURL.hash;
+        if (!validURL) throw failure(stage, 'redirect outside the official download boundary.');
+        const requestId = safeHeader(response.headers.get('x-github-request-id'), /^[A-Za-z0-9:-]{1,128}$/);
+        const remaining = safeHeader(response.headers.get('x-ratelimit-remaining'), /^\d{1,12}$/);
+        Object.assign(diagnostic, { status: response.status, requestId, rateLimitRemaining: remaining });
+        if (!response.ok) throw failure(stage, `HTTP ${response.status}, request ID ${requestId}, rate limit remaining ${remaining}.`, [403, 408, 429, 500, 502, 503, 504].includes(response.status));
+        if (Number(response.headers.get('content-length')) > limit) throw failure(stage, 'response exceeds the expected size limit.');
+        if (!response.body) throw failure(stage, 'response body missing.');
+        reader = response.body.getReader();
+        const chunks = []; let size = 0;
+        const refreshIdle = () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => controller.abort(), idleTimeoutMs); };
+        refreshIdle();
+        for (;;) {
+          const next = await within(reader.read(), active, stage);
+          if (next.done) break;
+          refreshIdle(); size += next.value.byteLength;
+          if (size > limit) throw failure(stage, 'response exceeds the expected size limit.');
+          chunks.push(next.value);
+        }
+        return Buffer.concat(chunks, size);
+      } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError' && !controller.signal.aborted) throw cancelled(stage);
+        const safe = error?.baselineFailure ? error : certificateFailure(error) ? failure(stage, 'certificate verification failed.')
+          : failure(stage, `transport failed after ${attempt} attempts.`, true);
+        diagnostic.error = safe.retryable ? 'transient_download_failure' : 'download_rejected';
+        if (!safe.retryable || attempt === 3) throw safe;
+        retry = true;
+      } finally {
+        clearTimeout(headerTimer); clearTimeout(idleTimer);
+        discard(reader || response?.body); controller.abort();
+      }
+      if (retry) await retryDelay(attempt * 1000, stage);
+    }
+  }
+  const releaseBytes = await requestBytes(`https://api.github.com/repos/Brclio/Brclio/releases/tags/${tag}`, 'GitHub API', 1024 * 1024, true);
+  let release;
+  try { release = JSON.parse(releaseBytes.toString('utf8')); }
+  catch { throw failure('GitHub API', 'invalid release JSON.'); }
+  const parsed = parseRelease(release, 'win32', 'x64');
   assert.equal(parsed.version, version);
-  const checksum = await fetchURL(parsed.checksumURL);
-  assert.equal(checksum.ok, true);
-  const expected = checksumFor(await checksum.text(), parsed.assetName);
+  const checksum = await requestBytes(parsed.checksumURL, 'checksum manifest', 128 * 1024);
+  const expected = checksumFor(checksum.toString('utf8'), parsed.assetName);
   if (parsed.digest) assert.equal(parsed.digest, expected);
-  const response = await fetchURL(parsed.downloadURL);
-  assert.equal(response.ok, true);
-  assert.ok(['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'].includes(new URL(response.url).hostname));
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = await requestBytes(parsed.downloadURL, 'baseline installer', parsed.size);
   assert.equal(bytes.length, parsed.size);
   assert.equal(hash(bytes), expected, 'Baseline SHA256 must match the official release manifest.');
   const filename = path.join(directory, parsed.assetName);

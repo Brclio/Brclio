@@ -60,6 +60,8 @@ npm start
 
 `prepare:xhs` 在当前平台生成 `runtime/<mac|win|linux>-<arm64|x64>/python/`，固定 PyInstaller/certifi 版本，执行健康检查并写入源码指纹。此目录被 Git 忽略。应分别在对应平台与架构构建；不能将 macOS arm64 后台放进 Windows 或 Intel 安装包。
 
+macOS 构建与 `--copy-from` 导入保留 PyInstaller framework 的相对符号链接，并检查链接未越界、悬空或循环。版本化 Python.framework 已被展开为普通文件的旧副本须重新构建；单独通过 Python 健康检查不足以证明框架可签名。
+
 ```sh
 python3 scripts/prepare-xhs-runtime.py --check
 npm run build:mac
