@@ -3,14 +3,15 @@
 // DNS, configuration endpoint, GitHub request, installation, or OS proxy change.
 const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict');
 const {_electron:electron}=require('@playwright/test');
-let fixtureStage='setup';
+const {sanitizeFixtureTLSState}=require('../test/native-proxy-tls-fixture.cjs');
+let fixtureStage='setup',fixtureTLS;
 const announceStage=stage=>{fixtureStage=stage;process.stderr.write('BRCLIO_NATIVE_FIXTURE_STAGE '+JSON.stringify({stage})+'\n');};
 (async()=>{const root=path.resolve(__dirname,'..'),temporary=await fs.mkdtemp(path.join(os.tmpdir(),'brclio-native-proxy-smoke-'));let app;
 try{
  const driver=path.join(temporary,'driver.cjs');
  await fs.writeFile(driver,`const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(path.join(temporary,'profile'))});app.whenReady().then(()=>new BrowserWindow({show:false}));app.on('window-all-closed',()=>{});`);
  app=await electron.launch({cwd:root,args:[...(process.platform==='linux'?['--no-sandbox']:[]),driver]});
- app.on('console',message=>{const value=message.text();if(value.startsWith('BRCLIO_NATIVE_FIXTURE_STAGE ')){try{const {stage}=JSON.parse(value.slice('BRCLIO_NATIVE_FIXTURE_STAGE '.length));if(/^[a-z-]+$/.test(stage))announceStage(stage);}catch{}}});
+ app.on('console',message=>{const value=message.text();if(value.startsWith('BRCLIO_NATIVE_FIXTURE_STAGE ')){try{const {stage}=JSON.parse(value.slice('BRCLIO_NATIVE_FIXTURE_STAGE '.length));if(/^[a-z-]+$/.test(stage))announceStage(stage);}catch{}}else if(value.startsWith('BRCLIO_NATIVE_FIXTURE_TLS ')){try{const safe=sanitizeFixtureTLSState(JSON.parse(value.slice('BRCLIO_NATIVE_FIXTURE_TLS '.length)));if(safe){fixtureTLS=safe;process.stderr.write('BRCLIO_NATIVE_FIXTURE_TLS '+JSON.stringify(safe)+'\n');}}catch{}}});
  await app.evaluate(({session})=>{
   globalThis.__brclioUnexpectedDefaultRequests=0;
   // Real fixture transports use explicit isolated proxy sessions. A missed
@@ -28,6 +29,7 @@ try{
   const {createUpdateProxy,CONFIG_URL,CONFIG_FALLBACK_URL,DIRECT_PARTITION,SYSTEM_PARTITION}=load('./desktop/update-proxy.cjs');
   const {electronUpdateFetch}=load('./desktop/electron-update-fetch.cjs');
   const {createUpdater,API_URL}=load('./desktop/updater.cjs');
+  const {createFixtureCertificateVerifier}=load('./test/native-proxy-tls-fixture.cjs');
   const certificate=new crypto.X509Certificate(fs.readFileSync(path.join(root,'test/fixtures/update-proxy-tls/origin.pem')));
   let serial=0,configurationRequests=0,proxyNativeUnexpected=0;
   const sessionsToClose=[],proxyPorts=[],wireRequests=[],payload=Buffer.alloc(8*1024*1024+113,97),digest=crypto.createHash('sha256').update(payload).digest('hex');
@@ -57,7 +59,7 @@ try{
     },createBridge:async options=>{const bridge=await createConnectBridge({...options,WebSocketClass:target.WebSocketClass});proxyPorts.push(Number(new URL(bridge.proxyRules).port));return bridge;}});
   }
   const router=routerFor(relay),directory=path.join(app.getPath('userData'),'offline-native-updates');
-  let installed=false;
+  let installed=false,manualRedirectTLS;
   const updater=createUpdater({currentVersion:'0.1.9',directory,platform:'darwin',architecture:'arm64',fetch:router.fetch,onOperation:(_kind,active,targets)=>router.setBusy(active,targets),installPackage:async()=>{installed=true;throw Error('No install permitted');}});
   try{
    const checked=await updater.check();if(checked.status!=='available')throw Error('Offline native check failed: '+checked.error);
@@ -69,9 +71,14 @@ try{
    const h1=await startRelay({respond:(req,res)=>{if(req.method==='HEAD'){res.writeHead(200);res.end();return;}if(req.url.endsWith('SHA256SUMS.txt')){res.writeHead(302,{Location:'https://objects.githubusercontent.com/verified-checksum'});res.end();return;}res.end(`${digest}  ${assetName}`);}});
    try{
     const manual=session.fromPartition('brclio-offline-manual-redirect',{cache:false});sessionsToClose.push(manual);
-    manual.setCertificateVerifyProc((request,callback)=>{try{const received=new crypto.X509Certificate(request.certificate.data);callback(!received.checkHost(request.hostname)?-200:received.fingerprint256===certificate.fingerprint256?0:-202);}catch{callback(-207);}});
+    const trust=createFixtureCertificateVerifier(certificate);
+    manual.setCertificateVerifyProc(trust.verify);
+    // Match the router fixture's awaited network-context barrier before a new
+    // session issues its first TLS request. Keep the exact leaf and SAN pin.
+    await manual.closeAllConnections();
     const bridge=await createConnectBridge({nodes:[h1.node],WebSocketClass:h1.WebSocketClass});proxyPorts.push(Number(new URL(bridge.proxyRules).port));
-    try{await manual.setProxy({mode:'fixed_servers',proxyRules:bridge.proxyRules,proxyBypassRules:'<-loopback>'});const first=await electronUpdateFetch(options=>electronNet.request(options),manual,prefix+'SHA256SUMS.txt');if(first.status!==302||h1.requests.length!==1)throw Error('Native redirect followed before validation');}finally{await manual.closeAllConnections();await bridge.close();}
+    try{await manual.setProxy({mode:'fixed_servers',proxyRules:bridge.proxyRules,proxyBypassRules:'<-loopback>'});const first=await electronUpdateFetch(options=>electronNet.request(options),manual,prefix+'SHA256SUMS.txt');if(first.status!==302||h1.requests.length!==1)throw Error('Native redirect followed before validation');}finally{manualRedirectTLS=trust.snapshot();console.log('BRCLIO_NATIVE_FIXTURE_TLS '+JSON.stringify(manualRedirectTLS));await manual.closeAllConnections();await bridge.close();}
+    if(!manualRedirectTLS||manualRedirectTLS.callbackCount<1||!manualRedirectTLS.hostnameMatched||!manualRedirectTLS.fingerprintMatched||manualRedirectTLS.result!=='accepted')throw Error('Manual redirect TLS pin was not applied');
     announce('validated-redirect');
     const redirected=routerFor(h1,1);const value=await redirected.fetch(prefix+'SHA256SUMS.txt');if(!(await value.text()).includes(digest))throw Error('HTTP1 redirect failed');await redirected.close();if(!h1.requests.every(value=>value.httpVersion==='1.1'))throw Error('HTTP1 fixture unused');
    }finally{await h1.close();}
@@ -89,7 +96,7 @@ try{
    const controller=new AbortController(),cancelling=routerFor(relay,1);const response=await cancelling.fetch(prefix+assetName,{signal:controller.signal});const reader=response.body.getReader();await reader.read();controller.abort();try{while(!(await reader.read()).done){}}catch{}await reader.cancel().catch(()=>{});await cancelling.close();
    await new Promise(resolve=>setTimeout(resolve,60));
    const closed=await Promise.all(proxyPorts.map(port=>new Promise(resolve=>{const socket=net.connect({host:'127.0.0.1',port});socket.once('error',()=>resolve(true));socket.once('connect',()=>{socket.destroy();resolve(false);});})));
-   return{ok:actualDigest===digest&&!installed&&proxyNativeUnexpected===0&&closed.every(Boolean),actualElectron:true,externalNetworkRequests:false,defaultTimeoutsOverridden:false,configurationRequests,firstCheckAndDownloadFreshConfigurations:configurationRequests===8,probesPerPrimaryOperation:16,primaryProbeCount:wireRequests.slice(0,37).filter(x=>x.method==='HEAD').length,probeURL:'https://github.com/robots.txt',probeConcurrencyBound:16,continuousBytes:payload.length,fullSHA256:actualDigest,allRequestsOfficial:wireRequests.every(x=>/^https:\/\/(?:github\.com|api\.github\.com|release-assets\.githubusercontent\.com|objects\.githubusercontent\.com)\//.test(x.url)),rangeRequests:wireRequests.filter(x=>x.range).length,allBridgeListenersClosed:closed.every(Boolean),primaryBridgeCount:firstOperationPorts,http2Used:relay.requests.some(value=>value.httpVersion==='2.0'),http1RedirectVerified:true,http2ChecksumAndInstallerRedirectsVerified:true,nativeRedirectReturnedBeforeFollow:true,unsafeRedirectNeverFollowed:true,truncatedBodyRejected:true,innerWrongHostnameRejected:true,untrustedWSSRejected:true,cancellationStopsTunnel:true,installed:false};
+   return{ok:actualDigest===digest&&!installed&&proxyNativeUnexpected===0&&closed.every(Boolean),actualElectron:true,externalNetworkRequests:false,defaultTimeoutsOverridden:false,configurationRequests,firstCheckAndDownloadFreshConfigurations:configurationRequests===8,probesPerPrimaryOperation:16,primaryProbeCount:wireRequests.slice(0,37).filter(x=>x.method==='HEAD').length,probeURL:'https://github.com/robots.txt',probeConcurrencyBound:16,continuousBytes:payload.length,fullSHA256:actualDigest,allRequestsOfficial:wireRequests.every(x=>/^https:\/\/(?:github\.com|api\.github\.com|release-assets\.githubusercontent\.com|objects\.githubusercontent\.com)\//.test(x.url)),rangeRequests:wireRequests.filter(x=>x.range).length,allBridgeListenersClosed:closed.every(Boolean),primaryBridgeCount:firstOperationPorts,http2Used:relay.requests.some(value=>value.httpVersion==='2.0'),http1RedirectVerified:true,http2ChecksumAndInstallerRedirectsVerified:true,nativeRedirectReturnedBeforeFollow:true,manualRedirectTLS,unsafeRedirectNeverFollowed:true,truncatedBodyRejected:true,innerWrongHostnameRejected:true,untrustedWSSRejected:true,cancellationStopsTunnel:true,installed:false};
   }finally{await router.close();for(const value of sessionsToClose){await value.closeAllConnections();value.setCertificateVerifyProc(null);}await relay.close();}
  },root);
  announceStage('resume');
@@ -123,4 +130,4 @@ try{
  assert.equal(result.ok,true);assert.equal(result.rangeRequests,0);assert.equal(result.primaryBridgeCount,32);assert.equal(result.firstCheckAndDownloadFreshConfigurations,true);assert.equal(result.resume.passed,true);
  await fs.mkdir(path.join(root,'artifacts'),{recursive:true});await fs.writeFile(path.join(root,'artifacts/desktop-native-proxy-offline.json'),JSON.stringify(result,null,2)+'\n');
  console.log(JSON.stringify(result,null,2));
-}finally{await app?.close();await fs.rm(temporary,{recursive:true,force:true});}})().catch(error=>{const errorCodes=[...new Set(String(error?.message||'').match(/(?:ERR_[A-Z0-9_]+|BRCLIO_UPDATE_[A-Z_]+)/g)||[])];console.error(JSON.stringify({failure:'native_proxy_fixture_failed',stage:fixtureStage,errorCodes}));process.exitCode=1;});
+}finally{await app?.close();await fs.rm(temporary,{recursive:true,force:true});}})().catch(error=>{const errorCodes=[...new Set(String(error?.message||'').match(/(?:ERR_[A-Z0-9_]+|BRCLIO_UPDATE_[A-Z_]+)/g)||[])];console.error(JSON.stringify({failure:'native_proxy_fixture_failed',stage:fixtureStage,errorCodes,...(fixtureTLS?{tls:fixtureTLS}:{})}));process.exitCode=1;});
