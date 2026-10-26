@@ -48,9 +48,10 @@ test('XHS package gate rejects missing or damaged encoder resources and bundled 
     const listPackage = asar.listPackage;
     const extractFile = asar.extractFile;
     const hostNormalize = path.normalize;
+    const windowsNormalize = path.win32.normalize;
     const listing = t.mock.method(asar, 'listPackage', (...args) =>
       listPackage(...args).map(entry => entry.replaceAll('/', '\\')));
-    const normalization = t.mock.method(path, 'normalize', value => path.win32.normalize(value));
+    const normalization = t.mock.method(path, 'normalize', value => windowsNormalize(value));
     const extraction = t.mock.method(asar, 'extractFile', (archive, relative) => {
       assert.ok(!relative.includes('/'), 'Windows ASAR extraction requires native path separators.');
       // Exercise the real archive reader after translating the Windows API input
