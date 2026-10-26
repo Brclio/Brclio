@@ -4,17 +4,47 @@
 // Inspect the actual electron-builder output. This script never imports a
 // certificate, registers an Appx package, launches Brclio, or runs the helper.
 const assert = require('node:assert/strict');
-const { createHash } = require('node:crypto');
+const { createHash, X509Certificate } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const asar = require('@electron/asar');
 const { compilerEnvironment, execute, manifestVersion, renderManifest } = require('./windows-build-shell.cjs');
 const { POWERSHELL_SIGNATURE_FUNCTIONS } = require('../desktop/windows-shell-signature.cjs');
+const { verifyXhsAsar, verifyXhsRuntime } = require('./verify-xhs-package.cjs');
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const privateName = /\.(?:pfx|p12|pem|key|jks|keystore)$/i;
+const certifiBundle = 'resources/xhs-python/_internal/certifi/cacert.pem';
 const crtImport = /\b(?:vcruntime|msvcp|msvcr)[a-z0-9_]*\.dll\b|\bucrtbase(?:d)?\.dll\b/i;
+
+function validatePublicCABundle(bytes) {
+  assert.ok(Buffer.isBuffer(bytes) && bytes.length > 0 && bytes.length <= 2 * 1024 * 1024,
+    'The certifi CA bundle must be a nonempty bounded file.');
+  const text = bytes.toString('utf8');
+  assert.doesNotMatch(text, /PRIVATE KEY|[^\x09\x0a\x0d\x20-\x7e]/,
+    'The certifi CA bundle may contain only public certificates and ASCII comments.');
+  const certificates = text.match(/-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----/g) || [];
+  assert.ok(certificates.length > 0, 'The certifi CA bundle must contain public CA certificates.');
+  const remainder = text.replace(/-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----/g, '')
+    .replace(/^\s*#.*$/gm, '').trim();
+  assert.equal(remainder, '', 'Unexpected content outside certifi public certificates.');
+  for (const certificate of certificates) {
+    assert.equal(new X509Certificate(certificate).ca, true, 'The certifi bundle must contain CA certificates.');
+  }
+  return { certificates: certificates.length, sha256: hash(bytes) };
+}
+
+function verifyPackageSecrets(root, files, asarFiles) {
+  const publicCertificateBundles = [];
+  for (const relative of files.filter(item => privateName.test(item))) {
+    assert.equal(relative, certifiBundle, `The installed package contains a possible private key: ${relative}`);
+    publicCertificateBundles.push({ filename: relative, ...validatePublicCABundle(fs.readFileSync(path.join(root, relative))) });
+  }
+  // This narrowly allowed public bundle lives in extraResources, never app.asar.
+  assert.deepEqual(asarFiles.filter(item => privateName.test(item)), [], 'app.asar contains a possible private key.');
+  return publicCertificateBundles;
+}
 
 function peInfo(filename) {
   const bytes = fs.readFileSync(filename);
@@ -136,9 +166,11 @@ function verify({ directory, version, reportPath }) {
   }
   const files = filesIn(root);
   const asarFiles = asar.listPackage(path.join(root, 'resources', 'app.asar'));
-  assert.deepEqual(files.filter(item => privateName.test(item)), [], 'The installed package contains a possible private key.');
-  assert.deepEqual(asarFiles.filter(item => privateName.test(item)), [], 'app.asar contains a possible private key.');
+  const publicCertificateBundles = verifyPackageSecrets(root, files, asarFiles);
   assert.equal(JSON.parse(asar.extractFile(path.join(root, 'resources', 'app.asar'), 'package.json').toString('utf8')).version, version);
+  const xhsResources = verifyXhsAsar(path.join(root, 'resources', 'app.asar'));
+  const xhsPython = path.join(root, 'resources', 'xhs-python', 'xhs-python.exe');
+  const xhs = { resources: xhsResources, pythonArchitecture: peInfo(xhsPython), runtime: verifyXhsRuntime(xhsPython) };
   const env = compilerEnvironment();
   const imports = {};
   for (const relative of [metadata.dll, metadata.trustHelper]) {
@@ -160,7 +192,7 @@ function verify({ directory, version, reportPath }) {
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
   const report = { passed: true, version, packageVersion, directory: root, verifiedAt: new Date().toISOString(),
     trustChanges: false, packageRegistrationChanges: false, pe, imports, hashes,
-    privateKeyNamesAbsent: true, installedFileCount: files.length, asarFileCount: asarFiles.length, ...native };
+    privateKeyNamesAbsent: true, publicCertificateBundles, xhs, installedFileCount: files.length, asarFileCount: asarFiles.length, ...native };
   if (reportPath) {
     fs.mkdirSync(path.dirname(reportPath), { recursive: true });
     fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
@@ -181,4 +213,4 @@ if (require.main === module) {
   verify(options);
 }
 
-module.exports = { verify, peInfo, filesIn, VERIFY_SCRIPT };
+module.exports = { verify, peInfo, filesIn, VERIFY_SCRIPT, validatePublicCABundle, verifyPackageSecrets };

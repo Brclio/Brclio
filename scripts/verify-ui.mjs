@@ -50,7 +50,7 @@ try {
   await page.locator('#tool-filter').fill('不存在');
   assert.equal(await page.locator('#no-tools').isVisible(), true);
   await page.locator('#tool-filter').fill('路径');
-  await page.locator('.tool-card').click();
+  await page.locator('.tool-card:visible').click();
   await page.locator('#open-search').click();
   await page.locator('#global-search').fill('path');
   await page.keyboard.press('Enter');

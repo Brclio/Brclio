@@ -73,6 +73,22 @@ async function main() {
     assert.equal((await page.evaluate(() => window.brclio.getSettings())).pathMode, 'absolute');
     const integration = await page.evaluate(() => window.brclio.getIntegrationStatus());
     assert.equal(integration.supported, ['darwin', 'win32'].includes(process.platform));
+    if (packagedExecutable) {
+      const xhs = await page.evaluate(() => window.brclio.xhsRequest('info'));
+      assert.equal(xhs.pythonAvailable, true, 'The installed package must run its bundled XHS Python parser.');
+      const denied = await page.evaluate(async () => {
+        const response = await fetch('brclio-xhs://local/api/image?url=https%3A%2F%2F127.0.0.1%2Fprivate');
+        return { status: response.status, result: await response.json() };
+      });
+      assert.ok(denied.status >= 400 && denied.result.success === false, 'Packaged media proxy must reject private destinations.');
+      await page.locator('[data-view="xhs"]').first().click();
+      await page.locator('#xhs-tab-live').click();
+      const support = await page.evaluate(async () => (await import('./xhs/lib/live-photo-maker.js')).checkLivePhotoSupport());
+      assert.equal(support.supported, true, 'Packaged Live Photo video encoder must be available.');
+      assert.equal(support.heicSupported, true, 'Packaged HEIC worker support must be available.');
+      await page.locator('[data-view="copy"]').first().click();
+      assert.equal(await page.locator('#view-copy').isVisible(), true);
+    }
 
     const hasShortcuts = ['darwin', 'win32'].includes(process.platform);
     const customShortcut = 'Ctrl+Alt+Shift+P';

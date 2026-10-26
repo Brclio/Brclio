@@ -12,12 +12,17 @@ def hasReleaseSigning = signingValues.values().every { it != null && !it.isBlank
 def syncWebAssets = tasks.register('syncWebAssets', Sync) {
     from(rootProject.projectDir.parentFile) {
         include 'web/**', 'core/**'
-        exclude 'web/path-engine.js'
+        exclude 'web/path-engine.js', 'web/xhs/lib/xhs-parser.js'
     }
     from(new File(rootProject.projectDir.parentFile, 'core')) {
         include 'path-engine.cjs'
         rename 'path-engine.cjs', 'path-engine.js'
         into 'web'
+    }
+    from(new File(rootProject.projectDir.parentFile, 'desktop/xhs/lib')) {
+        include 'xhs.js'
+        rename 'xhs.js', 'xhs-parser.js'
+        into 'web/xhs/lib'
     }
     into layout.projectDirectory.dir('src/main/assets')
     doFirst {
@@ -39,8 +44,8 @@ android {
         applicationId 'com.brclio.toolbox'
         minSdk 26
         targetSdk 35
-        versionCode 16
-        versionName '0.1.15'
+        versionCode 17
+        versionName '0.2.0'
     }
 
     buildFeatures { buildConfig true }

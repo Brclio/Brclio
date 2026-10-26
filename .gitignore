@@ -6,6 +6,9 @@ node_modules/
 *.mobileprovision
 release/
 artifacts/
+runtime/
+__pycache__/
+*.pyc
 .DS_Store
 android/.gradle/
 android/local.properties

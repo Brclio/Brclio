@@ -41,6 +41,11 @@ jobs:
       - name: Verify contracts and parse the real PowerShell helper
         run: npm test
       - run: npm run sync
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bundle the native XHS Python engine and verify its health
+        run: npm run prepare:xhs
       - name: Build the actual NSIS package without publishing
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'

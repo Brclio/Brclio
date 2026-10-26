@@ -12,7 +12,7 @@
     android: { path: '/storage/emulated/0/Documents/我的项目/项目说明.md', name: '项目说明.md', kind: 'file' },
   };
   const platformNames = { darwin: 'macOS 客户端', win32: 'Windows 客户端', android: 'Android 客户端', browser: '浏览器预览', linux: 'Linux 客户端' };
-  const viewNames = { copy: '复制路径', tools: '全部工具', settings: '通用设置' };
+  const viewNames = { xhs: '小红书工具', copy: '复制路径', tools: '全部工具', settings: '通用设置' };
   let settings = { ...engine.DEFAULT_SETTINGS };
   let platform = { platform: 'browser', capabilities: {} };
   let integration = { installed: false, supported: false };
@@ -260,7 +260,9 @@
     $('#breadcrumb-current').textContent = viewNames[name];
     document.title = `Brclio · ${viewNames[name]}`;
     if (name === 'settings') void refreshUpdateProxy();
+    window.dispatchEvent(new CustomEvent('brclio:view', { detail: { name } }));
   }
+  window.addEventListener('brclio:navigate', event => { if (viewNames[event.detail?.name]) setView(event.detail.name); });
   function showDialog(id) { void cancelShortcutRecording(); const dialog = $('#' + id); if (!dialog.open) dialog.showModal(); if (id === 'about-dialog') void refreshUpdateProxy(); }
   function refreshIntegration() {
     const available = integration.supported && platform.capabilities?.systemIntegration;
@@ -329,11 +331,19 @@
   $('#open-search').addEventListener('click', () => { showDialog('search-dialog'); $('#global-search').focus(); });
   $$('[data-close]').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
   $$('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const r = dialog.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) dialog.close(); } }));
-  function searchMatches(value) { return !value || /复制路径|路径|复制|文件|copy|path|file/i.test(value); }
-  $('#global-search').addEventListener('input', event => { const match = searchMatches(event.target.value); $('#search-copy').hidden = !match; $('#search-empty').hidden = match; });
-  $('#global-search').addEventListener('keydown', event => { if (event.key === 'Enter' && !$('#search-copy').hidden) { event.preventDefault(); $('#search-copy').click(); } });
-  $('#search-copy').addEventListener('click', () => { $('#search-dialog').close(); setView('copy'); });
-  $('#tool-filter').addEventListener('input', event => { const match = searchMatches(event.target.value); $('#tool-results').hidden = !match; $('#no-tools').hidden = match; });
+  const toolSearchTerms = { copy: '复制路径 路径 复制 文件 copy path file', xhs: '小红书 下载 原视频 原图 实况 合成 主页 批量 xhs live photo video' };
+  function searchMatches(value, terms) { return !value.trim() || terms.toLowerCase().includes(value.trim().toLowerCase()); }
+  $('#global-search').addEventListener('input', event => {
+    for (const [name, terms] of Object.entries(toolSearchTerms)) $('#search-' + name).hidden = !searchMatches(event.target.value, terms);
+    $('#search-empty').hidden = Object.keys(toolSearchTerms).some(name => !$('#search-' + name).hidden);
+  });
+  $('#global-search').addEventListener('keydown', event => { if (event.key === 'Enter') { const result = $$('.search-result').find(item => !item.hidden); if (result) { event.preventDefault(); result.click(); } } });
+  for (const name of Object.keys(toolSearchTerms)) $('#search-' + name).addEventListener('click', () => { $('#search-dialog').close(); setView(name); });
+  $('#tool-filter').addEventListener('input', event => {
+    const cards = $$('[data-tool-search]');
+    for (const card of cards) card.hidden = !searchMatches(event.target.value, card.dataset.toolSearch);
+    $('#no-tools').hidden = cards.some(card => !card.hidden);
+  });
   document.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); showDialog('search-dialog'); $('#global-search').focus(); } });
   const zone = $('#drop-zone');
   document.addEventListener('dragover', event => { event.preventDefault(); });
@@ -413,7 +423,7 @@
     const percent = Math.max(0, Math.min(100, Number(updateState.progress) || 0));
     const version = updateState.version ? `v${updateState.version}` : '新版本';
     const titles = { idle: '保持顺手，也保持最新。', checking: '正在检查 GitHub 最新版本…', 'up-to-date': '已经是最新版本。', available: `${version} 已经准备好。`, downloading: `正在下载 ${version}…`, downloaded: '安装包已下载，校验通过。', preparing: '正在准备覆盖安装…', restarting: '正在更新，Brclio 即将重新打开…', installed: '更新完成，欢迎回来。', error: '这次更新未完成，可以重试。', unsupported: '请在客户端中检查和安装更新。', installing: '请在系统安装界面中继续。' };
-    const details = { idle: platform.platform === 'android' ? '检查新版本后，下载安装包并确认系统安装。完成后如未自动返回，请点击系统“打开”。' : '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.1.15'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
+    const details = { idle: platform.platform === 'android' ? '检查新版本后，下载安装包并确认系统安装。完成后如未自动返回，请点击系统“打开”。' : '检查新版本后，点击下载并安装。桌面端会覆盖当前安装并自动打开。', checking: '正在读取最新正式版本。', 'up-to-date': `当前版本 v${updateState.currentVersion || platform.version || '0.2.0'}。`, available: updateState.assetName || '安装包将从 Brclio/Brclio 的 GitHub Release 下载。', downloading: '下载完成并通过 SHA-256 校验后，将继续安装。', downloaded: '点击安装更新，将保留你的设置。', preparing: '正在校验安装包并准备旧版备份，请稍候。', restarting: '将关闭当前窗口、覆盖安装并自动启动新版。', installed: `当前版本 v${platform.version || updateState.currentVersion}。你的设置已保留。`, unsupported: '当前为浏览器预览。三端安装包发布在 GitHub：Brclio/Brclio。', installing: platform.platform === 'android' ? '请确认系统安装。安装完成将尝试自动打开；如未自动返回，请点击系统“打开”。' : '正在完成覆盖安装并重新打开 Brclio。' };
     const detail = updateState.requiresPermission ? '请在系统设置中允许 Brclio 安装应用，然后返回并再次点击安装。' : status === 'error' ? updateState.error || '网络连接失败，请检查网络后重试。' : updateState.message || details[status] || details.idle;
     // Both entry points reflect the same native update without changing views.
     ['update', 'about-update'].forEach(prefix => {
@@ -496,12 +506,12 @@
         catch (error) { shortcutStatus = { supported: true, accelerator: settings.copyShortcut, registered: false, error: error.message }; }
       }
       if (samples[platform.platform]) { samplePlatform = platform.platform; $$('[data-sample]').forEach(button => button.classList.toggle('active', button.dataset.sample === samplePlatform)); }
-      $$('.version').forEach(item => { item.textContent = `v${platform.version || '0.1.15'}`; });
-      $('#current-version').textContent = `v${platform.version || '0.1.15'}`;
-      $('#about-dialog .subtle-tag').textContent = `VERSION ${platform.version || '0.1.15'}`;
+      $$('.version').forEach(item => { item.textContent = `v${platform.version || '0.2.0'}`; });
+      $('#current-version').textContent = `v${platform.version || '0.2.0'}`;
+      $('#about-dialog .subtle-tag').textContent = `VERSION ${platform.version || '0.2.0'}`;
       $('#update-platform-hint').textContent = platform.platform === 'darwin' ? '下载校验后自动覆盖当前安装并重新打开。尚未公证，首次运行可能需要在系统设置中允许打开。' : platform.platform === 'android' ? '需确认系统安装；系统限制自动打开时，请点击安装器的“打开”。' : platform.platform === 'browser' ? '浏览器仅提供界面预览；在线更新在 Windows、macOS 和安卓客户端中使用。' : '下载校验后覆盖当前安装并自动打开，保留设置和右键菜单。';
       $('#platform-label').textContent = platformNames[platform.platform] || platform.platform;
-      $('#environment-detail').textContent = `${platformNames[platform.platform] || platform.platform} · v${platform.version || '0.1.15'}`;
+      $('#environment-detail').textContent = `${platformNames[platform.platform] || platform.platform} · v${platform.version || '0.2.0'}`;
       if (platform.platform === 'browser' || platform.platform === 'android' || platform.packaged === false) {
         $('#launch-at-login').disabled = true;
         $('#login-hint').textContent = platform.platform === 'android' ? '安卓端无需常驻，按需打开即可。' : platform.packaged === false ? '开机启动可在安装版客户端中设置。' : '开机启动可在桌面客户端中设置。';

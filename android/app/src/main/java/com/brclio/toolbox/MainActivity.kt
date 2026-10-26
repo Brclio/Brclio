@@ -15,6 +15,8 @@ import android.view.Gravity
 import android.view.WindowInsets
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.widget.TextView
@@ -37,6 +39,9 @@ class MainActivity : Activity() {
     private var incomingPaths = JSONArray()
     private var updater: AndroidUpdater? = null
     private var account: AndroidAccount? = null
+    private var xhs: AndroidXhs? = null
+    private var incomingXhsText = ""
+    private var xhsFileCallback: ValueCallback<Array<Uri>>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,18 +85,20 @@ class MainActivity : Activity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             allowFileAccess = false
-            allowContentAccess = false
+            allowContentAccess = true
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             setSupportMultipleWindows(false)
             javaScriptCanOpenWindowsAutomatically = false
         }
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
+        xhs() // Prepare local media state on the UI thread before asset requests.
         val loader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
         webView.webViewClient = object : WebViewClientCompat() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse {
+                xhs?.intercept(request)?.let { return it }
                 if (isLocal(request.url)) {
                     loader.shouldInterceptRequest(request.url)?.let { return it }
                 }
@@ -115,6 +122,24 @@ class MainActivity : Activity() {
                 if (!isLocal(Uri.parse(url))) return
                 pageReady = true
                 flushIncomingPaths()
+                flushIncomingXhs()
+            }
+        }
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
+                if (!isLocal(Uri.parse(view.url))) return false
+                xhsFileCallback?.onReceiveValue(null)
+                xhsFileCallback = callback
+                return try {
+                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
+                        putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, params.mode == FileChooserParams.MODE_OPEN_MULTIPLE)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }, XHS_FILES)
+                    true
+                } catch (_: Exception) { xhsFileCallback = null; callback.onReceiveValue(null); true }
             }
         }
 
@@ -138,6 +163,7 @@ class MainActivity : Activity() {
         val payload = request.optJSONObject("payload") ?: JSONObject()
         try {
             when (request.optString("method")) {
+                "xhsRequest" -> xhs().request(payload.optString("action"), payload.optJSONObject("input") ?: JSONObject()) { result, error -> resolve(id, result, error) }
                 "accountRequest" -> account().request(payload) { result, error -> resolve(id, result, error) }
                 "accountGoogle" -> account().google { result, error -> resolve(id, result, error) }
                 "accountCancelGoogle" -> resolve(id, account().cancelGoogle())
@@ -168,7 +194,10 @@ class MainActivity : Activity() {
                 "setIntegration" -> resolve(id, error = "Android 不支持向系统文件管理器统一添加右键菜单。请使用文件选择或分享至 Brclio。")
                 "checkForUpdates" -> updater().check { result, error -> resolve(id, result, error) }
                 "downloadUpdate" -> updater().download { result, error -> resolve(id, result, error) }
-                "installUpdate" -> updater().install { result, error -> resolve(id, result, error) }
+                "installUpdate" -> {
+                    check(xhs?.isBusy() != true) { "请先完成或取消小红书解析、保存或复制，再安装更新。" }
+                    updater().install { result, error -> resolve(id, result, error) }
+                }
                 "getUpdateProxyState" -> resolve(id, updater().getUpdateProxyState())
                 "setUpdateProxyEnabled" -> {
                     require(payload.opt("enabled") is Boolean) { "更新代理开关必须是布尔值。" }
@@ -185,6 +214,16 @@ class MainActivity : Activity() {
         val saved = runCatching { JSONObject(preferences.getString("settings", "{}") ?: "{}") }
             .getOrDefault(JSONObject())
         return Settings.normalize(saved)
+    }
+
+    private fun xhs(): AndroidXhs = xhs ?: AndroidXhs(this) { event ->
+        if (pageReady) webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('brclio:xhs',{detail:$event}));", null)
+    }.also { xhs = it }
+
+    private fun flushIncomingXhs() {
+        if (!pageReady || incomingXhsText.isEmpty()) return
+        val text = incomingXhsText; incomingXhsText = ""
+        webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('brclio:xhs-share',{detail:{text:${JSONObject.quote(text)}}}));", null)
     }
 
     private fun account(): AndroidAccount = account ?: AndroidAccount(this).also { account = it }
@@ -226,6 +265,12 @@ class MainActivity : Activity() {
     @Deprecated("Activity result compatibility for Android 8+, no AndroidX Activity dependency needed.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == XHS_FILES) {
+            val callback = xhsFileCallback; xhsFileCallback = null
+            callback?.onReceiveValue(if (resultCode == RESULT_OK && data != null) selectedUris(data).filter { it.scheme == "content" }.toTypedArray() else null)
+            return
+        }
+        if (xhs?.onActivityResult(requestCode, resultCode, data) == true) return
         if (requestCode != PICK_PATHS) return
         val id = pendingPickerId ?: return
         pendingPickerId = null
@@ -243,6 +288,7 @@ class MainActivity : Activity() {
         setIntent(intent)
         acceptIntent(intent)
         flushIncomingPaths()
+        flushIncomingXhs()
     }
 
     override fun onResume() {
@@ -252,11 +298,14 @@ class MainActivity : Activity() {
 
     private fun acceptIntent(received: Intent?) {
         if (received?.action !in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE, Intent.ACTION_VIEW)) return
+        val xhsText = XhsSharePolicy.noteText(received?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString())
+        if (xhsText != null) incomingXhsText = xhsText
         selectedUris(received ?: return).forEach { uri ->
             if (uri.scheme == "content" || uri.scheme == "file") {
                 incomingPaths.put(pathRecord(uri))
             }
         }
+        if (xhsText != null) return // Attachments above still reach the existing path tool.
         // Plain text shares may contain a path/URI but must never be opened as web content.
         if (incomingPaths.length() == 0) {
             received.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim()?.let { text ->
@@ -354,6 +403,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        xhs?.close()
+        xhsFileCallback?.onReceiveValue(null); xhsFileCallback = null
         account?.close()
         updater?.close()
         if (::webView.isInitialized) {
@@ -370,6 +421,7 @@ class MainActivity : Activity() {
     companion object {
         private const val LOCAL_ORIGIN = "https://appassets.androidplatform.net"
         private const val PICK_PATHS = 41
+        private const val XHS_FILES = 4202
         private const val MAX_PATHS = 128
     }
 }

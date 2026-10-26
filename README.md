@@ -1,12 +1,18 @@
 # Brclio
 
-让日常的小事，变得顺手一点。Windows、macOS、Android 共用界面的本地工具软件，首个功能是**复制文件和文件夹路径**。
+让日常的小事，变得顺手一点。Windows、macOS、Android 共用界面的本地工具软件，提供**复制文件和文件夹路径**与**小红书媒体工具**。
 
 [下载安装包](https://github.com/Brclio/Brclio/releases/latest) · [发布记录](https://github.com/Brclio/Brclio/releases)
 
 ![Brclio 界面预览](docs/screenshots/desktop-preview.png)
 
-## 主要功能（v0.1.15）
+## 小红书工具（v0.2.0）
+
+客户端新增独立的小红书工具入口：单篇原图/文案/视频与原视频下载、实况素材保存、主页批量队列、暂停续传和失败重试，以及本地图片/视频合成 JPEG/HEIC + MOV 实况和 `.pvt` 包。原有 Brclio 登录与偏好同步继续使用；源下载器的会员和支付系统没有迁入。
+
+功能与验证边界、原生 Python 后台准备和打包方式见[小红书客户端说明](docs/xhs-client.md)。新版安装包以 GitHub 正式 Release 为准；已安装的旧客户端可在「通用设置 → 版本更新」中检查更新。
+
+## 路径、账号与更新功能
 
 - 桌面复制快捷键：在前台 Finder／资源管理器中选中文件或文件夹后，按 macOS `Option+P`、Windows `Alt+P` 直接复制所选路径，沿用保存的格式。可在“通用设置 → 复制所选路径”中修改组合键或恢复默认；发生占用时保留原组合并提示。
 
