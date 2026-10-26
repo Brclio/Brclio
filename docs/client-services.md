@@ -63,6 +63,7 @@ Google 的已验证邮箱与现有账号一致时复用原用户 ID、个人目�
 ## 接口
 
 - `GET /`、`GET /api/releases/latest`：经过校验的官方稳定版本介绍与 GitHub 下载直链。
+- 版本摘要在服务端复用现有程序资料库范围的 GitHub App 短期令牌读取固定公开 latest 接口，避免共享出口的匿名限额；不使用个人 Token、不回退账号库、不转发重定向。60 秒缓存和入口限流保持，App 安装额度仍由安装共享。
 - `GET /api/health`：非敏感服务状态。
 - `GET /api/client/update-proxy`：每次操作都刷新私库配置与订阅，返回版本为 1 的固定节点配置，最多 16 条、32 KiB、`Cache-Control: no-store`，每 IP 每分钟 30 次。
 - `GET /api/update?url=...`：仅保留官方 latest 元数据兼容；安装包和校验清单请求在读取代理配置前返回 410 升级提示，不传输文件。

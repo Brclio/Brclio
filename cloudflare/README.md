@@ -62,6 +62,14 @@ Its JSON evidence contains fixed endpoint labels, HTTP statuses, failure enums,
 provider availability booleans and the public release version. Configuration
 nodes, response bodies, URLs, headers and credentials are omitted.
 
+The fixed public GitHub latest-release GET reuses the existing short-lived
+installation token scoped to the program-data repository. This avoids shared
+egress anonymous rate limits without adding credentials or repository grants.
+The token stays server-side, redirects are not followed, and authentication
+failure with complete App configuration does not fall back to anonymous access
+or the account repository. The 60-second release cache and request limiter
+remain; the authenticated quota is still shared by the App installation.
+
 The fallback is an alias of the same Worker. Its host guard permits only `GET
 /api/client/update-proxy` and `GET /api/health`; all other paths and methods,
 including the homepage, login and administration, return 404. Roll out that

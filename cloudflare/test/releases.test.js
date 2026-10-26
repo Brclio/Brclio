@@ -2,6 +2,29 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {releaseSummary, readReleaseResponse, getOfficialRelease, clearReleaseCache, latestReleaseURL, releaseFailureDetails} from '../src/releases.js';
 const repository='https://github.com/Brclio/Brclio';
+test('configured release reads use only the existing program App scope at the fixed public endpoint and remain cached', async () => {
+  clearReleaseCache();
+  const env={GITHUB_APP_ID:'synthetic',GITHUB_APP_INSTALLATION_ID:'synthetic',GITHUB_APP_PRIVATE_KEY:'synthetic',
+    GITHUB_PROGRAM_DATA_REPOSITORY:'Fixture/Program',GITHUB_DATA_REPOSITORY:'Fixture/Accounts'};
+  let tokens=0,reads=0;
+  const fetchImpl=async(url,options)=>{
+    reads++; assert.equal(url,latestReleaseURL);assert.equal(options.method,undefined);assert.equal(options.redirect,'manual');
+    assert.equal(options.headers.Authorization,'Bearer synthetic-installation-token');
+    return Response.json(releaseFixture());
+  };
+  const tokenProvider=async(received,scope,fetch)=>{tokens++;assert.equal(received,env);assert.equal(scope,'Fixture/Program');assert.equal(fetch,fetchImpl);return 'synthetic-installation-token';};
+  assert.equal((await getOfficialRelease(env,fetchImpl,tokenProvider)).summary.version,'0.1.8');
+  assert.equal((await getOfficialRelease(env,fetchImpl,tokenProvider)).summary.version,'0.1.8');
+  assert.equal(tokens,1);assert.equal(reads,1);clearReleaseCache();
+});
+test('configured App failures cannot silently select account scope, anonymous reads or sensitive diagnostics', async () => {
+  clearReleaseCache();let reads=0;
+  await assert.rejects(getOfficialRelease({GITHUB_APP_ID:'synthetic',GITHUB_APP_INSTALLATION_ID:'synthetic',GITHUB_APP_PRIVATE_KEY:'synthetic',
+    GITHUB_PROGRAM_DATA_REPOSITORY:'Fixture/Program',GITHUB_DATA_REPOSITORY:'Fixture/Accounts'},async()=>{reads++;},async(_env,scope)=>{
+    assert.equal(scope,'Fixture/Program');throw new Error('private provider details');
+  }),error=>{assert.deepEqual(releaseFailureDetails(error),{code:'release_auth_unavailable'});return true;});
+  assert.equal(reads,0);clearReleaseCache();
+});
 test('release diagnostics expose only fixed classifications and bounded HTTP statuses', async () => {
   for (const [response, expected] of [
     [new Response('private upstream detail', {status: 403, headers: {'x-ratelimit-remaining':'0'}}), {code:'release_upstream_rate_limited',upstreamStatus:403}],
@@ -55,7 +78,7 @@ test('release response bounds and cancels malformed or oversized upstream metada
   await assert.rejects(readReleaseResponse(new Response(body)),/too_large/);assert.equal(canceled,true);
   await assert.rejects(readReleaseResponse(new Response('upstream-private-message',{status:403})),/unavailable/);
 });
-test('public release metadata never receives personal or private repository installation credentials', async () => {
+test('public release reads never use a legacy personal token or a raw private key as authorization', async () => {
   clearReleaseCache(); let calls = 0;
   const result = await getOfficialRelease({GITHUB_TOKEN: 'legacy-personal-token', GITHUB_APP_PRIVATE_KEY: 'private-key-not-for-public-releases'}, async (url, options) => {
     calls++; assert.equal(url, latestReleaseURL); assert.equal(options.headers.Authorization, undefined);
