@@ -1,11 +1,20 @@
 name = "brclio-client-services"
 account_id = "cacceff607775c81f667b7a951d4639f"
-main = "src/entry.js"
+main = "dist/browser/brclio-client-services.mjs"
+no_bundle = true
+find_additional_modules = false
 compatibility_date = "2026-10-18"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 workers_dev = true
 preview_urls = false
 keep_vars = true
+# Upload only the prebuilt module; auxiliary Text/map parts reproduced failures
+# during repeated real CLI deployments, while the single module remained healthy.
+upload_source_maps = false
+
+[build]
+command = "npm run bundle:browser"
+watch_dir = ["src", "../web"]
 
 [vars]
 GITHUB_DATA_REPOSITORY = "BrclioData/BrclioUserData"
