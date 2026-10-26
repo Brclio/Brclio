@@ -81,7 +81,7 @@ jobs:
   browser:
     name: Browser and native bridge contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -89,6 +89,11 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Use the official Ubuntu archive for browser and media dependencies
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          fi
       - run: npx playwright install --with-deps chromium
       - name: Find the installed Playwright Chromium
         run: |
