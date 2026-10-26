@@ -78,7 +78,7 @@ app.on('session-created',localSession);
 app.whenReady().then(()=>localSession(session.defaultSession));
 require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
 `);
-  electronApp = await _electron.launch({ executablePath: require('electron'), args: [temporary], env: { ...process.env, BRCLIO_USER_DATA: path.join(temporary, 'user-data'), ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' }, timeout: 30000 });
+  electronApp = await _electron.launch({ executablePath: require('electron'), args: [...(process.platform === 'linux' ? ['--no-sandbox'] : []), temporary], env: { ...process.env, BRCLIO_USER_DATA: path.join(temporary, 'user-data'), ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' }, timeout: 30000 });
   page = await electronApp.firstWindow();
   page.setDefaultTimeout(15000);
   page.on('pageerror', error => report.consoleErrors.push(error.message));

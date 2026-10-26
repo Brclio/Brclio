@@ -120,6 +120,8 @@ jobs:
       - name: Bundle the native XHS parser used by the Electron verification
         run: npm run prepare:xhs
       - name: Verify the actual XHS Electron download pipeline and local Live Photos
+        env:
+          DEBUG: pw:browser
         run: |
           xvfb-run -a node scripts/verify-xhs-desktop.cjs
           xvfb-run -a node scripts/verify-xhs-live.cjs

@@ -64,7 +64,7 @@ require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
   let app;
   const report = { passed: false, testedAt: new Date().toISOString(), platform: process.platform, checks: [], consoleErrors: [] };
   try {
-    app = await _electron.launch({ executablePath: require('electron'), args: [temporary], cwd: root,
+    app = await _electron.launch({ executablePath: require('electron'), args: [...(process.platform === 'linux' ? ['--no-sandbox'] : []), temporary], cwd: root,
       env: { ...process.env, BRCLIO_USER_DATA: path.join(temporary, 'user-data'), ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' }, timeout: 30000 });
     const page = await app.firstWindow(); page.setDefaultTimeout(20000);
     page.on('pageerror', error => report.consoleErrors.push(error.message));
