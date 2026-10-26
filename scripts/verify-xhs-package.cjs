@@ -1,6 +1,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const asar = require('@electron/asar');
@@ -23,7 +24,7 @@ function verifyXhsAsar(filename) {
   const files = [];
   for (const relative of requiredXhsFiles) {
     assert.ok(entries.has('/' + relative), `Packaged XHS resource is missing: ${relative}`);
-    const bytes = asar.extractFile(filename, relative);
+    const bytes = asar.extractFile(filename, path.normalize(relative));
     assert.ok(bytes.length > 0, `Packaged XHS resource is empty: ${relative}`);
     if (relative.endsWith('.wasm')) assert.equal(bytes.subarray(0, 8).toString('hex'), '0061736d01000000', 'Packaged HEIC encoder is not WASM v1.');
     files.push({ filename: relative, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });

@@ -46,14 +46,25 @@ test('XHS package gate rejects missing or damaged encoder resources and bundled 
   assert.throws(() => verifyXhsAsar(withTests), /test fixtures/);
   await t.test('Windows-style ASAR listings preserve all resource and fixture checks', () => {
     const listPackage = asar.listPackage;
+    const extractFile = asar.extractFile;
+    const hostNormalize = path.normalize;
     const listing = t.mock.method(asar, 'listPackage', (...args) =>
       listPackage(...args).map(entry => entry.replaceAll('/', '\\')));
+    const normalization = t.mock.method(path, 'normalize', value => path.win32.normalize(value));
+    const extraction = t.mock.method(asar, 'extractFile', (archive, relative) => {
+      assert.ok(!relative.includes('/'), 'Windows ASAR extraction requires native path separators.');
+      // Exercise the real archive reader after translating the Windows API input
+      // back to the host platform, so this regression also runs on macOS/Linux.
+      return extractFile(archive, hostNormalize(relative.replaceAll('\\', '/')));
+    });
     try {
       assert.equal(verifyXhsAsar(valid).files.length, requiredXhsFiles.length);
       assert.throws(() => verifyXhsAsar(missing), /missing/);
       assert.throws(() => verifyXhsAsar(damaged), /not WASM/);
       assert.throws(() => verifyXhsAsar(withTests), /test fixtures/);
     } finally {
+      extraction.mock.restore();
+      normalization.mock.restore();
       listing.mock.restore();
     }
   });
