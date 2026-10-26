@@ -32,7 +32,8 @@ test('XHS package gate rejects missing or damaged encoder resources and bundled 
     }
     return archive;
   }
-  assert.equal(verifyXhsAsar(await pack('valid')).files.length, requiredXhsFiles.length);
+  const valid = await pack('valid');
+  assert.equal(verifyXhsAsar(valid).files.length, requiredXhsFiles.length);
   const encoder = path.join(source, 'web/xhs/assets/vendor/heic/heic-encoder.wasm');
   await fs.rm(encoder); const missing = await pack('missing');
   assert.throws(() => verifyXhsAsar(missing), /missing/);
@@ -43,4 +44,17 @@ test('XHS package gate rejects missing or damaged encoder resources and bundled 
   await fs.writeFile(path.join(source, 'desktop/xhs/test/private-fixture.js'), 'fixture');
   const withTests = await pack('fixtures');
   assert.throws(() => verifyXhsAsar(withTests), /test fixtures/);
+  await t.test('Windows-style ASAR listings preserve all resource and fixture checks', () => {
+    const listPackage = asar.listPackage;
+    const listing = t.mock.method(asar, 'listPackage', (...args) =>
+      listPackage(...args).map(entry => entry.replaceAll('/', '\\')));
+    try {
+      assert.equal(verifyXhsAsar(valid).files.length, requiredXhsFiles.length);
+      assert.throws(() => verifyXhsAsar(missing), /missing/);
+      assert.throws(() => verifyXhsAsar(damaged), /not WASM/);
+      assert.throws(() => verifyXhsAsar(withTests), /test fixtures/);
+    } finally {
+      listing.mock.restore();
+    }
+  });
 });

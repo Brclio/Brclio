@@ -19,7 +19,7 @@ const requiredXhsFiles = Object.freeze([
 ]);
 
 function verifyXhsAsar(filename) {
-  const entries = new Set(asar.listPackage(filename));
+  const entries = new Set(asar.listPackage(filename).map(entry => entry.replaceAll('\\', '/')));
   const files = [];
   for (const relative of requiredXhsFiles) {
     assert.ok(entries.has('/' + relative), `Packaged XHS resource is missing: ${relative}`);
