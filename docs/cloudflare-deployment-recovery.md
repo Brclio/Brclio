@@ -9,18 +9,21 @@
 | 上传产物 | 结果 |
 | --- | --- |
 | 原 JS + 七个 Text + source map | 首次可正常，重复上传后复现 1101；旧版本仍占 100% 时也能失败 |
-| 同一 JS 和七个 Text，仅移除 map 辅助 part | 首次、相同 form 重复 PUT、strict 版本上传均返回 200 |
-| 最小 JS + 一个 Text，无 map | 首次、重复 PUT、版本上传均返回 200 |
-| 原业务单文件，无 map | 重复 PUT、strict 继承、激活、设置更新、改变代码字节后上传和激活均返回 200 |
+| 同一 JS 和七个 Text，仅移除 map 辅助 part | 手工 API 的首次、重复 PUT、strict 上传（未激活）均 200；不能代替完整部署验收 |
+| 最小 JS + 一个 Text，无 map | 手工 API 的首次、重复 PUT、版本上传（未激活）均 200 |
+| 原业务单文件，无 map | 手工 API 的重复 PUT、strict 继承、激活、设置更新、改变代码字节后上传和激活均 200 |
+| 真实 CLI、完整生产依赖元信息、八模块、关闭 map | 连续两次命令成功且新版本激活，健康仍为 1101 |
+| 真实 CLI、相同依赖元信息、单文件、关闭 map | 连续两次上传、激活及健康检查均为 200 |
+| 真实 CLI、从原单文件切换到修复候选的新字节 | 候选完整字节 SHA-256 匹配，连续两次上传、激活和健康检查均 200 |
 
 真实 `wrangler deploy --dry-run --outfile` 对比确认：默认产物有九个文件 part；显式 `upload_source_maps = false` 后为八个。七个 Text 逐字节一致，主 JS 只去掉末尾 `sourceMappingURL` 注释。4.151.1 的 `deploy --help` 也明确说明 source maps 默认开启；实际构建与上传源码链使用相同的 source-map 收集和 multipart 序列化逻辑，不能将它解释为只存在于 dry-run 的文件。
 
-这是针对本产物和固定工具版本的可复现触发条件；尚未取得 Cloudflare 内部异常栈，不能断言所有 source map 或多模块 Worker 都有问题，也不能确定平台内部失效机制。
+以上后续真实 CLI 反例覆盖了早期“只移除 map 即可”的推断：仅关闭 source-map 上传并非充分修复。已经复现的是本产物在固定工具版本下的部署形态差异；尚未取得 Cloudflare 内部异常栈，不能断言所有 source map 或多模块 Worker 都有问题，也不能确定平台内部失效机制。
 
 ## 修复与验证边界
 
-- 在 Wrangler 配置显式关闭 source-map 上传，保留原入口、JS/HTML/TXT 模块、兼容标志、绑定与业务逻辑。
-- 回归测试解析 Wrangler 真正生成的 multipart，拒绝 `.map` 和 `application/source-map`，并将同一份八模块载入 workerd 验证首页、健康和匿名账号路由。
+- 将原 `src/entry.js` 的 JS/HTML/TXT 图预编译成一个自包含、仅默认导出的 ES module。Wrangler 指向该产物，并显式关闭二次打包、附加模块扫描及 source-map 上传；兼容标志、绑定和业务逻辑保持。
+- 构建器检查单输出、默认导出和仅运行时内建依赖。回归测试解析 Wrangler 真正生成的 multipart，要求仅一个 ES module、无 Text/map 辅助 part，并将同一份产物载入 workerd 验证首页、健康和匿名账号路由。
 - `npm run deploy` 在上传后检查首页、健康、匿名账号、客户端配置与正式版本摘要。CLI 上传成功不能代替这五个真实 HTTP 合同检查；直接调用 Wrangler 后须另跑门禁。
 - 公开版本摘要的 502 与整站 522/1101 分开诊断。新增服务端日志只含固定错误枚举和有限 HTTP 状态，不记录上游正文、地址、Header、凭据或异常消息。
 

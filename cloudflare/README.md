@@ -19,16 +19,22 @@ project root `cloudflare`, build command `npm ci && npm test`, and deploy comman
 `npm run deploy`. A local CLI authenticated to another account must not be used
 to deploy this project.
 
-Normal deployments retain `src/entry.js` and Wrangler's existing JavaScript
-and HTML/TXT module packaging. Set `upload_source_maps = false` explicitly in
-`wrangler.toml`. Wrangler 4.151.1 otherwise generates and uploads source maps by
-default. Controlled isolated uploads kept the eight runtime modules byte for
-byte unchanged and removed only the auxiliary source-map part; the initial,
-repeated and strict-upload checks then all returned 200. The observed trigger is
-the additional source-map upload on this service's deployment path.
+Wrangler runs `npm run bundle:browser` before deployment. That build uses
+`src/entry.js` and inlines the JS/HTML/TXT graph into the single default-export
+module `dist/browser/brclio-client-services.mjs`. The configured `no_bundle =
+true`, `find_additional_modules = false` and `upload_source_maps = false` ensure
+that only this validated artifact enters an upload. The builder rejects extra
+chunks, named Worker exports and unresolved non-runtime dependencies.
 
-The explicit source-map setting also applies to a direct Wrangler invocation.
-Use `npm run deploy` to additionally run the npm `postdeploy` HTTP gate.
+The isolated real-CLI regression retained the production package context and
+synthetic bindings. Eight runtime modules still failed after activation with
+source maps disabled; the single-module form survived consecutive true CLI
+uploads and activations. Source-map omission alone is therefore insufficient.
+The platform's internal failure mechanism has not been established. Details and
+limits are recorded in `docs/cloudflare-deployment-recovery.md`.
+
+These artifact settings also apply to a direct Wrangler invocation. Use
+`npm run deploy` to additionally run the npm `postdeploy` HTTP gate.
 
 After a Worker is recreated, the old GitHub Builds connection and history belong
 to the previous Worker identity. Reconnect Builds to the current Worker identity

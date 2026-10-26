@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 
-test('the actual Wrangler upload omits source maps and retains working pages and account routes', async () => {
+test('the actual Wrangler upload is one executable module with inlined pages and no auxiliary parts', async () => {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const temporary = await mkdtemp(path.join(tmpdir(), 'brclio-upload-contract-'));
   const formFile = path.join(temporary, 'upload.bin');
@@ -32,9 +32,9 @@ test('the actual Wrangler upload omits source maps and retains working pages and
       assert.ok(type, 'Only the existing script and text modules are expected.');
       modules.push({type, path: path.join(temporary, name), contents: await file.text()});
     }
-    assert.equal(metadata.main_module, 'entry.js');
+    assert.equal(metadata.main_module, 'brclio-client-services.mjs');
     assert.equal(modules.filter(item => item.type === 'ESModule').length, 1);
-    assert.equal(modules.filter(item => item.type === 'Text').length, 7);
+    assert.equal(modules.length, 1, 'Only the prebuilt module may enter an upload.');
     const require = createRequire(new URL('../package.json', import.meta.url));
     const {Miniflare, convertV4MiniflareOptions, Log, LogLevel} = require('miniflare');
     let outbound = 0;
