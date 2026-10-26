@@ -1,8 +1,8 @@
 {
   "name": "brclio-toolbox",
   "productName": "Brclio",
-  "version": "0.1.15",
-  "description": "Brclio 跨平台工具箱 · 从复制路径开始",
+  "version": "0.2.0",
+  "description": "Brclio 跨平台工具箱 · 复制路径与小红书媒体工具",
   "author": "Brclio",
   "private": true,
   "main": "desktop/main.cjs",
@@ -24,7 +24,14 @@
     "test:system-proxy-live": "node desktop/system-proxy-live.cjs",
     "test:proxy-ui": "npm run sync && node scripts/verify-update-proxy-ui.mjs",
     "test:cloudflare": "npm --prefix cloudflare test",
-    "test:accounts": "npm run sync && node scripts/verify-account-ui.mjs"
+    "test:accounts": "npm run sync && node scripts/verify-account-ui.mjs",
+    "prepare:xhs": "node scripts/prepare-xhs-runtime.cjs",
+    "test:xhs": "node --test test/xhs-*.test.cjs",
+    "test:xhs-ui": "npm run sync && node scripts/verify-xhs-ui.mjs",
+    "test:xhs-desktop": "npm run sync && node scripts/verify-xhs-desktop.cjs",
+    "test:xhs-live": "npm run sync && node scripts/verify-xhs-live.cjs",
+    "test:xhs-android": "node android/verify-xhs.cjs",
+    "test:xhs-android-bridge": "node scripts/verify-xhs-android-bridge.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",
@@ -42,7 +49,8 @@
       "desktop/**",
       "core/**",
       "web/**",
-      "package.json"
+      "package.json",
+      "!desktop/xhs/test/**"
     ],
     "mac": {
       "category": "public.app-category.utilities",
@@ -80,6 +88,16 @@
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false
     },
+    "beforePack": "scripts/check-xhs-runtime.cjs",
+    "extraResources": [
+      {
+        "from": "runtime/${os}-${arch}/python",
+        "to": "xhs-python",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
     "afterPack": "scripts/desktop-after-pack.cjs"
   },
   "dependencies": {

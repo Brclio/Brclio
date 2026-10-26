@@ -146,6 +146,11 @@ jobs:
           xcodebuild -version
           xcrun --sdk macosx --show-sdk-path
           xcrun swiftc --version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bundle the native XHS Python engine and verify its health
+        run: npm run prepare:xhs
       - name: Build Windows installer without publishing
         if: matrix.platform == 'win'
         env:

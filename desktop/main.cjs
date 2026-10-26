@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, net, session, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, net, protocol, session, shell } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -18,6 +18,12 @@ const { createMacInstaller } = require('./mac-installer.cjs');
 const { createWindowsInstaller } = require('./windows-installer.cjs');
 const { isLocalDocument } = require('./trusted-url.cjs');
 const { createAccountClient } = require('./account.cjs');
+
+// Register before app readiness so the isolated media proxy has a secure,
+// stream-capable origin. Existing account and update transports stay separate.
+protocol.registerSchemesAsPrivileged([{ scheme: 'brclio-xhs', privileges: {
+  standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true,
+} }]);
 
 app.setName('Brclio');
 app.setPath('userData', process.env.BRCLIO_USER_DATA
@@ -41,6 +47,21 @@ let keepRunning = false;
 const pendingOpenURLs = [];
 const indexPath = path.join(__dirname, '..', 'web', 'index.html');
 const indexURL = pathToFileURL(indexPath).href;
+let xhsServicePromise;
+let xhsClosing = false;
+function getXhsService() {
+  if (xhsClosing) return Promise.reject(new Error('小红书工具正在关闭。'));
+  if (!xhsServicePromise) {
+    xhsServicePromise = import('./xhs/index.mjs').then(({ createXhsService }) => createXhsService({
+      app, BrowserWindow, session, dialog, clipboard, net, shell,
+      getWindow: () => mainWindow,
+      onEvent: event => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('brclio:xhs:event', event);
+      },
+    })).catch(error => { xhsServicePromise = undefined; throw error; });
+  }
+  return xhsServicePromise;
+}
 const settings = createSettingsStore(app.getPath('userData'));
 const account = createAccountClient({ directory: app.getPath('userData'),
   fetch: (url, options) => net.fetch(url, options), openExternal: url => shell.openExternal(url) });
@@ -173,6 +194,7 @@ function handle(channel, callback) {
 }
 
 function registerIPC() {
+  handle('brclio:xhs:request', async (action, input) => (await getXhsService()).request(action, input));
   handle('brclio:account:request', input => account.request(input));
   handle('brclio:account:google', () => account.google());
   handle('brclio:account:google:cancel', () => account.cancelGoogle());
@@ -231,7 +253,11 @@ function registerIPC() {
   handle('brclio:update-proxy:set', enabled => updateProxy.setEnabled(enabled));
   handle('brclio:update:check', () => updater.check());
   handle('brclio:update:download', () => updater.download());
-  handle('brclio:update:install', () => updater.install());
+  handle('brclio:update:install', async () => {
+    const xhs = xhsServicePromise ? await xhsServicePromise.catch(() => null) : null;
+    if (xhs?.isBusy()) throw new Error('小红书素材正在保存或复制，请先完成、暂停或取消当前任务，再安装更新。');
+    return updater.install();
+  });
 }
 
 function copyFromMenu(paths, { exitWhenIdle = true } = {}) {
@@ -291,6 +317,12 @@ if (!gotLock) {
     } else createWindow();
   });
   app.whenReady().then(async () => {
+    protocol.handle('brclio-xhs', async request => {
+      try { return await (await getXhsService()).handleProtocol(request); }
+      catch { return Response.json({ success: false, message: '小红书本地媒体服务暂不可用，请重试。' }, {
+        status: 503, headers: { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' },
+      }); }
+    });
     shortcuts.initialize((await settings.read()).copyShortcut);
     if (process.platform === 'darwin' && !app.isPackaged) {
       app.dock?.setIcon(path.join(__dirname, '../resources/icon.png'));
@@ -318,6 +350,16 @@ if (!gotLock) {
     } else createWindow();
   }).catch(error => { console.error(error); app.quit(); });
   app.on('activate', () => createWindow());
+  let xhsQuitReady = false;
+  app.on('before-quit', event => {
+    if (!xhsServicePromise || xhsQuitReady) return;
+    event.preventDefault();
+    if (xhsClosing) return;
+    xhsClosing = true;
+    void xhsServicePromise.then(service => service.close()).catch(error => {
+      console.warn('小红书任务关闭失败：', error.message);
+    }).finally(() => { xhsQuitReady = true; app.quit(); });
+  });
   app.on('will-quit', () => { account.close(); shortcuts.dispose(); void updateProxy.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

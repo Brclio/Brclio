@@ -1,6 +1,6 @@
 # Android 客户端
 
-Android 客户端使用 Kotlin Activity 和离线 WebView，共用 `web/` 中的 Brclio 界面。包名为 `com.brclio.toolbox`，调试包为 `com.brclio.toolbox.debug`，当前版本 `0.1.15`，最低 Android 8.0（API 26）。
+Android 客户端使用 Kotlin Activity 和离线 WebView，共用 `web/` 中的 Brclio 界面。包名为 `com.brclio.toolbox`，调试包为 `com.brclio.toolbox.debug`，当前版本 `0.2.0`，最低 Android 8.0（API 26）。
 
 ## 使用方式
 
@@ -11,6 +11,8 @@ Android 客户端使用 Kotlin Activity 和离线 WebView，共用 `web/` 中的
 
 Android 没有跨所有文件管理器的统一右键扩展接口，因此本版提供系统选择器、分享入口和应用内长按复制。它不会显示已经安装了系统右键扩展。Android 也不提供本应用中的“开机启动”选项。
 
+当前源码新增「小红书工具」：本地解析单篇分享链接，保存/复制/分享原图，保存视频与原视频、实况素材和文案 ZIP；可在设备 WebView 支持编码时制作本地实况，并通过系统文件选择器导出。主页批量下载在桌面客户端使用；Android 保留在线 Python 备用解析。详情见[小红书客户端说明](xhs-client.md)。现有 Brclio 账号、路径偏好和更新流程沿用原实现。
+
 ## 路径与系统限制
 
 - `com.android.externalstorage.documents` 的 `primary:` 文档标识可对应主共享存储的路径，例如 `/storage/emulated/0/Documents/计划.pdf`。客户端仅对这个已知映射返回绝对路径，拒绝 `..`、前导斜杠、空字符等异常标识。
@@ -18,7 +20,7 @@ Android 没有跨所有文件管理器的统一右键扩展接口，因此本版
 - URI 不是本机文件系统路径，不能使用文件系统的相对路径或分隔符转换。共享界面应明确显示 URI 类型。复制 URI 不会将该文件的访问权限授予接收文本的其他应用。
 - 已知的绝对路径是位置文本；Android 的沙盒限制仍然决定其他应用是否能访问该位置。
 - Android 11 及以上对某些文件夹的选择施加限制，包括存储根目录、下载目录根目录和 `Android/data`、`Android/obb`。这些限制由系统选择器执行。
-- 路径功能不读取文件内容，不请求所有文件访问或旧版广泛存储权限。所选 URI 仅用于获取名称和位置；不保留长期文件访问授权。网络权限仅用于原生在线更新；安装更新需用户授予 Brclio 安装应用的权限。
+- 路径功能不读取文件内容，不请求所有文件访问或旧版广泛存储权限。路径选择所获 URI 仅用于获取名称和位置。小红书工具使用网络权限读取公开笔记与官方媒体，使用系统选择器读入实况素材、保存用户选择的下载文件；它与账号服务、原生在线更新分开处理。安装更新需用户授予 Brclio 安装应用的权限。
 
 ## 在线更新
 

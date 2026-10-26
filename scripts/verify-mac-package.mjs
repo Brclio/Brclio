@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { extractFile } from '@electron/asar';
+import xhsPackage from './verify-xhs-package.cjs';
 
 const execute = promisify(execFile);
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -126,6 +127,11 @@ async function inspectApp(app, item) {
     item[`${label}Architectures`] = architectures;
     ensure(architectures.length === 1 && architectures[0] === architecture, `Wrong ${label} architecture: ${architectures.join(', ')}`);
   }
+  const python = path.join(app, 'Contents', 'Resources', 'xhs-python', 'xhs-python');
+  const pythonArchitectures = (await required('/usr/bin/lipo', ['-archs', python], 'Read XHS Python architecture')).stdout.trim().split(/\s+/);
+  ensure(pythonArchitectures.length === 1 && pythonArchitectures[0] === architecture, `Wrong XHS Python architecture: ${pythonArchitectures.join(', ')}`);
+  item.xhs = { resources: xhsPackage.verifyXhsAsar(path.join(app, 'Contents', 'Resources', 'app.asar')),
+    pythonArchitectures };
 
   const verify = await command('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=4', app]);
   item.signatureVerification = verify;
@@ -137,6 +143,7 @@ async function inspectApp(app, item) {
   ensure(!description.stderr.includes('Info.plist=not bound') && !description.stderr.includes('Sealed Resources=none'), 'The app has only a linker signature; bundle resources and Info.plist must be sealed.');
   item.signatureIntegrityPassed = true;
   await inspectFinderExtension(app, item);
+  item.xhs.runtime = xhsPackage.verifyXhsRuntime(python);
 
   const assessment = await command('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', app]);
   item.gatekeeperAssessment = assessment;

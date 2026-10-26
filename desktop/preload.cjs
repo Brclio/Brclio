@@ -3,6 +3,13 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('brclio', Object.freeze({
+  xhsRequest: (action, input) => ipcRenderer.invoke('brclio:xhs:request', action, input),
+  onXhsEvent: callback => {
+    if (typeof callback !== 'function') throw new TypeError('需要小红书状态处理函数。');
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('brclio:xhs:event', listener);
+    return () => ipcRenderer.removeListener('brclio:xhs:event', listener);
+  },
   accountRequest: input => ipcRenderer.invoke('brclio:account:request', input),
   accountGoogle: () => ipcRenderer.invoke('brclio:account:google'),
   accountCancelGoogle: () => ipcRenderer.invoke('brclio:account:google:cancel'),

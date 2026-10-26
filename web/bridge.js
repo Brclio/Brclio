@@ -17,7 +17,9 @@
   function native(method, payload = {}) {
     return new Promise((resolve, reject) => {
       const id = String(++nextId);
-      const timer = method === 'downloadUpdate' ? null : setTimeout(() => { pending.delete(id); reject(new Error('系统操作尚未完成，请重试。')); }, method === 'pickPaths' ? 900000 : method === 'accountGoogle' ? 330000 : method === 'checkForUpdates' ? 90000 : 60000);
+      const xhsAction = method === 'xhsRequest' ? payload.action : '';
+      const unlimited = method === 'downloadUpdate' || ['saveImages', 'saveNote', 'exportArchive', 'saveVideo', 'copyImages', 'shareImages', 'finishGenerated'].includes(xhsAction);
+      const timer = unlimited ? null : setTimeout(() => { pending.delete(id); reject(new Error('系统操作尚未完成，请重试。')); }, method === 'pickPaths' ? 900000 : method === 'accountGoogle' ? 330000 : method === 'checkForUpdates' || ['parsePython', 'fetchNote'].includes(xhsAction) ? 90000 : 60000);
       pending.set(id, { resolve, reject, timer });
       try { window.AndroidBridge.postMessage(JSON.stringify({ id, method, payload })); }
       catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
@@ -40,7 +42,7 @@
     },
     accountGoogle: async () => { location.assign('/api/account/google/start'); return { redirecting: true }; },
     accountCancelGoogle: async () => ({ canceled: true }),
-    getPlatform: async () => ({ platform: 'browser', version: '0.1.15', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
+    getPlatform: async () => ({ platform: 'browser', version: '0.2.0', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
     getSettings: async () => { const saved = localStorage.getItem(STORE); return saved ? JSON.parse(saved) : {}; },
     saveSettings: async settings => { localStorage.setItem(STORE, JSON.stringify(settings)); return settings; },
     copyText: async text => {
@@ -60,12 +62,91 @@
     onPaths: () => () => {},
     getUpdateProxyState: async () => ({ enabled: true, supported: false, route: 'direct' }),
     setUpdateProxyEnabled: async () => { throw new Error('请在客户端中设置更新代理。'); },
-    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.1.15' }),
+    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.2.0' }),
     downloadUpdate: async () => { throw new Error('请在客户端中下载安装包。'); },
     installUpdate: async () => { throw new Error('请在客户端中安装更新。'); },
     onUpdateState: () => () => {},
   };
+  async function androidXhs(action, input = {}) {
+    if (action !== 'parse') return native('xhsRequest', { action, input });
+    const parser = await import('./xhs/lib/xhs-parser.js');
+    const text = String(input.text || '').trim();
+    if (!text || text.length > 3000) throw new Error('请粘贴 3000 字以内的小红书链接或分享文案。');
+    const url = parser.extractInputUrl(text);
+    if (input.engine !== undefined && !['node', 'python'].includes(input.engine)) throw new Error('解析引擎无效。');
+    const fetchLocalNote = async () => {
+      const pageURL = new URL(url); pageURL.hash = '';
+      const source = await native('xhsRequest', { action: 'fetchNote', input: { url: pageURL.href } });
+      const noteId = parser.extractNoteId(source.finalUrl) || parser.extractNoteId(url);
+      if (!noteId) throw new Error('无法识别当前笔记 ID。');
+      return { ...parser.parseNoteHtml(source.html, { noteId }), noteId, sourceUrl: source.finalUrl };
+    };
+    if (input.engine === 'python') {
+      const result = await native('xhsRequest', { action: 'parsePython', input: { text } });
+      if (!result?.success) throw new Error(result?.message || 'Python 解析失败，请稍后重试。');
+      const checkedUrl = (value, kind) => {
+        const normalized = parser.normalizeImageUrl(String(value || ''));
+        if (!(kind === 'image' ? parser.isXhsImageUrl(normalized) : parser.isXhsVideoUrl(normalized))) throw new Error('解析服务返回了不受支持的媒体地址。');
+        return normalized;
+      };
+      const video = raw => ({ ...raw, url: checkedUrl(raw?.url, 'video'), backupUrls: (Array.isArray(raw?.backupUrls) ? raw.backupUrls : []).map(value => checkedUrl(value, 'video')) });
+      if (!Array.isArray(result.images) || !Array.isArray(result.videos) || result.images.length > 50 || result.videos.length > 50) throw new Error('Python 解析服务返回了无效媒体列表。');
+      const images = result.images.map((raw, index) => ({ ...raw, index: index + 1, url: checkedUrl(raw?.url, 'image'), liveVideo: raw.liveVideo ? video(raw.liveVideo) : null }));
+      const videos = result.videos.map(video);
+      let originalVideos = (Array.isArray(result.originalVideos) ? result.originalVideos : []).map(video);
+      let originalVideoCount = Math.max(Number(result.originalVideoCount) || 0, originalVideos.length);
+      const hasOriginalVideo = result.hasOriginalVideo === true || originalVideoCount > 0;
+      if (hasOriginalVideo && !originalVideos.length && !parser.isDirectImageUrl(url)) {
+        // The public source Python contract reports originals but hides their
+        // URLs. Supplement only declared originals from the same local note;
+        // a blocked page must not discard successful Python images or videos.
+        try {
+          const local = await fetchLocalNote();
+          if (!result.noteId || local.noteId === result.noteId) {
+            originalVideos = (local.originalVideos || []).map(video);
+            for (let index = 0; index < images.length; index++) {
+              const image = images[index];
+              if (image.liveVideo || !image.livePhoto) continue;
+              const token = parser.extractOriginalAssetToken(image.url);
+              const paired = (local.images || []).find((candidate, ordinal) => (candidate.index ?? ordinal + 1) === image.index
+                && token && parser.extractOriginalAssetToken(candidate.url) === token && candidate.liveVideo?.url);
+              if (paired) images[index] = { ...image, liveVideo: video(paired.liveVideo) };
+            }
+          }
+        } catch { /* Keep the accurate public count and report unavailable URLs. */ }
+      }
+      originalVideoCount = Math.max(originalVideoCount, originalVideos.length);
+      if (!images.length && !videos.length && !originalVideoCount) throw new Error('未取得笔记媒体。请确认笔记公开可见。');
+      return { ...result, success: true, engine: 'python', sourceUrl: result.sourceUrl || url, images, videos, originalVideos,
+        count: images.length, videoCount: videos.length, originalVideoCount, hasOriginalVideo: hasOriginalVideo || originalVideos.length > 0,
+        originalVideoUnavailable: (hasOriginalVideo || originalVideoCount > 0) && !originalVideos.length };
+    }
+    if (parser.isDirectImageUrl(url)) {
+      const token = parser.extractOriginalAssetToken(url);
+      if (!token || !parser.validateAssetToken(token)) throw new Error('图片资源标识无效。');
+      return { success: true, engine: 'node', title: '小红书图片', content: '', sourceUrl: url, images: [{ index: 1, token, url: parser.buildNoWatermarkUrl(token) }], videos: [], originalVideos: [], hasOriginalVideo: false };
+    }
+    const note = await fetchLocalNote();
+    if (!note.images.length && !note.videos.length && !note.originalVideos.length) throw new Error('未取得笔记媒体。请确认链接完整且当前笔记公开可见。');
+    return { ...note, success: true, engine: 'node', images: note.images.map((image, index) => ({ ...image, index: index + 1 })), count: note.images.length, videoCount: note.videos.length, originalVideoCount: note.originalVideos.length, hasOriginalVideo: note.originalVideos.length > 0 };
+  }
+  async function saveAndroidGenerated(blob, filename, options = {}) {
+    const opened = await androidXhs('beginGenerated', { filename, mime: blob.type, size: blob.size, ...(options.requestId ? { requestId: options.requestId } : {}) });
+    if (opened?.cancelled) return { ok: true, cancelled: true };
+    try {
+      for (let offset = 0; offset < blob.size; offset += 49152) {
+        const bytes = new Uint8Array(await blob.slice(offset, offset + 49152).arrayBuffer());
+        let binary = ''; for (const value of bytes) binary += String.fromCharCode(value);
+        const appended = await androidXhs('appendGenerated', { token: opened.token, offset, data: btoa(binary) });
+        if (appended?.cancelled) return { ok: true, cancelled: true };
+      }
+      return await androidXhs('finishGenerated', { token: opened.token });
+    } catch (error) { await androidXhs('abortGenerated', { token: opened.token }).catch(() => {}); throw error; }
+  }
   const android = {
+    xhsRequest: androidXhs,
+    saveGenerated: saveAndroidGenerated,
+    onXhsEvent: callback => { const listener = event => callback(event.detail); window.addEventListener('brclio:xhs', listener); return () => window.removeEventListener('brclio:xhs', listener); },
     accountRequest: input => native('accountRequest', input),
     accountGoogle: () => native('accountGoogle'),
     accountCancelGoogle: () => native('accountCancelGoogle'),
