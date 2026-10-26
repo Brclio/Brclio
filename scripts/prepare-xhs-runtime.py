@@ -105,6 +105,18 @@ def copy_runtime(source, destination):
     # PyInstaller's macOS frameworks require their relative link layout for
     # codesign. Dereferencing creates ambiguous framework/application bundles.
     shutil.copytree(source, destination, dirs_exist_ok=True, symlinks=True)
+    if sys.platform == "win32":
+        # CPython 3.12 copytree can create a file-link for a relative directory
+        # target not copied yet. Restore its type from the validated source.
+        source_root = source.resolve(strict=True)
+        for current, directories, files in os.walk(source_root, followlinks=False):
+            for name in directories + files:
+                link = Path(current) / name
+                if link.is_symlink() and link.is_dir():
+                    copied = destination / link.relative_to(source_root)
+                    copied.unlink()
+                    copied.symlink_to(link.readlink(), target_is_directory=True)
+                    shutil.copystat(link, copied, follow_symlinks=False)
     validate_runtime_links(destination)
 
 

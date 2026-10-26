@@ -87,6 +87,23 @@ class RuntimeLinks(unittest.TestCase):
                 health.assert_not_called()
                 self.assertEqual(marker.read_text(),"preserve previous runtime")
 
+    def test_windows_copy_explicitly_preserves_relative_directory_link_types(self):
+        source=self.root/"source"
+        self.framework(source)
+        destination=self.root/"copy"
+        original=pathlib.Path.symlink_to
+        calls=[]
+        def symlink(link,target,target_is_directory=False):
+            calls.append((link.relative_to(destination),target,target_is_directory))
+            return original(link,target,target_is_directory=target_is_directory)
+        with patch.object(module.sys,"platform","win32"),patch.object(pathlib.Path,"symlink_to",new=symlink):
+            module.copy_runtime(source,destination)
+        framework=pathlib.Path("_internal")/"Python.framework"
+        self.assertCountEqual(calls,[(framework/"Resources",pathlib.Path("Versions")/"Current"/"Resources",True),
+                                    (framework/"Versions"/"Current",pathlib.Path("3.12"),True)])
+        self.assertFramework(destination)
+        module.validate_runtime_links(destination)
+
     def test_each_versioned_alias_is_required_but_unversioned_flat_frameworks_are_valid(self):
         for index,name in enumerate(["Versions/Current","Python","Resources"]):
             source=self.root/str(index)
