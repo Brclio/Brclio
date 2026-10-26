@@ -10,7 +10,7 @@
 
 GitHub Builds 构建根目录为 `cloudflare`，构建命令 `npm ci && npm test`，部署命令由正确账号执行 `npm run deploy`。本地 CLI 若登录其它账号，不应用于部署。
 
-Wrangler 保持 `src/entry.js` 入口及既有 JavaScript、HTML/TXT 模块打包，在 `wrangler.toml` 中显式设置 `upload_source_maps = false`。Wrangler 4.151.1 默认生成并上传 source map；隔离实验保持八个运行模块逐字节不变，仅移除辅助 source-map 上传部分后，首次、重复和 strict 上传三项均返回 200。该设置也适用于直接调用 Wrangler。
+Wrangler 在部署前执行 `npm run bundle:browser`，把原 `src/entry.js` 的 JavaScript、HTML/TXT 图预编译为 `dist/browser/brclio-client-services.mjs`。构建检查单输出、默认导出和仅运行时内建依赖；`no_bundle = true`、`find_additional_modules = false`、`upload_source_maps = false` 保证实际只上传这一个产物。真实 CLI 隔离验收中，八模块即使关闭 map 仍在激活后失败；同一业务的单文件连续两次上传与激活均健康，修复候选的新字节产物也通过重复部署。平台内部失效机制尚未确证，不能把 source map 认作唯一原因。该构建配置也适用于直接调用 Wrangler。
 
 `npm run deploy` 的 `postdeploy` 门禁只向正式入口执行五项匿名 GET：首页、健康检查、匿名账号会话、固定客户端配置和正式版本摘要。门禁校验响应大小、内容类型及数据结构，并确认现有 Google/邮箱入口可用；不携带 Cookie 或 Authorization，不登录或写入用户数据。五项检查共享 60 秒总时限，每次请求最多 15 秒，暂态失败的接口最多尝试三次；任何必需项仍失败即退出 1。上传先于门禁完成，失败时线上已上传的版本仍需维护者复核和恢复。直接运行 Wrangler 后可在 `cloudflare/` 执行 `npm run verify:deployment` 补做同一门禁。输出仅包含固定接口标签、状态、错误枚举、登录入口可用布尔值及公开版本号，不输出配置节点、URL、响应正文、请求头或凭据。
 
