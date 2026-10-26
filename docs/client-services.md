@@ -8,7 +8,13 @@
 
 同一 Worker 的生产别名 `https://brclio-client-services.aiyuechuang.workers.dev` 仅作为配置引导备用入口：只允许 GET `/api/client/update-proxy` 和 GET `/api/health`，主页、后台、登录和其它路径全部 404。已先部署该限制，再在正确账号控制台启用生产别名，配置持久化为 `workers_dev = true`；预览入口保持关闭。自定义域名上已确认的 Bot Fight Mode 质询不通过关闭整区防护解决。备用域名在各网络中的可达性需实际验证。
 
-GitHub Builds 构建根目录为 `cloudflare`，构建命令 `npm ci && npm test`，部署命令由正确账号执行 `npx wrangler deploy`。本地 CLI 若登录其它账号，不应用于部署。
+GitHub Builds 构建根目录为 `cloudflare`，构建命令 `npm ci && npm test`，部署命令由正确账号执行 `npm run deploy`。本地 CLI 若登录其它账号，不应用于部署。
+
+Wrangler 在部署前执行 `npm run bundle:browser`，把原 `src/entry.js` 的 JavaScript、HTML/TXT 图预编译为 `dist/browser/brclio-client-services.mjs`。构建检查单输出、默认导出和仅运行时内建依赖；`no_bundle = true`、`find_additional_modules = false`、`upload_source_maps = false` 保证实际只上传这一个产物。真实 CLI 隔离验收中，八模块即使关闭 map 仍在激活后失败；同一业务的单文件连续两次上传与激活均健康，修复候选的新字节产物也通过重复部署。平台内部失效机制尚未确证，不能把 source map 认作唯一原因。该构建配置也适用于直接调用 Wrangler。
+
+`npm run deploy` 的 `postdeploy` 门禁只向正式入口执行五项匿名 GET：首页、健康检查、匿名账号会话、固定客户端配置和正式版本摘要。门禁校验响应大小、内容类型及数据结构，并确认现有 Google/邮箱入口可用；不携带 Cookie 或 Authorization，不登录或写入用户数据。五项检查共享 60 秒总时限，每次请求最多 15 秒，暂态失败的接口最多尝试三次；任何必需项仍失败即退出 1。上传先于门禁完成，失败时线上已上传的版本仍需维护者复核和恢复。直接运行 Wrangler 后可在 `cloudflare/` 执行 `npm run verify:deployment` 补做同一门禁。输出仅包含固定接口标签、状态、错误枚举、登录入口可用布尔值及公开版本号，不输出配置节点、URL、响应正文、请求头或凭据。
+
+同名重建 Worker 后，旧 GitHub Builds 连接及历史属于原 Worker 身份，需重新连接当前身份并核验实际部署；源码修改本身不代表控制台连接已经恢复。
 
 控制台保留现有 `ADMIN_EMAIL`、`ADMIN_PASSWORD`、`SESSION_SECRET`、`PROXY_SUBSCRIPTION_URL` 配置。账号库为 `GITHUB_DATA_REPOSITORY=BrclioData/BrclioUserData`，程序资料库为 `GITHUB_PROGRAM_DATA_REPOSITORY=BrclioData/BrclioData`；两者独立配置，全局配置缺失时不能回退账号库。GitHub 凭据改为 `GITHUB_APP_ID`、`GITHUB_APP_INSTALLATION_ID` 和 Secret `GITHUB_APP_PRIVATE_KEY`，不再读取个人 `GITHUB_TOKEN`。`keep_vars = true` 保留控制台值；源码、公开 JSON 和日志不得包含秘密值。初次切换前先完成停写、迁移核验和 App 配置，不能提前让线上指向空库。
 
@@ -57,6 +63,7 @@ Google 的已验证邮箱与现有账号一致时复用原用户 ID、个人目�
 ## 接口
 
 - `GET /`、`GET /api/releases/latest`：经过校验的官方稳定版本介绍与 GitHub 下载直链。
+- 版本摘要在服务端复用现有程序资料库范围的 GitHub App 短期令牌读取固定公开 latest 接口，避免共享出口的匿名限额；不使用个人 Token、不回退账号库、不转发重定向。60 秒缓存和入口限流保持，App 安装额度仍由安装共享。
 - `GET /api/health`：非敏感服务状态。
 - `GET /api/client/update-proxy`：每次操作都刷新私库配置与订阅，返回版本为 1 的固定节点配置，最多 16 条、32 KiB、`Cache-Control: no-store`，每 IP 每分钟 30 次。
 - `GET /api/update?url=...`：仅保留官方 latest 元数据兼容；安装包和校验清单请求在读取代理配置前返回 410 升级提示，不传输文件。

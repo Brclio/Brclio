@@ -15,7 +15,9 @@
     "check": "wrangler deploy --dry-run",
     "smoke": "node scripts/verify-live.mjs",
     "bundle:browser": "node scripts/bundle-browser.mjs",
-    "package:data-skill": "node scripts/package-data-skill.mjs"
+    "package:data-skill": "node scripts/package-data-skill.mjs",
+    "postdeploy": "node scripts/verify-deployment.mjs",
+    "verify:deployment": "node scripts/verify-deployment.mjs"
   },
   "dependencies": {
     "subtls": "0.5.0",

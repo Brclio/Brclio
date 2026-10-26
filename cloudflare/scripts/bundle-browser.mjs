@@ -2,6 +2,7 @@ import {build} from 'esbuild';
 import {mkdir, writeFile, readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import assert from 'node:assert/strict';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const output = new URL('../dist/browser/', import.meta.url);
 await mkdir(output, {recursive: true});
@@ -15,12 +16,19 @@ const result = await build({
   target: 'es2022',
   minify: true,
   legalComments: 'inline',
+  metafile: true,
   loader: {'.html': 'text', '.txt': 'text'},
   plugins: [{name: 'workers-node-builtins', setup(builder) {
     builder.onResolve({filter: /^crypto$/}, () => ({path: 'node:crypto', external: true}));
     builder.onResolve({filter: /^cloudflare:/}, args => ({path: args.path, external: true}));
   }}]
 });
+const outputs = Object.values(result.metafile.outputs);
+assert.equal(result.outputFiles.length, 1, 'Cloudflare deployments require one self-contained module.');
+assert.equal(outputs.length, 1, 'Cloudflare deployments must not emit extra chunks.');
+assert.deepEqual(outputs[0].exports, ['default'], 'Only the default Worker entry may be exported.');
+assert.ok(outputs[0].imports.every(item => item.external && /^(?:cloudflare:|node:)/.test(item.path)),
+  'HTML, scripts and styles must be inlined before upload.');
 const bundle = result.outputFiles[0].contents;
 const filename = 'brclio-client-services.mjs';
 await writeFile(new URL(filename, output), bundle);
@@ -37,6 +45,9 @@ const manifest = {
   generatedAt: new Date().toISOString(),
   filename,
   format: 'esm',
+  moduleCount: 1,
+  exports: outputs[0].exports,
+  externalImports: outputs[0].imports.map(({path}) => path),
   bytes: bundle.length,
   sha256: createHash('sha256').update(bundle).digest('hex'),
   compatibilityDate: '2026-10-18',
