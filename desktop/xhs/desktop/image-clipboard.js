@@ -62,7 +62,9 @@ export class NativeImageClipboard {
         const file = await downloadMedia({ root, directory: batch,
           asset: { key: `${String(image.index).padStart(3, '0')}-${title}`, kind: 'image', url: image.url },
           fetchImpl: this.fetchImpl, signal, beforeRequest: async () => {},
-          maxBytes: Math.min(this.maxImageBytes, remaining), timeoutMs: this.timeoutMs });
+          maxBytes: Math.min(this.maxImageBytes, remaining), timeoutMs: this.timeoutMs,
+          onProgress: state => this.onProgress({ requestId: input.requestId, completed: files.length, total: images.length,
+            ...state, receivedBytes: totalBytes + (state.loadedBytes || 0) }) });
         totalBytes += file.bytes;
         files.push(path.join(batch, file.name));
         this.progress(files.length, images.length, 'preparing', input.requestId);

@@ -21,6 +21,7 @@ import java.io.OutputStream;
 import java.io.PushbackInputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -36,7 +37,7 @@ final class XhsTransfer {
     private static final String USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36";
     private static final int BUFFER_SIZE = 64 * 1024;
 
-    interface Progress { void update(long bytes); }
+    interface Progress { void update(long bytes, long totalBytes); }
 
     static final class Cancellation {
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -283,6 +284,7 @@ final class XhsTransfer {
         IOException lastError = null;
         for (URI uri : entry.urls) {
             cancellation.check();
+            progress.update(0, 0);
             File file = File.createTempFile("media-", ".part", directory);
             boolean complete = false;
             try {
@@ -325,6 +327,7 @@ final class XhsTransfer {
                 if (status != 200) throw new IOException("媒体下载失败（HTTP " + status + "），请重新解析后重试。");
                 if (connection.getHeaderField("Content-Range") != null) throw new IOException("媒体服务器只返回了部分内容，请重试。");
                 long expected = XhsPolicy.contentLength(connection.getHeaderField("Content-Length"));
+                progress.update(0, Math.max(0, expected));
                 XhsPolicy.validateMediaBytes(kind, unlimitedVideo, completedBytes, Math.max(0, expected));
                 String encoding = connection.getContentEncoding();
                 if (encoding != null && !encoding.equalsIgnoreCase("identity")) {
@@ -368,13 +371,13 @@ final class XhsTransfer {
                                     ? count + 32L * 1024 * 1024 : Long.MAX_VALUE;
                         }
                         output.write(buffer, 0, length);
-                        progress.update(count);
+                        progress.update(count, Math.max(0, expected));
                     }
                     if (count < 1 || (expected >= 0 && count != expected)) {
                         throw new IOException("媒体下载不完整，请重试。");
                     }
                     cancellation.check();
-                    progress.update(count);
+                    progress.update(count, Math.max(0, expected));
                     return new Media(file, mime);
                 }
             } finally { cancellation.detach(connection); }
@@ -383,14 +386,24 @@ final class XhsTransfer {
     }
 
     static void copy(File source, OutputStream output, Cancellation cancellation) throws IOException {
+        copy(source, output, cancellation, (bytes, totalBytes) -> {});
+    }
+
+    static void copy(File source, OutputStream output, Cancellation cancellation, Progress progress) throws IOException {
+        long bytes = 0;
+        long totalBytes = source.length();
+        progress.update(0, totalBytes);
         try (InputStream input = new FileInputStream(source)) {
             byte[] buffer = new byte[BUFFER_SIZE];
             int length;
             while ((length = input.read(buffer)) != -1) {
                 cancellation.check();
                 output.write(buffer, 0, length);
+                bytes += length;
+                progress.update(bytes, totalBytes);
             }
         }
+        cancellation.check();
     }
 
     private static void validateTracks(File file, boolean requireAudio) throws IOException {
@@ -437,7 +450,8 @@ final class XhsTransfer {
     }
 
     private static HttpURLConnection connection(URI uri, Cancellation cancellation) throws IOException {
-        HttpURLConnection connection = (HttpURLConnection) uri.toURL().openConnection();
+        // XHS transfers have their own direct route. Never inherit updater proxy state.
+        HttpURLConnection connection = (HttpURLConnection) uri.toURL().openConnection(Proxy.NO_PROXY);
         connection.setConnectTimeout(20_000);
         connection.setReadTimeout(30_000);
         connection.setInstanceFollowRedirects(false);

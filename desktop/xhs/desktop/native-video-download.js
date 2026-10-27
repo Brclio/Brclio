@@ -28,11 +28,15 @@ export class NativeVideoDownload {
       if (!urls.length || urls.length > 20 || urls.some(url => typeof url !== 'string' || url.length > 12020 || !isXhsVideoUrl(url) || new URL(url).protocol !== 'https:')) throw new Error('视频链接无效。');
       controller = new AbortController(); this.requests.set(requestId, controller);
       const signal = controller.signal;
+      this.onProgress({ requestId, phase: 'preparing', loadedBytes: 0, message: '请选择保存位置。' });
       const filename = `${safeFilename(String(input.filename || input.title || '小红书视频').replace(/\.mp4$/i, ''), 100, 220)}.mp4`;
       const choice = await abortableOperation(() => this.showSaveDialog({ title: '保存视频', defaultPath: filename,
         filters: [{ name: 'MP4 视频', extensions: ['mp4'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] }), signal);
       throwIfAborted(signal);
-      if (choice.canceled || !choice.filePath) return { ok: true, cancelled: true };
+      if (choice.canceled || !choice.filePath) {
+        this.onProgress({ requestId, phase: 'cancelled' });
+        return { ok: true, cancelled: true };
+      }
       if (!path.isAbsolute(choice.filePath)) throw new Error('保存位置无效。');
       const root = await fs.realpath(path.dirname(choice.filePath)); const name = path.basename(choice.filePath);
       await assertSafeTarget(root, root, name);
@@ -53,7 +57,11 @@ export class NativeVideoDownload {
       this.onProgress({ requestId, phase: 'saved', loadedBytes: file.bytes, totalBytes: file.bytes });
       return { ok: true, cancelled: false, path: target, bytes: file.bytes, mediaTracks: file.mediaTracks };
     } catch (error) {
-      if (controller?.signal.aborted || error.name === 'AbortError') return { ok: true, cancelled: true };
+      if (controller?.signal.aborted || error.name === 'AbortError') {
+        this.onProgress({ requestId, phase: 'cancelled' });
+        return { ok: true, cancelled: true };
+      }
+      this.onProgress({ requestId, phase: 'error', message: error.message });
       return { ok: false, error: { code: error.code || 'VIDEO_DOWNLOAD_FAILED', message: error.message } };
     } finally {
       if (stage) await fs.rm(stage, { recursive: true, force: true }).catch(() => {});
