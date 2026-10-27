@@ -111,6 +111,13 @@
     <p class="update-notes" id="about-update-notes" hidden></p>
   </section></dialog>
   <dialog class="modal-content search-dialog" id="search-dialog"><div class="search-input-wrap"><svg class="icon"><use href="#i-search"/></svg><input id="global-search" placeholder="想找什么工具？" aria-label="搜索工具" autofocus><button class="icon-button" data-close aria-label="关闭搜索"><svg class="icon"><use href="#i-close"/></svg></button></div><button class="search-result" id="search-copy"><svg class="icon"><use href="#i-path"/></svg><span><strong>复制路径</strong><small>文件工具 · 格式设置与快速复制</small></span><kbd>↵</kbd></button><button class="search-result" id="search-xhs"><svg class="icon"><use href="#i-book"/></svg><span><strong>小红书工具</strong><small>单篇下载 · 原视频 · 主页批量 · 实况合成</small></span><kbd>↵</kbd></button><p id="search-empty" class="empty-state" hidden>没有找到相关工具。</p><p class="search-footer">Esc 关闭 <span>Brclio</span></p></dialog>
+  <dialog id="xhs-live-compress-dialog" class="modal-content xhs-compress-dialog" aria-labelledby="xhs-live-compress-title" aria-describedby="xhs-live-compress-description xhs-live-compress-detail">
+    <span class="subtle-tag">本机处理</span>
+    <h2 id="xhs-live-compress-title">图片较大，是否压缩导入？</h2>
+    <p id="xhs-live-compress-description"></p>
+    <p id="xhs-live-compress-detail" class="field-hint">将生成长边不超过 1440 像素的 JPG 副本用于实况制作，画面细节会适当减少。原文件保留，图片不会上传。</p>
+    <div class="xhs-action-row"><button type="button" class="button button-outline" id="xhs-live-compress-cancel" autofocus>取消导入</button><button type="button" class="button button-primary" id="xhs-live-compress-confirm">压缩并导入</button></div>
+  </dialog>
   <dialog id="xhs-image-dialog" class="modal-content xhs-image-dialog" aria-labelledby="xhs-image-caption"><div class="xhs-label-row"><h2 id="xhs-image-caption">笔记原图</h2><button type="button" class="button button-outline" id="xhs-image-close">关闭原图</button></div><img id="xhs-image-original" alt="笔记原图预览"></dialog>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden><svg class="icon"><use href="#i-check"/></svg><span></span></div>
 </body>

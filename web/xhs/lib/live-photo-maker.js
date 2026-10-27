@@ -9,7 +9,7 @@ const AUDIO_CONFIG = { codec: 'mp4a.40.2', sampleRate: 48000, numberOfChannels: 
 
 function abort(signal) { signal?.throwIfAborted(); }
 function abortedError() { return new DOMException('制作已取消。', 'AbortError'); }
-export function validateLivePhotoFiles(files) {
+export function validateLivePhotoFiles(files, { allowOversizedImages = false } = {}) {
   if (!Array.isArray(files) || !files.length) throw new Error('请选择图片或视频。');
   if (files.length > LIVE_PHOTO_LIMITS.maxFiles) throw new Error('一次最多选择 12 张图片。');
   let bytes = 0;
@@ -30,7 +30,7 @@ export function validateLivePhotoFiles(files) {
   const desktopOrigin = (globalThis.location?.protocol === 'brclio-xhs:' && globalThis.location.hostname === 'local')
     || (globalThis.location?.protocol === 'file:' && typeof globalThis.brclio?.xhsRequest === 'function');
   const desktopVideo = kinds[0] === 'video' && desktopOrigin;
-  if (!Number.isSafeInteger(bytes) || (bytes > LIVE_PHOTO_LIMITS.maxBytes && !desktopVideo))
+  if (!Number.isSafeInteger(bytes) || (bytes > LIVE_PHOTO_LIMITS.maxBytes && !desktopVideo && !(allowOversizedImages && kinds[0] === 'images')))
     throw new Error('素材总大小不能超过 150 MB，请先缩小文件。');
   return kinds[0];
 }
@@ -82,8 +82,8 @@ function hasVideoAudio(video) {
   return null;
 }
 
-export async function inspectLivePhotoFiles(files, { signal } = {}) {
-  const kind = validateLivePhotoFiles(files); abort(signal);
+export async function inspectLivePhotoFiles(files, { signal, allowOversizedImages = false } = {}) {
+  const kind = validateLivePhotoFiles(files, { allowOversizedImages }); abort(signal);
   if (kind === 'video') {
     const source = await loadVideo(files[0], signal);
     try { return { kind, duration: source.video.duration, width: source.video.videoWidth,
@@ -96,9 +96,55 @@ export async function inspectLivePhotoFiles(files, { signal } = {}) {
     pixels += image.naturalWidth * image.naturalHeight;
     first ??= { width: image.naturalWidth, height: image.naturalHeight };
     image.src = '';
-    if (pixels > LIVE_PHOTO_LIMITS.maxDecodedPixels) throw new Error('图片总像素超过 6400 万，请缩小图片或减少张数后制作。');
+    if (pixels > LIVE_PHOTO_LIMITS.maxDecodedPixels && !allowOversizedImages) throw new Error('图片总像素超过 6400 万，请缩小图片或减少张数后制作。');
   }
-  return { kind, duration: null, ...first, hasAudio: false };
+  abort(signal);
+  const bytes = files.reduce((total, file) => total + file.size, 0);
+  return { kind, duration: null, ...first, hasAudio: false, pixels, bytes,
+    requiresCompression: pixels > LIVE_PHOTO_LIMITS.maxDecodedPixels || bytes > LIVE_PHOTO_LIMITS.maxBytes };
+}
+
+// Keep originals untouched. Decode, resize and release one image at a time so
+// importing a large group does not retain all full-resolution decoded images.
+export async function compressLivePhotoFiles(files, { signal, onProgress = () => {} } = {}) {
+  if (validateLivePhotoFiles(files, { allowOversizedImages: true }) !== 'images') throw new Error('只有图片支持压缩导入。');
+  abort(signal);
+  const compressed = [];
+  for (const [index, file] of files.entries()) {
+    abort(signal);
+    onProgress({ progress: index / files.length, message: `正在压缩图片 ${index + 1} / ${files.length}…` });
+    const image = await loadImage(file, signal);
+    let canvas;
+    try {
+      abort(signal);
+      canvas = document.createElement('canvas');
+      Object.assign(canvas, livePhotoDimensions(image.naturalWidth, image.naturalHeight));
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!context) throw new Error('当前设备无法压缩图片，请更换图片后重试。');
+      context.fillStyle = '#fefcf6'; context.fillRect(0, 0, canvas.width, canvas.height);
+      context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high';
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve, reject) => {
+        const finish = (error, value) => { signal?.removeEventListener('abort', cancel); error ? reject(error) : resolve(value); };
+        const cancel = () => finish(signal.reason || abortedError());
+        signal?.addEventListener('abort', cancel, { once: true });
+        try {
+          canvas.toBlob(value => {
+            if (signal?.aborted) cancel();
+            else if (!value?.size) finish(new Error('图片压缩失败，请重新选择或手动缩小图片。'));
+            else finish(null, value);
+          }, 'image/jpeg', 0.92);
+        } catch (error) { finish(error); }
+      });
+      abort(signal);
+      const name = file.name.replace(/\.[^.]+$/, '') || '图片';
+      compressed.push(new File([blob], `${name}-compressed.jpg`, { type: 'image/jpeg', lastModified: file.lastModified }));
+    } finally { image.src = ''; if (canvas) canvas.width = canvas.height = 0; }
+  }
+  abort(signal);
+  validateLivePhotoFiles(compressed);
+  onProgress({ progress: 1, message: '图片压缩完成，正在导入…' });
+  return compressed;
 }
 
 function videoConfig(width, height) {
