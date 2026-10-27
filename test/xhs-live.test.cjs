@@ -461,7 +461,11 @@ await test("native ImageIO decodes HEIC pixels and reads MakerApple 17", { skip:
     const file = pathJoin(temporary, "image.heic"), swift = pathJoin(temporary, "inspect.swift");
     writeFileSync(file, muxHeicStill({ sample, decoderConfig: config, width: 160, height: 96, assetIdentifier: id }));
     writeFileSync(swift, `import Foundation\nimport ImageIO\nlet source = CGImageSourceCreateWithURL(URL(fileURLWithPath: CommandLine.arguments[1]) as CFURL, nil)!\nlet image = CGImageSourceCreateImageAtIndex(source, 0, nil)!\nlet properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)! as NSDictionary\nlet maker = properties[kCGImagePropertyMakerAppleDictionary] as! NSDictionary\nlet result: [String: Any] = ["type": CGImageSourceGetType(source)! as String, "count": CGImageSourceGetCount(source), "width": image.width, "height": image.height, "identifier": maker["17"]!]\nprint(String(data: try! JSONSerialization.data(withJSONObject: result), encoding: .utf8)!)\n`);
-    const result = JSON.parse(execFileSync("swift", [swift, file], { encoding: "utf8", timeout: 30000 }));
+    // Cold SDK module compilation on Intel runners can exceed 30 seconds.
+    // Budget compilation separately so the actual ImageIO decode stays bounded.
+    const executable = pathJoin(temporary, "inspect-heic");
+    execFileSync("/usr/bin/swiftc", [swift, "-o", executable], { encoding: "utf8", timeout: 120000 });
+    const result = JSON.parse(execFileSync(executable, [file], { encoding: "utf8", timeout: 10000 }));
     assert.deepEqual(result, { type: "public.heic", count: 1, width: 160, height: 96, identifier: id });
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 });
