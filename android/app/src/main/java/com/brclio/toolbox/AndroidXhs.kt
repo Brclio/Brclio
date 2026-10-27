@@ -36,7 +36,6 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
     private var generated: Generated? = null
     private var pendingGenerated: String? = null
     private val cancelledGenerated = linkedSetOf<String>()
-    private var lastProgress = 0L
     private data class Generated(val token: String, val file: File, val filename: String, val mime: String, val expected: Long, val requestId: String, var received: Long = 0)
     private class Operation(val entries: List<XhsTransfer.Entry>, val filename: String, val mime: String,
         val requestId: String, val callback: (Any?, String?) -> Unit, val file: File? = null, val eventType: String = "transfer") {
@@ -44,6 +43,8 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
         @Volatile var committed = false
         var document: Uri? = null
         var awaitingPicker = true
+        var lastProgress = 0L
+        var lastStage = ""
     }
     init {
         workers.execute {
@@ -115,6 +116,7 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
                     val directory = File(activity.cacheDir, "xhs-generated").apply { mkdirs() }
                     val token = UUID.randomUUID().toString()
                     generated = Generated(token, File.createTempFile("generated-", ".part", directory), XhsPolicy.filename(input.getString("filename"), "实况.zip"), mime, size, requestId)
+                    publish("transfer", JSONObject().put("requestId", requestId).put("status", "preparing").put("stage", "preparing").put("receivedBytes", 0).put("totalBytes", size).put("message", "正在准备导出文件"))
                     JSONObject().put("token", token).put("requestId", requestId)
                       } finally { if (pendingGenerated == requestId) pendingGenerated = null }
                     } }
@@ -124,8 +126,7 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
                     val item = requireGenerated(input); val data = Base64.decode(input.getString("data"), Base64.NO_WRAP)
                     require(data.size in 1..65536 && input.getLong("offset") == item.received && item.received + data.size <= item.expected) { "导出分块无效。" }
                     FileOutputStream(item.file, true).use { it.write(data) }; item.received += data.size
-                    val event = JSONObject().put("type", "transfer").put("state", JSONObject().put("requestId", item.requestId).put("receivedBytes", item.received).put("totalBytes", item.expected).put("message", "正在准备导出文件 ${item.received / 1024} KB"))
-                    activity.runOnUiThread { if (!closed) emit(event) }
+                    publish("transfer", JSONObject().put("requestId", item.requestId).put("status", "preparing").put("stage", "preparing").put("receivedBytes", item.received).put("totalBytes", item.expected).put("message", "正在准备导出文件 ${item.received / 1024} KB"))
                     JSONObject().put("received", item.received)
                 } }
                 "finishGenerated" -> {
@@ -184,11 +185,12 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
             // display extension and provider MIME preserve PNG/WebP/JPEG bytes.
             val preparation = Operation(entries, name, "image/*", requestId, callback, eventType = XhsOperationPolicy.eventType(action))
             preparation.awaitingPicker = false; operation = preparation
+            progress(preparation, 0, 1, message = "正在连接原图下载地址", force = true)
             workers.execute {
                 var media: XhsTransfer.Media? = null
                 try {
                     val cache = File(activity.cacheDir, "xhs-prepared-images").apply { mkdirs() }
-                    media = XhsTransfer.download(entries.first(), cache, 0, preparation.cancellation) { progress(preparation, it, 1) }
+                    media = XhsTransfer.download(entries.first(), cache, 0, preparation.cancellation) { bytes, total -> progress(preparation, bytes, 1, total) }
                     val prepared = media
                     activity.runOnUiThread {
                         synchronized(this) {
@@ -212,6 +214,7 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
     private fun launchSave(value: Operation) {
         check(operation == null) { "请先完成当前保存。" }
         operation = value
+        progress(value, 0, 0, stage = "choosing", message = "请选择保存位置", force = true)
         try { activity.startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = value.mime; putExtra(Intent.EXTRA_TITLE, value.filename); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) }, SAVE_DOCUMENT) }
         catch (error: Exception) { operation = null; value.file?.delete(); throw error }
     }
@@ -231,6 +234,7 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
             else if (write) activity.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             else if (read) activity.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+        progress(value, 0, 0, stage = "preparing", message = "正在准备保存", force = true)
         workers.execute { save(value) }
         return true
     }
@@ -242,40 +246,64 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
             check(preferences.edit().putString("pending", value.document.toString()).commit()) { "无法记录保存状态。" }
             value.cancellation.check()
             activity.contentResolver.openOutputStream(value.document!!, "wt")?.use { destination ->
-                if (value.file != null) { XhsTransfer.copy(value.file, destination, value.cancellation); bytes = value.file.length() }
+                if (value.file != null) {
+                    XhsTransfer.copy(value.file, destination, value.cancellation) { received, total -> progress(value, received, 1, total, "saving", "正在写入文件") }
+                    bytes = value.file.length()
+                }
                 else if (value.mime == "application/zip") ZipOutputStream(destination).use { zip ->
                     val names = hashSetOf<String>()
                     value.entries.forEachIndexed { index, entry ->
-                        val media = if (entry.text == null) XhsTransfer.download(entry, directory, bytes, value.cancellation) { received -> progress(value, bytes + received, index + 1) } else null
+                        val media = if (entry.text == null) XhsTransfer.download(entry, directory, bytes, value.cancellation) { received, _ -> progress(value, bytes + received, index + 1) } else null
                         try {
                             val initial = if (media == null) entry.name else XhsPolicy.mediaFilename(entry.name, media.mime)
                             var name = initial; var suffix = 2
                             while (!names.add(name.lowercase(Locale.ROOT))) name = XhsPolicy.numberedFilename(initial, suffix++)
+                            progress(value, bytes + (media?.file?.length() ?: 0), index + 1, stage = "archiving", message = "正在写入 ZIP · 第 ${index + 1} / ${value.entries.size} 个文件", force = true)
                             zip.putNextEntry(ZipEntry(name))
-                            if (media != null) { XhsTransfer.copy(media.file, zip, value.cancellation); bytes += media.file.length() }
+                            if (media != null) {
+                                val downloadedBytes = bytes + media.file.length()
+                                XhsTransfer.copy(media.file, zip, value.cancellation) { written, _ ->
+                                    progress(value, downloadedBytes, index + 1, stage = "archiving", message = "正在写入 ZIP · 第 ${index + 1} / ${value.entries.size} 个文件 · 已写入 ${written / 1024} KB")
+                                }
+                                bytes = downloadedBytes
+                            }
                             else { val text = entry.text.toByteArray(Charsets.UTF_8); require(bytes + text.size <= XhsPolicy.MAX_TOTAL_BYTES); zip.write(text); bytes += text.size }
                             zip.closeEntry()
+                            progress(value, bytes, index + 1, stage = "archiving", message = "已写入 ${index + 1} / ${value.entries.size} 个文件", completed = index + 1, force = true)
                         } finally { media?.file?.delete() }
                     }
+                    progress(value, bytes, value.entries.size, stage = "saving", message = "正在完成 ZIP 文件", completed = value.entries.size, force = true)
                     value.cancellation.check(); zip.finish()
                 } else {
                     val entry = value.entries.first()
-                    if (entry.text != null) { val text = entry.text.toByteArray(Charsets.UTF_8); destination.write(text); bytes = text.size.toLong() }
+                    if (entry.text != null) {
+                        val text = entry.text.toByteArray(Charsets.UTF_8)
+                        progress(value, 0, 1, text.size.toLong(), "saving", "正在写入文案", force = true)
+                        value.cancellation.check(); destination.write(text); bytes = text.size.toLong()
+                        progress(value, bytes, 1, bytes, "saving", "正在完成文案保存", force = true)
+                    }
                     else {
-                        val media = XhsTransfer.download(entry, directory, 0, value.cancellation) { progress(value, it, 1) }
+                        val media = XhsTransfer.download(entry, directory, 0, value.cancellation) { received, total -> progress(value, received, 1, total) }
                         try {
                             if (media.mime != value.mime) {
                                 if (entry.kind != "image") error("媒体实际格式与所选格式不同，请使用 ZIP 保存。")
                                 val renamed = DocumentsContract.renameDocument(activity.contentResolver, value.document!!, XhsPolicy.mediaFilename(value.filename, media.mime)) ?: error("原图格式不同，请使用 ZIP 保存。")
                                 value.document = renamed; preferences.edit().putString("pending", renamed.toString()).commit()
                             }
-                            XhsTransfer.copy(media.file, destination, value.cancellation); bytes = media.file.length()
+                            XhsTransfer.copy(media.file, destination, value.cancellation) { received, total -> progress(value, received, 1, total, "saving", "正在写入文件") }
+                            bytes = media.file.length()
                         } finally { media.file.delete() }
                     }
                     value.cancellation.check(); destination.flush()
                 }
             } ?: error("无法打开保存位置。")
-            value.cancellation.check(); check(preferences.edit().remove("pending").commit()) { "无法确认保存状态。" }; value.committed = true; complete = true
+            // Serialize the commit with cancelTransfer: an accepted cancellation
+            // must never race past the last check and leave a completed file.
+            synchronized(this) {
+                value.cancellation.check()
+                check(preferences.edit().remove("pending").commit()) { "无法确认保存状态。" }
+                value.committed = true; complete = true
+            }
         } catch (error: Exception) { failure = error.message ?: "保存失败。" }
         finally {
             directory.deleteRecursively(); value.file?.delete()
@@ -302,13 +330,15 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
         for (index in 0 until images.length()) records.put(JSONObject(images.getJSONObject(index).toString()).put("name", "图片_${index + 1}.jpg"))
         val entries = XhsTransfer.entries(records, true)
         val value = Operation(entries, "", "image/*", input.optString("requestId").ifBlank { UUID.randomUUID().toString() }, callback, eventType = "clipboard"); value.awaitingPicker = false; operation = value
+        progress(value, 0, 1, message = "正在准备原图", force = true)
         workers.execute {
             val directory = File(File(activity.cacheDir, "xhs-shared-images"), UUID.randomUUID().toString())
             try {
                 check(directory.mkdirs()) { "无法准备图片缓存。" }
                 val uris = arrayListOf<Uri>(); val mimes = linkedSetOf<String>(); var bytes = 0L
                 entries.forEachIndexed { index, entry ->
-                    val media = XhsTransfer.download(entry, directory, bytes, value.cancellation) { progress(value, bytes + it, index + 1) }; bytes += media.file.length()
+                    val media = XhsTransfer.download(entry, directory, bytes, value.cancellation) { received, total -> progress(value, bytes + received, index + 1, if (entries.size == 1) total else 0) }; bytes += media.file.length()
+                    progress(value, bytes, index + 1, stage = "preparing", message = "已准备 ${index + 1} / ${entries.size} 张原图", completed = index + 1, force = true)
                     val file = File(directory, "图片_${index + 1}${XhsPolicy.extension(media.mime)}")
                     check(media.file.renameTo(file)) { "无法准备图片文件。" }
                     uris.add(FileProvider.getUriForFile(activity, "${activity.packageName}.updates", file)); mimes.add(media.mime)
@@ -321,7 +351,8 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
                         uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
                         if (share) activity.startActivity(Intent.createChooser(Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).apply { type = if (mimes.size == 1) mimes.first() else "image/*"; clipData = clip; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION); if (uris.size == 1) putExtra(Intent.EXTRA_STREAM, uris.first()) else putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris) }, "分享原图"))
                         else activity.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
-                        finish(value, JSONObject().put("count", uris.size), null)
+                        value.committed = true
+                        finish(value, JSONObject().put("count", uris.size).put("bytes", bytes), null)
                     } catch (error: Exception) {
                         directory.deleteRecursively()
                         finish(value, if (value.cancellation.isCancelled) JSONObject().put("ok", true).put("cancelled", true) else null,
@@ -335,12 +366,32 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
             }
         }
     }
-    private fun progress(value: Operation, bytes: Long, item: Int) {
-        val now = android.os.SystemClock.elapsedRealtime(); if (now - lastProgress < 150) return; lastProgress = now
-        activity.runOnUiThread { if (!closed) emit(JSONObject().put("type", value.eventType).put("state", JSONObject().put("requestId", value.requestId).put("receivedBytes", bytes).put("completed", item).put("total", value.entries.size).put("message", "已接收 ${bytes / 1024} KB · 第 $item 个文件"))) }
+    private fun publish(type: String, state: JSONObject) {
+        activity.runOnUiThread { if (!closed) emit(JSONObject().put("type", type).put("state", state)) }
+    }
+    private fun progress(value: Operation, bytes: Long, item: Int, totalBytes: Long = 0,
+        stage: String = "downloading", message: String = "已接收 ${bytes / 1024} KB · 第 $item / ${value.entries.size} 个文件",
+        completed: Int = (item - 1).coerceAtLeast(0), force: Boolean = false) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!force && value.lastStage == stage && bytes != 0L && now - value.lastProgress < 150) return
+        value.lastProgress = now; value.lastStage = stage
+        publish(value.eventType, JSONObject().put("requestId", value.requestId).put("status", stage).put("stage", stage)
+            .put("receivedBytes", bytes).put("totalBytes", totalBytes).put("completed", completed)
+            .put("current", item).put("total", value.entries.size).put("message", message))
     }
     private fun finish(value: Operation, result: JSONObject?, error: String?) {
-        activity.runOnUiThread { if (operation === value) operation = null; value.file?.delete(); if (!closed) value.callback(result, error) }
+        activity.runOnUiThread {
+            if (operation === value) operation = null
+            value.file?.delete()
+            if (!closed) {
+                val status = if (error != null) "failed" else if (result?.optBoolean("cancelled") == true) "cancelled" else "completed"
+                val state = JSONObject().put("requestId", value.requestId).put("status", status).put("stage", status)
+                    .put("message", error ?: if (status == "cancelled") "操作已取消" else "保存已完成")
+                if (status == "completed") state.put("completed", value.entries.size).put("total", value.entries.size).put("receivedBytes", result?.optLong("bytes", 0) ?: 0)
+                emit(JSONObject().put("type", value.eventType).put("state", state))
+                value.callback(result, error)
+            }
+        }
     }
     fun intercept(request: WebResourceRequest): WebResourceResponse? {
         val uri = request.url

@@ -132,6 +132,9 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   // No account API, authentication token or shared Brclio setting enters this module.
   const browserSession = session.fromPartition('persist:brclio-xhs');
+  // XHS parsing, previews and downloads never share the updater's built-in proxy.
+  // Pin this isolated session to direct connections before making any requests.
+  await browserSession.setProxy?.({ mode: 'direct' });
   const lifetime = new AbortController();
   const baseFetch = fetchImpl || ((url, options) => browserSession.fetch(url, options));
   const network = (url, options = {}) => abortableFetch(baseFetch, url, { ...options,
@@ -178,14 +181,21 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
     const transfer = beginTransfer(input);
     const requestId = transfer.requestId;
     try {
-    if (!imageClipboard) {
-      const writers = clipboardWriters || await import('./desktop/native-clipboard.js');
-      imageClipboard = new NativeImageClipboard({ directory: path.join(directory, 'clipboard-images'), fetchImpl: network,
-        writeFiles: writers.writeImageFiles, writeImage: writers.writeSingleImage, onProgress: state => emit('clipboard', state), signal: lifetime.signal });
-    }
-    return await imageClipboard.copy({ ...input, requestId }, { signal: transfer.controller.signal });
+      emit('clipboard', { requestId, phase: 'preparing', completed: 0, total: input.images?.length || 0 });
+      if (!imageClipboard) {
+        const writers = clipboardWriters || await import('./desktop/native-clipboard.js');
+        imageClipboard = new NativeImageClipboard({ directory: path.join(directory, 'clipboard-images'), fetchImpl: network,
+          writeFiles: writers.writeImageFiles, writeImage: writers.writeSingleImage, onProgress: state => emit('clipboard', state), signal: lifetime.signal });
+      }
+      const result = await imageClipboard.copy({ ...input, requestId }, { signal: transfer.controller.signal });
+      emit('clipboard', { requestId, phase: 'saved', completed: result.count, total: result.count });
+      return result;
     } catch (error) {
-      if (transfer.controller.signal.aborted) return { ok: true, cancelled: true };
+      if (transfer.controller.signal.aborted) {
+        emit('clipboard', { requestId, phase: 'cancelled' });
+        return { ok: true, cancelled: true };
+      }
+      emit('clipboard', { requestId, phase: 'error', message: error.message });
       throw error;
     } finally { endTransfer(transfer); }
   }
@@ -226,7 +236,7 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
     try {
       progress({ phase: 'preparing', completed: 0, message: '请选择保存位置。' });
       const root = input.directory ? await approvedDirectory(input.directory) : await chooseDirectory(controller.signal);
-      if (!root) return { ok: true, cancelled: true };
+      if (!root) { progress({ phase: 'cancelled' }); return { ok: true, cancelled: true }; }
       throwIfAborted(controller.signal);
       const id = /^[a-f0-9]{24}$/i.test(note.noteId || '') ? note.noteId : randomUUID().slice(0, 8);
       const target = await ensureNoteDirectory(root, `${safeFilename(note.title || '小红书笔记', 55, 160)}-${id}`);
@@ -275,7 +285,11 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
       progress({ phase: 'saved', completed: files.length, receivedBytes: completedBytes, message: '素材已保存。' });
       return { ok: true, cancelled: false, path: target, directory: target, count: files.length, files };
     } catch (error) {
-      if (controller.signal.aborted || error.name === 'AbortError') return { ok: true, cancelled: true };
+      if (controller.signal.aborted || error.name === 'AbortError') {
+        progress({ phase: 'cancelled', receivedBytes: completedBytes });
+        return { ok: true, cancelled: true };
+      }
+      progress({ phase: 'error', receivedBytes: completedBytes, message: error.message });
       throw error;
     } finally { saving = false; endTransfer(transfer); }
   }
@@ -295,14 +309,16 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
     const maxTotalBytes = 256 * 1024 ** 2;
     const text = makeNoteTextFileData({ title: note.title, content: note.content, sourceUrl: note.sourceUrl, engine: note.engine || 'desktop' });
     let consumed = text.byteLength;
+    let receivedBytes = 0;
     const emitProgress = state => emit('archive', { requestId, ...state });
     try {
+      emitProgress({ phase: 'preparing', completed: 0, message: '请选择保存位置。' });
       const kind = input.format === 'live' ? '实况' : input.format === 'selected' ? '所选素材' : '原图';
       const choice = await abortableOperation(() => dialog.showSaveDialog(getWindow(), { title: `保存${kind}压缩包`,
         defaultPath: `${safeFilename(note.title || '小红书笔记', 80, 200)}-${kind}.zip`,
         filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] }), signal);
       throwIfAborted(signal);
-      if (choice.canceled || !choice.filePath) return { ok: true, cancelled: true };
+      if (choice.canceled || !choice.filePath) { emitProgress({ phase: 'cancelled' }); return { ok: true, cancelled: true }; }
       if (!path.isAbsolute(choice.filePath)) throw new Error('压缩包保存位置无效。');
       const root = await fs.realpath(path.dirname(choice.filePath)), name = path.basename(choice.filePath);
       await assertSafeTarget(root, root, name);
@@ -328,7 +344,8 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
           try {
             file = await downloadMedia({ root, directory: stage, asset: { ...asset, url }, signal, fetchImpl: network,
               maxBytes: Math.min(remaining, (asset.kind === 'image' ? 64 : 128) * 1024 ** 2),
-              onProgress: state => emitProgress({ completed: index, total: assets.length, ...state }) });
+              onProgress: state => emitProgress({ completed: index, total: assets.length, ...state,
+                receivedBytes: receivedBytes + (state.loadedBytes || 0) }) });
             break;
           } catch (error) { lastError = error; if (signal.aborted) throw error; }
         }
@@ -336,19 +353,25 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
         const stat = await fs.lstat(path.join(stage, file.name));
         if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== file.bytes || stat.size > remaining) throw new Error('压缩包素材大小校验失败。');
         consumed += file.bytes;
+        receivedBytes += file.bytes;
         files.push({ name: file.name, data: await fs.readFile(path.join(stage, file.name)) });
+        emitProgress({ phase: 'downloading', completed: index + 1, total: assets.length, receivedBytes });
       }
-      throwIfAborted(signal); emitProgress({ phase: 'archiving', completed: assets.length, total: assets.length });
+      throwIfAborted(signal); emitProgress({ phase: 'archiving', completed: assets.length, total: assets.length, receivedBytes });
       const zip = makeZipBlob(files); files.length = 0;
       if (zip.size > maxTotalBytes + 1024 ** 2) throw new Error('压缩包超过保存上限。');
       const temporary = path.join(stage, 'archive.zip');
       await pipeline(Readable.fromWeb(zip.stream()), createWriteStream(temporary, { flags: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), mode: 0o600 }), { signal });
       await assertSafeTarget(root, root, name); throwIfAborted(signal);
       const target = path.join(root, name); await fs.rename(temporary, target);
-      emitProgress({ phase: 'saved', completed: assets.length, total: assets.length });
+      emitProgress({ phase: 'saved', completed: assets.length, total: assets.length, receivedBytes });
       return { ok: true, cancelled: false, path: target, count: assets.length, bytes: zip.size };
     } catch (error) {
-      if (signal.aborted || error.name === 'AbortError') return { ok: true, cancelled: true };
+      if (signal.aborted || error.name === 'AbortError') {
+        emitProgress({ phase: 'cancelled', receivedBytes });
+        return { ok: true, cancelled: true };
+      }
+      emitProgress({ phase: 'error', receivedBytes, message: error.message });
       throw error;
     } finally {
       archives.delete(requestId); transfers.delete(controller);

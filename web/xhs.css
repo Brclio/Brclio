@@ -35,7 +35,7 @@
 .xhs-image-card img { display: block; width: 100%; height: 210px; object-fit: contain; background: #f5f0e4; }
 .xhs-image-actions { padding: 10px 12px; display: flex; gap: 9px; flex-wrap: wrap; }
 .xhs-image-actions button { font-size: .75rem; padding: 5px 0; }
-.xhs-video-preview { display: block; max-height: 410px; width: 100%; margin: 15px 0; border-radius: 10px; background: #f0eadc; }
+.xhs-video-preview { display: block; width: 100%; height: clamp(220px,50vw,410px); object-fit: contain; margin: 15px 0; border-radius: 10px; background: #f0eadc; }
 .xhs-full-width { width: 100%; }
 .xhs-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin: 18px 0; }
 .xhs-directory-row { margin: 18px 0 8px; padding: 14px 0; border-bottom: 1px solid rgba(26,26,46,.08); }
@@ -53,6 +53,14 @@
 .xhs-queue-state { font-size: .75rem; color: #676572; }
 .xhs-queue-state.completed { color: #397052; }.xhs-queue-state.failed { color: #a73040; }
 .xhs-workspace progress { display: block; width: 100%; height: 7px; accent-color: #2b7fd8; margin-top: 16px; }
+.xhs-download-panel { position: fixed; right: clamp(16px,3vw,36px); bottom: 20px; z-index: 50; width: min(440px,calc(100vw - 32px)); max-height: calc(100dvh - 132px); overflow-y: auto; box-shadow: 0 8px 32px rgba(26,26,46,.14); }
+.xhs-download-panel .xhs-label-row { margin-bottom: 6px; }
+.xhs-download-panel h2 { font-size: .95rem; }
+.xhs-download-panel .field-hint { margin: 6px 0; overflow-wrap: anywhere; }
+.xhs-download-panel .xhs-action-row { margin-top: 12px; }
+.xhs-download-panel progress { height: 9px; margin: 12px 0; }
+@media(min-width:601px) and (max-width:900px) { .xhs-download-panel { max-width: calc(100vw - 220px); } }
+@media(max-width:600px) { .xhs-download-panel { right: 16px; bottom: max(16px,env(safe-area-inset-bottom)); padding: 16px; } }
 .xhs-live-layout { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(0,1fr); gap: 22px; align-items: start; }
 .xhs-file-picker { border: 1.5px dashed #a4b9cc; border-radius: 10px; background: #faf6eb; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; gap: 12px; padding: 24px 16px; cursor: pointer; position: relative; }
 .xhs-file-picker:hover { border-color: #2b7fd8; background: #f5f0df; }

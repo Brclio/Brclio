@@ -20,7 +20,22 @@
   function title() { return String(state.note?.title || '小红书笔记').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 120); }
   function noteText() { const note = state.note; if (!note) return ''; const heading = String(note.title || '').trim(), content = String(note.content || '').trim(); return !content ? heading : !heading || content === heading || content.startsWith(heading + '\n') ? content : heading + '\n\n' + content; }
   async function copyText(value) { if (window.BrclioHost?.copyText) await window.BrclioHost.copyText(value); else await navigator.clipboard.writeText(value); message('已复制到剪贴板。'); }
-  async function download(blob, filename) { await platformReady; if (state.hostPlatform === 'android') { if (!host.saveGenerated) throw new Error('请更新安卓客户端以导出实况文件。'); const result = await performTransfer('saveGenerated', {}, '正在准备生成文件并选择保存位置…', requestId => host.saveGenerated(blob, filename, { requestId })); if (result?.ok === false) throw new Error(typeof result.error === 'string' ? result.error : result.error?.message || '文件保存失败。'); message(result?.cancelled || result?.canceled ? '已取消保存。' : '文件已保存。'); return result; } const url = URL.createObjectURL(blob), anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
+  async function download(blob, filename) {
+    await platformReady;
+    if (state.hostPlatform === 'android') {
+      if (!host.saveGenerated) throw new Error('请更新安卓客户端以导出实况文件。');
+      const result = await performTransfer('saveGenerated', {}, '正在准备生成文件并选择保存位置…', requestId => host.saveGenerated(blob, filename, { requestId }));
+      message(result?.cancelled || result?.canceled ? '已取消保存。' : '文件已保存。'); return result;
+    }
+    return performTransfer('saveGenerated', {}, `正在准备导出 ${filename}…`, async () => {
+      // Let the progress panel paint before handing the local Blob to the host.
+      await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+      const url = URL.createObjectURL(blob), anchor = document.createElement('a');
+      try { anchor.href = url; anchor.download = filename; document.body.append(anchor); anchor.click(); }
+      finally { anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
+      return { ok: true, handedOff: true };
+    }, false);
+  }
   function setTab(name) { if (name === 'profile' && state.hostPlatform === 'android') { message('主页批量下载在 macOS 或 Windows 桌面客户端中使用。'); return; } for (const tab of document.querySelectorAll('[data-xhs-tab]')) { const active = tab.dataset.xhsTab === name; tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1; $('panel-' + tab.dataset.xhsTab).hidden = !active; } if (name === 'live') void loadLiveSupport(); }
   const tabs = [...document.querySelectorAll('[data-xhs-tab]')];
   for (const tab of tabs) { tab.addEventListener('click', () => setTab(tab.dataset.xhsTab)); tab.addEventListener('keydown', event => { const available = tabs.filter(item => !item.disabled), index = available.indexOf(tab); let next; if (event.key === 'ArrowRight') next = available[(index + 1) % available.length]; if (event.key === 'ArrowLeft') next = available[(index + available.length - 1) % available.length]; if (event.key === 'Home') next = available[0]; if (event.key === 'End') next = available.at(-1); if (next) { event.preventDefault(); setTab(next.dataset.xhsTab); next.focus(); } }); }
@@ -33,19 +48,34 @@
     renderSelection();
     for (const id of ['save-video','copy-video-link','open-video-link']) $(id).disabled = !isNative || blocked || !videoCandidates().length;
   }
-  async function performTransfer(action, input, description, operation) {
+  function showDownloadProgress(kind, description, cancellable = true) {
+    message('');
+    $('transfer-panel').hidden = false; $('transfer-panel').setAttribute('aria-busy', 'true'); $('transfer-dismiss').hidden = true;
+    $('download-detail').textContent = '';
+    for (const name of ['video', 'archive', 'transfer']) {
+      const active = name === kind;
+      $(name + '-status').hidden = !active; $(name + '-progress').hidden = !active;
+      $(name === 'transfer' ? 'transfer-cancel' : 'cancel-' + name).hidden = !active || !cancellable;
+    }
+    $(kind + '-status').textContent = description; $(kind + '-progress').removeAttribute('value');
+  }
+  function finishDownloadProgress(kind, description, cancelled = false) {
+    $(kind + '-status').textContent = description; $(kind + '-progress').hidden = cancelled;
+    if (!cancelled) $(kind + '-progress').value = 100;
+    $('download-detail').textContent = cancelled ? '' : '100%';
+    $('transfer-panel').setAttribute('aria-busy', 'false'); $('transfer-dismiss').hidden = false;
+  }
+  click('transfer-dismiss', () => { if (!nativeBusy()) $('transfer-panel').hidden = true; });
+  async function performTransfer(action, input, description, operation, cancellable = true) {
     if (nativeBusy()) throw new Error('已有素材正在处理，请完成或取消后重试。');
     const requestId = `transfer-${crypto.randomUUID()}`; state.transferRequest = requestId; syncNativeBusy();
-    $('transfer-panel').hidden = false; $('transfer-status').hidden = false; $('transfer-status').textContent = description;
-    $('transfer-progress').hidden = false; $('transfer-progress').removeAttribute('value'); $('transfer-cancel').hidden = false;
+    showDownloadProgress('transfer', description, cancellable);
     try {
       const result = operation ? await operation(requestId) : await request(action, { ...input, requestId });
       if (result?.ok === false) throw new Error(typeof result.error === 'string' ? result.error : result.error?.message || '素材处理失败。');
-      $('transfer-status').textContent = result?.cancelled || result?.canceled ? '素材处理已取消。' : '所选素材已处理完成。';
-      if (result?.cancelled || result?.canceled) $('transfer-progress').hidden = true;
-      else { $('transfer-progress').hidden = false; $('transfer-progress').value = 100; }
+      finishDownloadProgress('transfer', result?.cancelled || result?.canceled ? '素材处理已取消。' : result?.handedOff ? '文件已交给系统下载，请在下载列表查看保存结果。' : '所选素材已处理完成。', Boolean(result?.cancelled || result?.canceled));
       return result;
-    } catch (error) { $('transfer-progress').hidden = true; $('transfer-status').textContent = error.message; throw error; }
+    } catch (error) { finishDownloadProgress('transfer', error.message, true); throw error; }
     finally { state.transferRequest = null; $('transfer-cancel').hidden = true; syncNativeBusy(); }
   }
   click('transfer-cancel', async () => { $('transfer-status').textContent = '正在取消素材处理…'; await request('cancelTransfer', { requestId: state.transferRequest }); });
@@ -77,19 +107,29 @@
     renderVideo(); renderSelection(); syncNativeBusy(); message('笔记已解析，可以选择媒体并保存。');
   }
   function videoLabel(video, index) { return [video.label || video.quality || video.name || `候选 ${index + 1}`, video.original || video.isOriginal ? '原视频' : '', video.width && video.height ? `${video.width} × ${video.height}` : '', video.size ? `${(video.size / 1048576).toFixed(1)} MB` : ''].filter(Boolean).join(' · '); }
-  function renderVideo() { $('video-preview').hidden = !videoCandidates().length; const video = videoCandidates()[Number($('video-select').value || 0)]; $('video-preview').pause(); $('video-preview').removeAttribute('src'); if (video?.url) $('video-preview').src = mediaURL(video.url, 'video'); syncNativeBusy(); }
+  function renderVideo() {
+    const preview = $('video-preview'), video = videoCandidates()[Number($('video-select').value || 0)];
+    preview.hidden = !video; preview.pause(); preview.removeAttribute('src'); preview.removeAttribute('poster');
+    if (video?.url) {
+      const cover = state.note?.images?.[0]?.url;
+      if (cover) preview.poster = mediaURL(cover);
+      preview.src = mediaURL(video.url, 'video');
+    }
+    syncNativeBusy();
+  }
   async function saveNote(format = 'all', images = selectedImages()) { const result = await performTransfer('saveNote', { note: state.note, images, format }, '正在保存笔记素材…'); message((result?.canceled || result?.cancelled) ? '已取消保存。' : '笔记素材已保存。'); return result; }
   async function exportArchive(format, images = selectedImages()) {
     if (nativeBusy()) throw new Error('已有素材正在处理，请完成或取消后重试。');
-    const requestId = `archive-${crypto.randomUUID()}`; state.archiveRequest = requestId; syncNativeBusy(); $('cancel-archive').hidden = false; message('正在本机下载素材并打包 ZIP…');
-    try { const result = await request('exportArchive', { requestId, note: state.note, images, format }); message((result?.canceled || result?.cancelled) ? 'ZIP 导出已取消。' : 'ZIP 已保存，内含所选素材与笔记文案。'); return result; }
+    const requestId = `archive-${crypto.randomUUID()}`; state.archiveRequest = requestId; syncNativeBusy(); showDownloadProgress('archive', '正在准备下载素材并打包 ZIP…');
+    try { const result = await request('exportArchive', { requestId, note: state.note, images, format }); const cancelled = Boolean(result?.canceled || result?.cancelled); const description = cancelled ? 'ZIP 导出已取消。' : 'ZIP 已保存，内含所选素材与笔记文案。'; finishDownloadProgress('archive', description, cancelled); message(description); return result; }
+    catch (error) { finishDownloadProgress('archive', error.message, true); throw error; }
     finally { state.archiveRequest = null; $('cancel-archive').hidden = true; syncNativeBusy(); }
   }
   async function saveVideo(video, filename, requireAudio = true) {
     if (nativeBusy()) throw new Error('已有素材正在处理，请完成或取消后重试。');
-    const requestId = crypto.randomUUID(); state.videoRequest = requestId; syncNativeBusy(); $('cancel-video').hidden = false; $('video-progress').hidden = false; $('video-progress').removeAttribute('value'); $('video-status').textContent = '准备下载…';
-    try { const result = await request('saveVideo', { requestId, video, filename, requireAudio }); const cancelled = result?.canceled || result?.cancelled; $('video-progress').hidden = Boolean(cancelled); if (!cancelled) $('video-progress').value = 100; $('video-status').textContent = cancelled ? '已取消下载。' : '视频已下载并保存。'; message($('video-status').textContent); }
-    catch (error) { $('video-progress').hidden = true; $('video-status').textContent = error.message; throw error; }
+    const requestId = crypto.randomUUID(); state.videoRequest = requestId; syncNativeBusy(); showDownloadProgress('video', '准备下载，请选择保存位置…');
+    try { const result = await request('saveVideo', { requestId, video, filename, requireAudio }); const cancelled = Boolean(result?.canceled || result?.cancelled); finishDownloadProgress('video', cancelled ? '已取消下载。' : '视频已下载并保存。', cancelled); message($('video-status').textContent); }
+    catch (error) { finishDownloadProgress('video', error.message, true); throw error; }
     finally { state.videoRequest = null; $('cancel-video').hidden = true; syncNativeBusy(); }
   }
   $('parse-form').addEventListener('submit', event => { event.preventDefault(); void run($('parse'), async () => { const text = $('share').value.trim(); if (!text) throw new Error('请先粘贴笔记链接或分享文案。'); state.clipboardSeen = text; $('clipboard-notice').hidden = true; message('正在解析笔记…'); const result = await request('parse', { text, engine: $('engine').value }); renderNote({ ...(result.note || result), sourceUrl: (result.note || result).sourceUrl || text.match(/https?:\/\/[^\s<>]+/)?.[0] || '' }); }); });
@@ -125,6 +165,10 @@
     $('profile-status').textContent = labels[profile.status] || profile.status || '尚未开始';
     $('profile-message').textContent = [profile.message, profile.currentTitle, profile.nextRequestAt ? `下一次请求：${new Date(profile.nextRequestAt).toLocaleTimeString('zh-CN')}` : ''].filter(Boolean).join(' · ');
     const items = profile.items || [], failed = profile.failed ?? items.filter(item => item.status === 'failed').length;
+    const total = profile.discovered ?? items.length, processed = ['completed','skipped','failed'].reduce((sum, key) => sum + (profile[key] ?? items.filter(item => item.status === key).length), 0);
+    $('profile-progress').hidden = !active && !total;
+    if (profile.status === 'discovering' || !total) $('profile-progress').removeAttribute('value');
+    else $('profile-progress').value = Math.min(profile.status === 'completed' ? 100 : 99, processed / total * 100);
     $('profile-stats').replaceChildren();
     for (const [key, label] of [['discovered', '发现'], ['completed', '完成'], ['skipped', '跳过'], ['failed', '失败']]) { const span = element('span', '', label + ' '); span.append(element('strong', '', String(profile[key] ?? (key === 'discovered' ? items.length : items.filter(item => item.status === key).length)))); $('profile-stats').append(span); }
     $('profile-start').disabled = !desktop || active; $('profile-pause').disabled = !desktop || !active; $('profile-resume').disabled = !desktop || profile.status !== 'paused'; $('profile-cancel').disabled = !desktop || !active && profile.status !== 'paused'; $('profile-retry').disabled = !desktop || active || !failed;
@@ -354,13 +398,32 @@
   function applyNativeProgress(progress, percent) {
     if (percent === null) progress.removeAttribute('value'); else progress.value = percent;
   }
+  function readableBytes(value) {
+    if (value < 1024) return `${value} B`;
+    if (value < 1048576) return `${(value / 1024).toFixed(1)} KB`;
+    if (value < 1073741824) return `${(value / 1048576).toFixed(1)} MB`;
+    return `${(value / 1073741824).toFixed(2)} GB`;
+  }
+  function updateDownloadProgress(kind, value, batch = false) {
+    const percent = nativeProgressPercent(value, batch), parts = [];
+    applyNativeProgress($(kind + '-progress'), percent);
+    if (percent !== null) parts.push(`${percent.toFixed(1)}%`);
+    if (value.total > 1) parts.push(`已完成 ${value.completed || 0} / ${value.total} 个素材`);
+    const received = value.receivedBytes ?? value.loadedBytes;
+    if (Number.isFinite(received) && received >= 0) parts.push(`已接收 ${readableBytes(received)}${value.totalBytes > 0 && !(batch && value.total > 1) ? ' / ' + readableBytes(value.totalBytes) : ''}`);
+    const phase = value.phase || value.stage;
+    if (phase === 'archiving') parts.push('正在打包 ZIP');
+    else if (['verifying','validating','saving','saved'].includes(phase)) parts.push('正在校验并保存');
+    else if (percent === null && Number.isFinite(received)) parts.push('等待总大小');
+    $('download-detail').textContent = parts.join(' · ');
+  }
   host?.onXhsEvent?.(event => {
     const value = event.state || event;
     if (event.type === 'profile') renderProfile(value); if (event.type === 'login') renderLogin(value);
-    if (event.type === 'video' && state.videoRequest && (!value.requestId || value.requestId === state.videoRequest)) { const percent = nativeProgressPercent(value); applyNativeProgress($('video-progress'), percent); $('video-status').textContent = value.message || (percent === null ? `下载中 · 已接收 ${value.receivedBytes ?? value.loadedBytes ?? 0} 字节` : `下载中 · ${percent.toFixed(1)}%`); }
-    if (event.type === 'archive' && state.archiveRequest && (!value.requestId || value.requestId === state.archiveRequest)) message(value.message || `正在导出 ZIP · ${value.completed || 0} / ${value.total || 0}`);
+    if (event.type === 'video' && state.videoRequest && (!value.requestId || value.requestId === state.videoRequest)) { updateDownloadProgress('video', value); const percent = nativeProgressPercent(value); $('video-status').textContent = value.message || (percent === null ? `下载中 · 已接收 ${value.receivedBytes ?? value.loadedBytes ?? 0} 字节` : `下载中 · ${percent.toFixed(1)}%`); }
+    if (event.type === 'archive' && state.archiveRequest && (!value.requestId || value.requestId === state.archiveRequest)) { updateDownloadProgress('archive', value, true); $('archive-status').textContent = value.message || (value.phase === 'archiving' || value.stage === 'archiving' ? '素材已下载，正在打包 ZIP…' : '正在下载 ZIP 素材…'); }
     if (['transfer','clipboard'].includes(event.type) && state.transferRequest && (!value.requestId || value.requestId === state.transferRequest)) {
-      applyNativeProgress($('transfer-progress'), nativeProgressPercent(value, true));
+      updateDownloadProgress('transfer', value, true);
       $('transfer-status').textContent = value.message || `正在处理素材 · ${value.completed || 0} / ${value.total || 0} · ${value.receivedBytes ?? value.loadedBytes ?? 0} 字节`;
     }
   });
