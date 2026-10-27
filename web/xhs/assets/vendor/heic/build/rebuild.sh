@@ -35,7 +35,7 @@ em++ "$codec_root/build/encode.cpp" "$codec_work/install/lib/libheif.a" "$codec_
   -ffile-prefix-map="$codec_work"=. -ffile-prefix-map="$codec_root"=. \
   -sENVIRONMENT=worker -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createHeicEncoder \
   -sDYNAMIC_EXECUTION=0 -sDISABLE_EXCEPTION_CATCHING=0 -sALLOW_MEMORY_GROWTH=1 \
-  -sINITIAL_MEMORY=33554432 -sMAXIMUM_MEMORY=268435456 -sSTACK_SIZE=1048576 \
+  -sINITIAL_MEMORY=33554432 -sMAXIMUM_MEMORY=2147483648 -sSTACK_SIZE=1048576 \
   -sFILESYSTEM=0 -sEXPORTED_RUNTIME_METHODS='["UTF8ToString","HEAPU8"]' \
   -sEXPORTED_FUNCTIONS='["_malloc","_free","_encode_heic","_get_result_data","_get_result_size","_get_error","_release_heic"]' \
   -o "$codec_root/heic-encoder.js"

@@ -133,6 +133,8 @@ jobs:
           xvfb-run -a node scripts/verify-xhs-desktop.cjs
           xvfb-run -a node scripts/verify-xhs-live.cjs
           xvfb-run -a node scripts/verify-xhs-live-import.mjs --electron
+          node scripts/verify-xhs-live-editor.mjs
+          xvfb-run -a node --test test/xhs-live-maker-edit.test.cjs
       - run: node scripts/verify-host-contracts.mjs
       - run: node scripts/verify-update-proxy-ui.mjs
       - name: Verify native updater TLS, proxy selection, interrupted download resumption, and cancellation

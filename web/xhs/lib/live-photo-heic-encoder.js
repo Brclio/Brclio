@@ -1,7 +1,8 @@
 // HEIC is encoded locally in a disposable worker, so software HEVC works on
 // macOS, Windows, and supported browsers without exposing a native bridge.
-const MAX_DIMENSION = 1440;
-const ENCODING_TIMEOUT = 120000;
+const MAX_DIMENSION = 8192;
+const MAX_PIXELS = 64_000_000;
+const MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
 
 function cancelled(signal) {
   return signal?.reason instanceof Error ? signal.reason : new DOMException('制作已取消。', 'AbortError');
@@ -10,8 +11,9 @@ function cancelled(signal) {
 export function encodeHeicCanvas(canvas, { signal } = {}) {
   if (signal?.aborted) return Promise.reject(cancelled(signal));
   const width = canvas?.width, height = canvas?.height;
-  if (![width, height].every(value => Number.isSafeInteger(value) && value > 0 && value <= MAX_DIMENSION))
-    return Promise.reject(new Error('HEIC 封面尺寸无效，最长边不能超过 1440 像素。'));
+  if (![width, height].every(value => Number.isSafeInteger(value) && value > 0 && value <= MAX_DIMENSION)
+    || width * height > MAX_PIXELS)
+    return Promise.reject(new Error('HEIC 封面尺寸超出本地编码范围（长边 8192 像素、6400 万像素），请使用 JPG 或更换素材。'));
   if (typeof Worker !== 'function') return Promise.reject(new Error('当前浏览器不支持本地 HEIC 编码，请使用桌面客户端或新版 Chrome、Edge。'));
   let pixels;
   try {
@@ -36,14 +38,16 @@ export function encodeHeicCanvas(canvas, { signal } = {}) {
       worker.onmessage = event => {
         if (event.data?.error) { finish(new Error(`HEIC 封面编码失败：${String(event.data.error).slice(0, 400)}`)); return; }
         const buffer = event.data?.buffer;
-        if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 24) { finish(new Error('HEIC 编码未返回完整文件。')); return; }
+        if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 24 || buffer.byteLength > MAX_OUTPUT_BYTES) { finish(new Error('HEIC 编码未返回完整文件。')); return; }
         finish(null, new Uint8Array(buffer));
       };
       worker.onerror = event => { event.preventDefault(); finish(new Error('本地 HEIC 编码器加载失败，请重试或更新客户端。')); };
       worker.onmessageerror = () => finish(new Error('本地 HEIC 编码结果无法读取，请重试。'));
       signal?.addEventListener('abort', cancel, { once: true });
       if (signal?.aborted) { cancel(); return; }
-      timer = setTimeout(() => finish(new Error('HEIC 封面编码超时，请重试或缩小素材。')), ENCODING_TIMEOUT);
+      // Full-resolution software HEVC can take several minutes on large photos.
+      const timeout = Math.min(20 * 60 * 1000, Math.max(120000, width * height / 1e6 * 20000));
+      timer = setTimeout(() => finish(new Error('HEIC 封面编码超时，请重试或使用 JPG 格式。')), timeout);
       worker.postMessage({ width, height, rgba: pixels.buffer }, [pixels.buffer]);
     } catch (error) { finish(error); }
   });

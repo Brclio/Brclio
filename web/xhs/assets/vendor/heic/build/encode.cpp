@@ -10,6 +10,7 @@
 namespace {
 std::vector<uint8_t> result;
 std::string error;
+constexpr size_t max_output_bytes = 128 * 1024 * 1024;
 void check(heif_error value) {
   if (value.code != heif_error_Ok) throw std::runtime_error(value.message ? value.message : "HEIC encoding failed");
 }
@@ -19,7 +20,7 @@ struct Runtime {
 };
 heif_error write_bytes(heif_context*, const void* data, size_t size, void*) {
   try {
-    if (size > 20 * 1024 * 1024 || result.size() > 20 * 1024 * 1024 - size)
+    if (size > max_output_bytes || result.size() > max_output_bytes - size)
       return {heif_error_Encoding_error, heif_suberror_Unspecified, "HEIC output exceeds limit"};
     const auto* bytes = static_cast<const uint8_t*>(data);
     if (size) result.insert(result.end(), bytes, bytes + size);
@@ -32,7 +33,8 @@ extern "C" {
 int encode_heic(const uint8_t* rgba, int length, int width, int height) {
   result.clear(); error.clear();
   try {
-    if (!rgba || width < 1 || height < 1 || width > 1440 || height > 1440 || length != width * height * 4)
+    if (!rgba || width < 1 || height < 1 || width > 8192 || height > 8192
+      || int64_t(width) * height > 64000000 || int64_t(length) != int64_t(width) * height * 4)
       throw std::runtime_error("Invalid RGBA dimensions");
     Runtime runtime;
     std::unique_ptr<heif_context, decltype(&heif_context_free)> context(heif_context_alloc(), heif_context_free);
@@ -61,7 +63,7 @@ int encode_heic(const uint8_t* rgba, int length, int width, int height) {
     heif_encoder* raw_encoder = nullptr;
     check(heif_context_get_encoder_for_format(context.get(), heif_compression_HEVC, &raw_encoder));
     std::unique_ptr<heif_encoder, decltype(&heif_encoder_release)> encoder(raw_encoder, heif_encoder_release);
-    check(heif_encoder_set_lossy_quality(encoder.get(), 92));
+    check(heif_encoder_set_lossy_quality(encoder.get(), 100));
     check(heif_context_encode_image(context.get(), image.get(), encoder.get(), nullptr, nullptr));
     heif_writer writer = {1, write_bytes};
     check(heif_context_write(context.get(), &writer, nullptr));

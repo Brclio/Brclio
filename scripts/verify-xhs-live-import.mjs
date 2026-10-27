@@ -182,8 +182,8 @@ require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
   assert.equal(await page.locator('#xhs-live-file-list li').count(), 3);
   const compressionCalls = await page.evaluate(() => window.__importBlobCalls);
   assert.equal(compressionCalls.length, 3);
-  for (const call of compressionCalls) { assert.equal(call.type, 'image/jpeg'); assert.equal(call.width, 1440); assert.equal(call.height, 960); }
-  assert.match(await source.innerText(), /1440 × 960.*原文件保留/);
+  for (const call of compressionCalls) { assert.equal(call.type, 'image/jpeg'); assert.equal(call.width, 4096); assert.equal(call.height, 2730); }
+  assert.match(await source.innerText(), /4096 × 2730.*原文件保留/);
   await page.getByRole('button', { name: '将 large-2-compressed.jpg 上移', exact: true }).click();
   await source.filter({ hasText: '已压缩导入' }).waitFor();
   assert.match(await page.locator('#xhs-live-file-list li').first().innerText(), /large-2-compressed.jpg/);
@@ -192,13 +192,26 @@ require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
   await page.locator('#xhs-live-cover').fill('0.1'); await page.locator('#xhs-live-cover').dispatchEvent('change');
   await page.locator('#xhs-live-motion').selectOption('still'); await page.locator('#xhs-live-format').selectOption('jpeg');
   await preview.click(); await page.locator('#xhs-live-preview-canvas').waitFor({ state: 'visible' });
-  const pixel = await page.locator('#xhs-live-preview-canvas').evaluate(canvas => [...canvas.getContext('2d').getImageData(1, 1, 1, 1).data]);
-  assert.ok(pixel[1] > pixel[0] + 30 && pixel[1] > pixel[2] + 30, 'Reordered second (green) image must be shown first.');
-  await generate.click(); await page.locator('#xhs-live-result').waitFor({ timeout: 60000 });
+  // Reading a 4K canvas on a busy runner can take longer than one image's
+  // 1/6-second interval. The preview finishes at cover=.1, which selects the
+  // reordered first (green) image; wait for that observable frame.
+  await page.locator('#xhs-live-preview-canvas').evaluate(async () => {
+    const start = performance.now();
+    await new Promise(resolve => {
+      const tick = () => performance.now() - start >= 500 ? resolve() : requestAnimationFrame(tick);
+      requestAnimationFrame(tick);
+    });
+  });
+  await expect.poll(async () => {
+    const pixel = await page.locator('#xhs-live-preview-canvas').evaluate(canvas =>
+      [...canvas.getContext('2d').getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data]);
+    return pixel[1] > pixel[0] + 30 && pixel[1] > pixel[2] + 30;
+  }, { message: 'The reordered green image must be visible at the selected cover time.' }).toBe(true);
+  await generate.click(); await page.locator('#xhs-live-result').waitFor({ timeout: 120000 });
   assert.match(await page.locator('#xhs-live-result-info').innerText(), /0.5 秒.*JPG \+ MOV/);
   await page.waitForFunction(() => { const image = document.getElementById('xhs-live-preview-image'); return image.complete && image.naturalWidth > 0; });
   await expect(page.locator('#xhs-live-cancel')).toBeHidden();
-  report.checks.push('Confirmed compression creates three 1440x960 JPG files in order, retains compression provenance after reordering, previews correctly and generates a real 0.5-second JPG+MOV.');
+  report.checks.push('Confirmed compression creates three high-quality 4096x2730 JPG files in order, retains compression provenance after reordering, previews correctly and generates a real 0.5-second JPG+MOV.');
 
   assert.deepEqual(report.errors, []); report.passed = true;
   console.log(JSON.stringify(report, null, 2));

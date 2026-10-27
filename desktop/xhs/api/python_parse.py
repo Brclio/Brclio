@@ -457,6 +457,18 @@ def video_quality_score(video: dict[str, Any]) -> int:
     )
 
 
+def live_photo_quality_key(video: dict[str, Any]) -> tuple[int, ...]:
+    # Source detail takes priority for Live Photos, which may legitimately be
+    # silent. Normal videos retain their audio and compatibility ordering.
+    return (
+        normalize_number(video.get("width")) * normalize_number(video.get("height")),
+        normalize_number(video.get("bitrate")),
+        2 if video.get("hasAudio") is True else 0 if video.get("hasAudio") is False else 1,
+        codec_priority(video.get("codec")),
+        normalize_number(video.get("size")),
+    )
+
+
 def stream_audio_metadata(item: dict[str, Any]) -> dict[str, Any]:
     codec = str(item.get("audioCodec") or item.get("audio_codec") or "").lower()
     channels = normalize_number(item.get("audioChannels") or item.get("audio_channels"))
@@ -528,14 +540,15 @@ def extract_streams_from_root(
                 }
             )
 
+    quality_key = live_photo_quality_key if source == "live-photo-stream" else video_quality_score
     deduped: dict[str, dict[str, Any]] = {}
     for stream in streams:
         url = str(stream.get("url") or "")
         existing = deduped.get(url)
-        if existing is None or video_quality_score(stream) > video_quality_score(existing):
+        if existing is None or quality_key(stream) > quality_key(existing):
             deduped[url] = stream
 
-    return sorted(deduped.values(), key=video_quality_score, reverse=True)
+    return sorted(deduped.values(), key=quality_key, reverse=True)
 
 
 def original_video_url(value: Any) -> str | None:

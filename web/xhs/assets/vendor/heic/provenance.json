@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "purpose": "Encoder-only RGBA to HEIC for local Live Photo covers",
-  "buildDate": "2026-10-04",
+  "buildDate": "2026-10-27",
   "toolchain": {
     "target": "wasm32-unknown-emscripten",
     "emscripten": "4.0.10",
@@ -48,9 +48,9 @@
     "filesystem": false,
     "threading": false,
     "initialMemoryBytes": 33554432,
-    "maximumMemoryBytes": 268435456,
-    "maximumInputDimension": 1440,
-    "maximumOutputBytes": 20971520,
+    "maximumMemoryBytes": 2147483648,
+    "maximumInputDimension": 8192,
+    "maximumOutputBytes": 134217728,
     "publicExports": [
       "_malloc",
       "_free",
@@ -63,26 +63,29 @@
     "assets": [
       {
         "file": "heic-encoder.js",
-        "bytes": 20916,
-        "sha256": "6ab24a00f26b6b877df48444fb344b916571bba5135188beba1134b1cc4b5b80"
+        "bytes": 20917,
+        "sha256": "a0ba0075f61503bd55d14332e85e93e63e8d432bd5e0cb4365519ebbcb9b78c0"
       },
       {
         "file": "heic-encoder.wasm",
-        "bytes": 1244949,
-        "sha256": "3b3281af4c463fca86f8a2bd956951df16f91256c9ac3514196b947793af02c0"
+        "bytes": 1244971,
+        "sha256": "c42ccfbb42dfb8963dfde4e782220b44e4f1cbb28d0c17bb20cb85f3993bd3bd"
       }
-    ]
+    ],
+    "maximumInputPixels": 64000000,
+    "lossyQuality": 100,
+    "chroma": "4:2:0"
   },
   "buildSources": [
     {
       "file": "build/encode.cpp",
-      "bytes": 4042,
-      "sha256": "6e90e4939c315a91fc5ebeba9cbf62f75f275c751fb3a83fe4cf10a6bba388d0"
+      "bytes": 4160,
+      "sha256": "2f1be925f6211c5ed411b724b4ba990ffc440b75f7a64a7824f818ba73998a28"
     },
     {
       "file": "build/rebuild.sh",
-      "bytes": 3100,
-      "sha256": "2ebc9880e1fbf7338eb153dd9d3e16da316566c087fcd17c36d923907eef5828"
+      "bytes": 3101,
+      "sha256": "557ec6e876e1206eb1e399caf07e84aba3b2fd6c391797e833c79dfc517bc3f6"
     }
   ],
   "notices": [

@@ -117,9 +117,19 @@ test('live-photo image import limits and compression', async t => {
     assert.deepEqual(result.map(file => file.lastModified), [1234, 1234]);
     assert.deepEqual(files.map(file => file.name), ['portrait.png', 'landscape.png'], 'Original inputs are untouched.');
     assert.deepEqual(environment.canvases.map(canvas => [canvas.encoding.width, canvas.encoding.height]),
-      [[960, 1440], [1440, 960]]);
+      [[2730, 4096], [4096, 2730]]);
     assert.ok(environment.canvases.every(canvas => canvas.encoding.type === 'image/jpeg'));
+    assert.ok(environment.canvases.every(canvas => canvas.encoding.quality === 0.98));
     assert.deepEqual(progress, [0, .5, 1]);
+    environment.assertReleased();
+  });
+
+  await t.test('large batches share the pixel budget instead of becoming unreadable 1440px copies', async t => {
+    const environment = imageEnvironment(t);
+    await compressLivePhotoFiles(Array.from({ length: 12 }, (_, index) => source(`${index}.png`)));
+    const encodings = environment.canvases.map(canvas => canvas.encoding);
+    assert.ok(encodings.every(({ width, height }) => width > 1440 && height > 1440));
+    assert.ok(encodings.reduce((total, { width, height }) => total + width * height, 0) <= LIVE_PHOTO_LIMITS.maxDecodedPixels);
     environment.assertReleased();
   });
 

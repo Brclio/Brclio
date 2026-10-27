@@ -21,6 +21,10 @@ The only public C ABI accepts bounded RGBA pixels and produces a genuine HEIC
 container with an HEVC coded image. It does not accept or decode HEIC files.
 libheif's encoder performs color conversion; opaque canvas pixels are encoded
 as 8-bit sRGB with a color profile. Transparency is composited over white.
+The encoder retains the provided pixel dimensions, up to an 8192-pixel long edge
+and 64 million pixels, and uses the maximum lossy-quality setting (100). HEVC
+still uses 4:2:0 chroma, so this is not a lossless copy of the source image.
+The WebAssembly heap grows on demand up to 2 GiB; output is bounded to 128 MiB.
 The worker is terminated after every result and on cancellation. The runtime is
 built with `DYNAMIC_EXECUTION=0`; JavaScript `unsafe-eval` is not required.
 

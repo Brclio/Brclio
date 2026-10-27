@@ -6,7 +6,7 @@ suite('live-photo-maker', async context => {
   const test = (...args) => context.test(...args);
 const { default: assert } = await import('node:assert/strict');
 const { LIVE_PHOTO_LIMITS, validateLivePhotoFiles, normalizeLivePhotoOptions, livePhotoDimensions,
-  livePhotoCoverTime, checkLivePhotoSupport } = await import('../web/xhs/lib/live-photo-maker.js');
+  livePhotoCoverTime, livePhotoVideoConfig, selectLivePhotoVideoConfig, checkLivePhotoSupport } = await import('../web/xhs/lib/live-photo-maker.js');
 
 const file = (name, type, size = 10) => ({ name, type, size, arrayBuffer: async () => new ArrayBuffer(size) });
 
@@ -114,13 +114,54 @@ await test('trusted desktop videos have no browser byte cap while web and image 
   assert.throws(() => validateLivePhotoFiles([large, file('another.mp4', 'video/mp4')]), /一个视频/);
 });
 
-await test('encoding keeps portrait and landscape orientation, bounds dimensions and produces even pixel sizes', () => {
-  assert.deepEqual(livePhotoDimensions(3840, 2160), { width: 1440, height: 810 });
-  assert.deepEqual(livePhotoDimensions(1080, 1920), { width: 810, height: 1440 });
+await test('encoding retains native 4K and photo resolution without silently downscaling', () => {
+  assert.deepEqual(livePhotoDimensions(3840, 2160), { width: 3840, height: 2160 });
+  assert.deepEqual(livePhotoDimensions(1080, 1920), { width: 1080, height: 1920 });
+  assert.deepEqual(livePhotoDimensions(6000, 4000), { width: 6000, height: 4000 });
   assert.deepEqual(livePhotoDimensions(641, 479), { width: 640, height: 478 });
   assert.deepEqual(livePhotoDimensions(10, 10), { width: 10, height: 10 });
   assert.throws(() => livePhotoDimensions(0, 1080), /尺寸/);
   assert.throws(() => livePhotoDimensions(100, Infinity), /尺寸/);
+  assert.throws(() => livePhotoDimensions(9000, 6000), /8192/);
+  assert.throws(() => livePhotoDimensions(8192, 8192), /6400 万/);
+});
+
+await test('video quality scales with source resolution while retaining a muxable no-B-frame configuration', () => {
+  const hd = livePhotoVideoConfig(1920, 1080), uhd = livePhotoVideoConfig(3840, 2160);
+  assert.ok(hd.bitrate >= 24000000);
+  assert.ok(uhd.bitrate >= hd.bitrate * 4);
+  assert.equal(uhd.latencyMode, 'realtime');
+  assert.equal(uhd.bitrateMode, 'variable');
+  assert.equal(uhd.avc.format, 'avc');
+  assert.equal(uhd.codec, 'avc1.640033');
+  assert.equal(livePhotoVideoConfig(4096, 2304).codec, 'avc1.640034');
+  assert.equal(livePhotoVideoConfig(6000, 4000).codec, 'avc1.64003c');
+});
+
+await test('movie resolution uses native pixels when supported and probes a high-quality device fallback separately', async t => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'VideoEncoder');
+  t.after(() => previous ? Object.defineProperty(globalThis, 'VideoEncoder', previous) : delete globalThis.VideoEncoder);
+  const probed = [];
+  Object.defineProperty(globalThis, 'VideoEncoder', { configurable: true, value: { isConfigSupported: async config => {
+    probed.push(config);
+    return { supported: config.width * config.height <= 3840 * 2160 };
+  } } });
+  const native = await selectLivePhotoVideoConfig({ width: 3840, height: 2160 });
+  assert.deepEqual([native.width, native.height], [3840, 2160]);
+  assert.equal(probed.length, 1, 'A supported native source is never downscaled.');
+  probed.length = 0;
+  const movie = await selectLivePhotoVideoConfig({ width: 6000, height: 4000 });
+  assert.deepEqual([probed[0].width, probed[0].height], [6000, 4000]);
+  assert.ok(movie.width > 3000 && movie.height > 2000, 'A large photo uses the available movie pixel budget.');
+  assert.ok(Math.abs(movie.width / movie.height - 1.5) < .01);
+  assert.equal(movie.width % 16, 0); assert.equal(movie.height % 16, 0);
+  Object.defineProperty(globalThis, 'VideoEncoder', { configurable: true, value: { isConfigSupported: async config =>
+    ({ supported: config.codec === 'avc1.640034' }) } });
+  const largestAvc = await selectLivePhotoVideoConfig({ width: 6000, height: 4000 });
+  assert.ok(largestAvc.width * largestAvc.height > 9_000_000, 'Macroblock padding must not skip a supported level-5.2 frame.');
+  assert.ok(Math.ceil(largestAvc.width / 16) * Math.ceil(largestAvc.height / 16) <= 36864);
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(selectLivePhotoVideoConfig({ width: 3840, height: 2160 }, { signal: controller.signal }), { name: 'AbortError' });
 });
 
 });

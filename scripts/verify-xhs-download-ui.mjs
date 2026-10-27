@@ -115,20 +115,40 @@ try {
         const before = video.getBoundingClientRect().height;
         const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
         const draw = canvas.getContext('2d'); draw.fillStyle = '#2b7fd8'; draw.fillRect(0, 0, width, height);
-        const stream = canvas.captureStream(20), recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' }), chunks = [];
-        recorder.ondataavailable = event => chunks.push(event.data);
+        // A fixed 220ms recording can finish before a cold/headless encoder
+        // emits its first frame. Request changing frames after recorder.start
+        // and wait for actual media data rather than a wall-clock deadline.
+        const stream = canvas.captureStream(0), track = stream.getVideoTracks()[0];
+        const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' }), chunks = [];
+        let timer, timeout, framesRequested = 0;
+        const ready = new Promise((resolve, reject) => {
+          const check = () => { if (framesRequested >= 4 && chunks.some(chunk => chunk.size > 0)) resolve(); };
+          recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); check(); };
+          recorder.onerror = event => reject(new Error(`WebM fixture recording failed: ${event.error?.message || 'unknown encoder error'}`));
+          recorder.onstart = () => {
+            const frame = () => {
+              draw.fillStyle = framesRequested % 2 ? '#2b7fd8' : '#f4d758';
+              draw.fillRect(0, 0, width, height); framesRequested++; track.requestFrame(); check();
+            };
+            frame(); timer = setInterval(frame, 40);
+          };
+          timeout = setTimeout(() => reject(new Error('WebM fixture did not produce encoded frames within 5 seconds.')), 5000);
+        });
         const stopped = new Promise(resolve => recorder.onstop = resolve);
-        recorder.start();
-        const timer = setInterval(() => { draw.fillStyle = '#f4d758'; draw.fillRect(20, 20, 50, 50); }, 40);
-        await new Promise(resolve => setTimeout(resolve, 220)); recorder.stop(); await stopped;
-        clearInterval(timer); stream.getTracks().forEach(track => track.stop());
-        const source = URL.createObjectURL(new Blob(chunks, { type: recorder.mimeType }));
-        const metadata = new Promise((resolve, reject) => { video.onloadedmetadata = resolve; video.onerror = () => reject(new Error('Recorded WebM failed to decode')); });
+        try { recorder.start(80); await ready; recorder.stop(); await stopped; }
+        finally { clearTimeout(timeout); clearInterval(timer); if (recorder.state === 'recording') recorder.stop(); stream.getTracks().forEach(track => track.stop()); }
+        const recording = new Blob(chunks, { type: recorder.mimeType });
+        const source = URL.createObjectURL(recording);
+        const metadata = new Promise((resolve, reject) => {
+          const deadline = setTimeout(() => reject(new Error('Recorded WebM metadata timed out.')), 5000);
+          video.onloadedmetadata = () => { clearTimeout(deadline); resolve(); };
+          video.onerror = () => { clearTimeout(deadline); reject(new Error(`Recorded WebM failed to decode (${width}x${height}, ${framesRequested} requested frames, ${recording.size} bytes): ${video.error?.message || 'unknown decoder error'}`)); };
+        });
         video.muted = true; video.src = source; await metadata;
         const afterMetadata = video.getBoundingClientRect().height;
         await video.play(); const afterPlay = video.getBoundingClientRect().height;
-        video.pause(); video.removeAttribute('src'); video.load(); URL.revokeObjectURL(source);
-        return { before, afterMetadata, afterPlay, intrinsicWidth: width, intrinsicHeight: height };
+        video.pause(); video.onloadedmetadata = video.onerror = null; video.removeAttribute('src'); video.load(); URL.revokeObjectURL(source);
+        return { before, afterMetadata, afterPlay, intrinsicWidth: width, intrinsicHeight: height, recordedFramesRequested: framesRequested, recordedBytes: recording.size };
       }, dimensions);
       assert.ok(sizes.before >= 190, `Video must reserve a useful height before loading: ${JSON.stringify(sizes)}`);
       assert.ok(Math.abs(sizes.before - sizes.afterMetadata) < 1 && Math.abs(sizes.before - sizes.afterPlay) < 1,
