@@ -76,25 +76,30 @@ try {
   const liveAudit = await liveAuditContext.newPage(); liveAudit.on('pageerror',error=>report.errors.push(error.message));
   await liveAudit.route('**/xhs/lib/live-photo-maker.js',async route=>{
     const response=await route.fetch(),body=await response.text();
-    await route.fulfill({response,body:body.replace('export async function inspectLivePhotoFiles(', 'async function inspectActualFiles(')+`
+    await route.fulfill({response,body:body.replace('export async function inspectLivePhotoFiles(', 'async function inspectActualFiles(')
+      .replace('export async function createLivePhoto(', 'async function createActualLivePhoto(')+`
       export async function inspectLivePhotoFiles(files,options={}) {
         if(globalThis.__pauseInspect) { globalThis.__inspectStarted=true; await new Promise((resolve,reject)=>{
           const finish=()=>{options.signal?.removeEventListener('abort',abort);resolve()},abort=()=>{options.signal?.removeEventListener('abort',abort);reject(options.signal.reason)};
           globalThis.__finishInspect=finish; options.signal?.addEventListener('abort',abort,{once:true});
         }); }
         return inspectActualFiles(files,options);
-      }`});
-  });
-  await liveAudit.addInitScript(()=>{
-    const create=document.createElement.bind(document);
-    document.createElement=(name,...args)=>{
-      const element=create(name,...args);
-      if(String(name).toLowerCase()==='video' && window.__pauseCover) {
-        Object.defineProperty(element,'src',{configurable:true,set(value){window.__coverStarted=true;window.__heldCoverVideo=element},get(){return ''}});
-        element.load=()=>{};
       }
-      return element;
-    };
+      export async function createLivePhoto(options) {
+        const result=await createActualLivePhoto(options);
+        if(globalThis.__pauseResult) {
+          globalThis.__resultStarted=true;
+          await new Promise((resolve,reject)=>{
+            let settled=false;
+            const finish=error=>{if(settled)return;settled=true;options.signal?.removeEventListener('abort',abort);error?reject(error):resolve()};
+            const abort=()=>finish(options.signal.reason);
+            globalThis.__finishResult=()=>finish();
+            if(options.signal?.aborted)abort();else options.signal?.addEventListener('abort',abort,{once:true});
+          });
+        }
+        return result;
+      }
+      `});
   });
   await liveAudit.goto(url);await liveAudit.waitForFunction(()=>document.body.dataset.ready==='true');
   await liveAudit.locator('[data-view="xhs"]').first().click();await liveAudit.locator('#xhs-tab-live').click();
@@ -114,14 +119,14 @@ try {
   await liveAudit.locator('#xhs-live-source-info').filter({hasText:'1 张图片'}).waitFor();
   await liveAudit.locator('#xhs-live-duration').fill('.5');await liveAudit.locator('#xhs-live-duration').dispatchEvent('change');
   await liveAudit.locator('#xhs-live-format').selectOption('heic');
-  await liveAudit.evaluate(()=>{window.__pauseCover=true;window.__coverStarted=false});
-  await liveAudit.locator('#xhs-live-generate').click();await liveAudit.waitForFunction(()=>window.__coverStarted,{timeout:60000});
-  assert.equal(await liveAudit.locator('#xhs-live-result').isHidden(),true,'The result is not published before the asynchronous HEIC cover stage finishes.');
+  await liveAudit.evaluate(()=>{window.__pauseResult=true;window.__resultStarted=false});
+  await liveAudit.locator('#xhs-live-generate').click();await liveAudit.waitForFunction(()=>window.__resultStarted,null,{timeout:60000});
+  assert.equal(await liveAudit.locator('#xhs-live-result').isHidden(),true,'The result is not published before the completed HEIC pair is delivered.');
   await liveAudit.locator('#xhs-live-cancel').click();await liveAudit.locator('#xhs-live-status').filter({hasText:'制作已取消'}).waitFor();
-  await liveAudit.evaluate(()=>{window.__heldCoverVideo?.dispatchEvent(new Event('loadeddata'));window.__pauseCover=false});
-  assert.equal(await liveAudit.locator('#xhs-live-result').isHidden(),true,'Late cover events cannot resurrect a cancelled export.');
+  await liveAudit.evaluate(()=>{window.__finishResult?.();window.__pauseResult=false});
+  assert.equal(await liveAudit.locator('#xhs-live-result').isHidden(),true,'Late pair delivery cannot resurrect a cancelled export.');
   await liveAudit.locator('#xhs-live-generate').click();await liveAudit.locator('#xhs-live-result').waitFor({timeout:60000});
-  report.browser.push('Input inspection clears old exports and blocks overlapping generation; cancellation during a completed HEIC encode but stalled cover decode remains cancelled, ignores late events and permits a real retry.');
+  report.browser.push('Input inspection clears old exports and blocks overlapping generation; cancellation after real HEIC encoding but before pair delivery remains cancelled, ignores late completion and permits a real retry.');
   const imageFixtures=await liveAudit.evaluate(()=>[[320,192,'#d94435'],[128,256,'#1e50dc']].map(([width,height,color])=>{
     const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;const context=canvas.getContext('2d');context.fillStyle=color;context.fillRect(0,0,width,height);return canvas.toDataURL('image/png').split(',')[1];
   }));
@@ -135,13 +140,20 @@ try {
   assert.deepEqual(previewPixels.edge.slice(0,3),[254,252,246]);assert.deepEqual(previewPixels.center.slice(0,3),[30,80,220]);
   await liveAudit.locator('#xhs-live-generate').click();await liveAudit.locator('#xhs-live-result').waitFor({timeout:60000});
   await liveAudit.waitForFunction(()=>{const img=document.getElementById('xhs-live-preview-image');return img.complete&&img.naturalWidth>0});
-  const coverPixels=await liveAudit.evaluate(()=>{const img=document.getElementById('xhs-live-preview-image'),c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const x=c.getContext('2d');x.drawImage(img,0,0);return {width:c.width,height:c.height,edge:[...x.getImageData(0,96,1,1).data],center:[...x.getImageData(160,96,1,1).data]}});
-  assert.equal(coverPixels.width,previewPixels.width);assert.equal(coverPixels.height,previewPixels.height);
-  for(const key of ['edge','center'])for(let i=0;i<3;i++)assert.ok(Math.abs(coverPixels[key][i]-previewPixels[key][i])<8,`${key} preview and encoded cover differ`);
+  const coverPixels=await liveAudit.evaluate(()=>{const img=document.getElementById('xhs-live-preview-image'),c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const x=c.getContext('2d');x.drawImage(img,0,0);return {width:c.width,height:c.height,edge:[...x.getImageData(0,128,1,1).data],center:[...x.getImageData(64,128,1,1).data]}});
+  assert.equal(coverPixels.width,128);assert.equal(coverPixels.height,256,'Cover keeps the selected source image dimensions while motion retains the first image canvas.');
+  for(const key of ['edge','center'])for(let i=0;i<3;i++)assert.ok(Math.abs(coverPixels[key][i]-previewPixels.center[i])<8,`${key} native cover and source image differ`);
   const geometry=await liveAudit.evaluate(async fixtures=>{
     const images=await Promise.all(fixtures.map(value=>new Promise(resolve=>{const image=new Image();image.onload=()=>resolve(image);image.src='data:image/png;base64,'+value})));
     const module=await import('./xhs/lib/live-photo-maker.js');let drawn;
-    module.drawLivePhotoImageFrame({canvas:{width:320,height:192},fillRect(){},drawImage(...args){drawn=args.slice(1)}},images,{time:.75,duration:1,motion:'zoom'});
+    const canvas=document.createElement('canvas');canvas.width=320;canvas.height=192;
+    const context=canvas.getContext('2d'),draw=context.drawImage.bind(context);
+    context.drawImage=(...args)=>{
+      const [x,y,width,height]=args.slice(-4),matrix=context.getTransform();
+      const start=new DOMPoint(x,y).matrixTransform(matrix),end=new DOMPoint(x+width,y+height).matrixTransform(matrix);
+      drawn=[start.x,start.y,end.x-start.x,end.y-start.y];draw(...args);
+    };
+    module.drawLivePhotoImageFrame(context,images,{time:.75,duration:1,motion:'zoom'});
     return drawn;
   },imageFixtures);
   for(const [index,value]of [110.68,-2.64,98.64,197.28].entries())assert.ok(Math.abs(geometry[index]-value)<.0001,`Shared frame geometry ${index}: ${geometry[index]}`);
@@ -387,4 +399,4 @@ try {
   assert.deepEqual(report.errors,[]); report.passed=true;
   console.log(JSON.stringify(report,null,2));
 } catch (error) { report.passed=false; report.failure=error.stack; throw error; }
-finally { await browser?.close(); await new Promise(resolve=>server.close(resolve)); await writeFile(path.join(output,'xhs-ui-verification.json'),JSON.stringify(report,null,2)+'\n'); }
+finally { await browser?.close(); server.closeAllConnections(); await new Promise(resolve=>server.close(resolve)); await writeFile(path.join(output,'xhs-ui-verification.json'),JSON.stringify(report,null,2)+'\n'); }
