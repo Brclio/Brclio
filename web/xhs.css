@@ -95,3 +95,9 @@
 
 .xhs-image-dialog { width: min(96vw,1200px); max-width: none; max-height: 94vh; overflow: auto; }
 .xhs-image-dialog img { display: block; max-width: 100%; height: auto; margin: 18px auto 0; }
+.xhs-compress-dialog h2 { margin: 16px 0 12px; }
+.xhs-compress-dialog p { line-height: 1.75; font-size: .85rem; overflow-wrap: anywhere; }
+.xhs-compress-dialog .field-hint { margin-top: 12px; color: var(--ink-light); }
+.xhs-compress-dialog .xhs-action-row { justify-content: flex-end; margin-top: 24px; }
+.xhs-compress-dialog button:focus-visible { outline: 3px solid #f4d758; outline-offset: 3px; }
+@media(max-width:600px) { .xhs-compress-dialog .xhs-action-row>.button { flex: 1 1 auto; } }

@@ -116,6 +116,7 @@ jobs:
       - name: Verify XHS browser behavior and native UI contracts
         run: |
           node scripts/verify-xhs-ui.mjs
+          node scripts/verify-xhs-live-import.mjs
           node scripts/verify-xhs-android-bridge.mjs
       - name: Install the independent media verification tools
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -130,6 +131,7 @@ jobs:
         run: |
           xvfb-run -a node scripts/verify-xhs-desktop.cjs
           xvfb-run -a node scripts/verify-xhs-live.cjs
+          xvfb-run -a node scripts/verify-xhs-live-import.mjs --electron
       - run: node scripts/verify-host-contracts.mjs
       - run: node scripts/verify-update-proxy-ui.mjs
       - name: Verify native updater TLS, proxy selection, interrupted download resumption, and cancellation

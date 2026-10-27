@@ -172,21 +172,55 @@
     $('live-preview').disabled = busy || !state.fileInfo || !state.files.length;
   }
   function renderFiles() { $('live-file-list').replaceChildren(); state.files.forEach((file, index) => { const li = element('li'); li.append(element('span', '', `${index + 1}. ${file.name} · ${(file.size / 1048576).toFixed(1)} MB`)); for (const [label, shift] of [['↑', -1], ['↓', 1]]) { const button = element('button', '', label); button.type = 'button'; button.setAttribute('aria-label', `将 ${file.name} ${shift < 0 ? '上移' : '下移'}`); button.disabled = index + shift < 0 || index + shift >= state.files.length; button.addEventListener('click', () => { const files = [...state.files]; [files[index], files[index + shift]] = [files[index + shift], files[index]]; selectLiveFiles(files, true); }); li.append(button); } const remove = element('button', '', '移除'); remove.type = 'button'; remove.setAttribute('aria-label', `移除 ${file.name}`); remove.addEventListener('click', () => selectLiveFiles(state.files.filter((_,position) => position !== index)));  li.append(remove); $('live-file-list').append(li); }); }
+  const compressedLiveFiles = new WeakSet();
+  function confirmLiveCompression(info, count, signal, limits) {
+    signal.throwIfAborted();
+    const dialog = $('live-compress-dialog');
+    const reasons = [];
+    if (info.pixels > limits.maxDecodedPixels) reasons.push(`总像素约 ${(info.pixels / 10000).toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 万，超过 ${limits.maxDecodedPixels / 10000} 万`);
+    if (info.bytes > limits.maxBytes) reasons.push(`总大小 ${(info.bytes / 1048576).toFixed(1)} MB，超过 ${limits.maxBytes / 1048576} MB`);
+    $('live-compress-description').textContent = `所选 ${count} 张图片${reasons.join('；')}。是否压缩后继续导入？`;
+    return new Promise(resolve => {
+      const finish = accepted => {
+        dialog.removeEventListener('close', closed); signal.removeEventListener('abort', canceled);
+        $('live-compress-confirm').removeEventListener('click', confirmed); $('live-compress-cancel').removeEventListener('click', canceled);
+        if (dialog.open) dialog.close();
+        resolve(accepted && !signal.aborted);
+      };
+      const closed = () => finish(false), canceled = () => finish(false), confirmed = () => finish(true);
+      dialog.addEventListener('close', closed, { once: true }); signal.addEventListener('abort', canceled, { once: true });
+      $('live-compress-confirm').addEventListener('click', confirmed); $('live-compress-cancel').addEventListener('click', canceled);
+      dialog.showModal();
+    });
+  }
   function selectLiveFiles(files, preserveOptions = false) {
     const revision = ++state.fileRevision;
     state.fileController?.abort(); state.liveController?.abort();
-    invalidateLive(); state.files = []; state.fileInfo = null; renderFiles();
+    invalidateLive(); message(''); $('live-progress').hidden = true; state.files = []; state.fileInfo = null; renderFiles();
     if (!files.length) { $('live-source-info').textContent = '素材留在你的设备上。'; setLiveBusy(false); return; }
     const controller = new AbortController(); state.fileController = controller; setLiveBusy(true);
     $('live-source-info').textContent = '正在读取所选素材…';
     void (async () => {
       try {
         const module = await liveModule(); controller.signal.throwIfAborted();
-        const info = await module.inspectLivePhotoFiles(files, { signal: controller.signal });
+        let info = await module.inspectLivePhotoFiles(files, { signal: controller.signal, allowOversizedImages: true });
+        controller.signal.throwIfAborted();
+        if (info.requiresCompression) {
+          $('live-source-info').textContent = '图片较大，等待确认压缩导入。';
+          const accepted = await confirmLiveCompression(info, files.length, controller.signal, module.LIVE_PHOTO_LIMITS);
+          controller.signal.throwIfAborted();
+          if (!accepted) { $('live-source-info').textContent = '已取消导入，可重新选择图片。'; return; }
+          $('live-progress').hidden = false; $('live-progress').value = 0;
+          files = await module.compressLivePhotoFiles(files, { signal: controller.signal, onProgress: progress => {
+            if (revision === state.fileRevision && !controller.signal.aborted) { $('live-progress').value = progress.progress * 100; $('live-source-info').textContent = progress.message; }
+          } });
+          files.forEach(file => compressedLiveFiles.add(file));
+          info = await module.inspectLivePhotoFiles(files, { signal: controller.signal });
+        }
         if (revision !== state.fileRevision || controller.signal.aborted) return;
         if (info.kind === 'video' && info.duration < .5) throw new Error('视频至少需要 0.5 秒，请选择更长的片段。');
         state.files = files; state.fileInfo = info;
-        $('live-source-info').textContent = `${info.kind === 'video' ? `视频 · ${info.duration.toFixed(2)} 秒` : `${files.length} 张图片`} · ${info.width} × ${info.height}`;
+        $('live-source-info').textContent = `${info.kind === 'video' ? `视频 · ${info.duration.toFixed(2)} 秒` : `${files.length} 张图片`} · ${info.width} × ${info.height}${files.some(file => compressedLiveFiles.has(file)) ? ' · 已压缩导入，原文件保留' : ''}`;
         if (!preserveOptions) { const duration = info.kind === 'video' ? Math.min(3, Math.floor(info.duration * 100) / 100) : 3;
           $('live-duration').value = String(duration); $('live-start').value = '0'; $('live-speed').value = '1'; $('live-cover').value = String(duration / 2);
           $('live-motion').value = 'zoom'; $('live-audio').checked = info.hasAudio !== false; }
@@ -196,7 +230,7 @@
         $('live-source-info').textContent = controller.signal.aborted ? '素材读取已取消，请重新选择。' : '素材读取失败，请重新选择。';
         if (!controller.signal.aborted) message(error.message, true);
       } finally {
-        if (state.fileController === controller) { state.fileController = null; setLiveBusy(false); }
+        if (state.fileController === controller) { state.fileController = null; if (!state.files.length) $('live-files').value = ''; $('live-progress').hidden = true; setLiveBusy(false); }
       }
     })();
   }
