@@ -15,6 +15,7 @@ const requiredXhsFiles = Object.freeze([
   'web/xhs.js', 'web/xhs.css', 'web/xhs/lib/xhs-parser.js', 'web/xhs/lib/live-photo-maker.js',
   'web/xhs/lib/live-photo-format.js', 'web/xhs/lib/live-photo-package.js',
   'web/xhs/lib/archive.js', 'web/xhs/lib/live-photo-heic.js', 'web/xhs/lib/live-photo-heic-encoder.js',
+  'web/xhs/lib/live-photo-image-edit.js', 'web/xhs/lib/live-photo-editor.js',
   'web/xhs/lib/live-photo-heic-worker.js', 'web/xhs/assets/vendor/heic/heic-encoder.js',
   'web/xhs/assets/vendor/heic/heic-encoder.wasm',
 ]);

@@ -518,6 +518,70 @@ function makeVideo(codec, id, width, height, bitrate, size) {
   };
 }
 
+await t.test('Live Photo sources prefer resolution and bitrate in Node and Python while ordinary video ordering stays unchanged', async () => {
+  const stream = (codec, id, width, height, bitrate, hasAudio = null, size = 0) =>
+    ({ ...makeVideo(codec, id, width, height, bitrate, size), hasAudio });
+  const low = stream('h264', 'live-720-audio', 1280, 720, 2000000, true);
+  const high = stream('h265', 'live-1080-silent', 1920, 1080, 4000000, false);
+  const lowHighBitrate = stream('h264', 'live-720-high-bitrate', 1280, 720, 100000000);
+  const highLowBitrate = stream('h264', 'live-1080-low-bitrate', 1920, 1080, 1000000);
+  const sameLowBitrate = stream('h264', 'live-same-low-bitrate', 1920, 1080, 2000000, true);
+  const sameHighBitrate = stream('h265', 'live-same-high-bitrate', 1920, 1080, 4000000, false);
+  const unknown = stream('h264', 'live-unknown-size', 0, 0, 100000000, true);
+  const known = stream('h265', 'live-known-size', 640, 480, 1000000, false);
+  const unknownHigh = stream('h265', 'live-unknown-high-bitrate', 0, 0, 200000000);
+  const audio = stream('h265', 'live-tie-audio', 1920, 1080, 4000000, true);
+  const silent = stream('h264', 'live-tie-silent', 1920, 1080, 4000000, false);
+  const compatible = stream('h264', 'live-tie-h264', 1920, 1080, 4000000);
+  const efficient = stream('h265', 'live-tie-hevc', 1920, 1080, 4000000);
+  const duplicateLow = stream('h264', 'live-duplicate', 1280, 720, 2000000);
+  const duplicateHigh = stream('h265', 'live-duplicate', 1920, 1080, 4000000);
+  const small = stream('h264', 'live-small', 1920, 1080, 4000000, null, 600000);
+  const large = stream('h264', 'live-large', 1920, 1080, 4000000, null, 900000);
+  const cases = [
+    ['resolution before audio and codec', [low, high], high, low],
+    ['resolution before excessive bitrate', [lowHighBitrate, highLowBitrate], highLowBitrate, highLowBitrate],
+    ['same resolution prefers bitrate', [sameLowBitrate, sameHighBitrate], sameHighBitrate, sameLowBitrate],
+    ['known dimensions before missing dimensions', [unknown, known], known, unknown],
+    ['missing dimensions fall back to bitrate', [unknown, unknownHigh], unknownHigh, unknown],
+    ['equal detail prefers audio', [silent, audio], audio, audio],
+    ['equal detail and audio prefer compatibility', [efficient, compatible], compatible, compatible],
+    ['duplicate URL keeps best detail metadata', [duplicateLow, duplicateHigh], duplicateHigh, duplicateLow],
+    ['remaining ties prefer larger source', [small, large], large, large]
+  ].map(([name, candidates, live, ordinary]) => {
+    const streams = {};
+    for (const candidate of candidates) (streams[candidate.videoCodec] ??= []).push(candidate);
+    const noteId = '6a81c37e0000000025016000';
+    const note = { noteId, imageList: [{ urlDefault: imageUrl('live-quality'), livePhoto: true, stream: streams }],
+      video: { media: { stream: streams } } };
+    return { name, noteId, html: `<script>window.__INITIAL_STATE__=${JSON.stringify({ noteData: { data: note } })}</script>`,
+      expected: { live: live.masterUrl, width: live.width, height: live.height, ordinary: ordinary.masterUrl } };
+  });
+  const summary = parsed => ({ live: parsed.images[0].liveVideo.url, width: parsed.images[0].liveVideo.width,
+    height: parsed.images[0].liveVideo.height, ordinary: parsed.videos[0].url });
+  for (const fixture of cases) assert.deepEqual(summary(parseNoteHtml(fixture.html, { noteId: fixture.noteId })), fixture.expected, `Node: ${fixture.name}`);
+
+  const { spawnSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const python = process.env.BRCLIO_TEST_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+  const result = spawnSync(python, ['-c', `
+import importlib.util, json, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('xhs_parse', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+results = []
+for fixture in json.load(sys.stdin):
+    parsed = module.parse_note_html(fixture['html'], fixture['noteId'])
+    live = parsed['images'][0]['liveVideo']
+    results.append({'live': live['url'], 'width': live['width'], 'height': live['height'], 'ordinary': parsed['videos'][0]['url']})
+print(json.dumps(results))
+`, fileURLToPath(new URL('../api/python_parse.py', import.meta.url))], { input: JSON.stringify(cases), encoding: 'utf8', timeout: 20000 });
+  assert.equal(result.status, 0, result.error?.message || result.stderr);
+  const pythonResults = JSON.parse(result.stdout);
+  cases.forEach((fixture, index) => assert.deepEqual(pythonResults[index], fixture.expected, `Python: ${fixture.name}`));
+});
+
 await t.test("实况图片按 imageList 保序配对，保留重复静态图且不混入普通视频", () => {
   const targetId = "6a81c37e0000000025016000";
   const otherId = "999999999999999999999999";

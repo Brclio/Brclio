@@ -1,7 +1,8 @@
 import { muxLivePhotoMov, pairLivePhotoJpeg, LIVE_PHOTO_MIN_DURATION, LIVE_PHOTO_MAX_DURATION } from './live-photo-format.js';
+import { normalizeLivePhotoImageEdit, livePhotoImageDimensions, drawEditedLivePhotoImage } from './live-photo-image-edit.js';
 
 export const LIVE_PHOTO_LIMITS = Object.freeze({ minDuration: LIVE_PHOTO_MIN_DURATION, maxDuration: LIVE_PHOTO_MAX_DURATION, maxFiles: 12,
-  maxBytes: 150 * 1024 * 1024, maxDecodedPixels: 64_000_000, maxDimension: 1440, fps: 30 });
+  maxBytes: 150 * 1024 * 1024, maxDecodedPixels: 64_000_000, maxDimension: 8192, importMaxDimension: 4096, fps: 30 });
 const VIDEO_SPEEDS = [1, 1.5, 2, 3];
 const IMAGE_EXT = /\.(?:jpe?g|png|webp|gif|avif|bmp)$/i;
 const VIDEO_EXT = /\.(?:mp4|mov|m4v|webm)$/i;
@@ -118,7 +119,11 @@ export async function compressLivePhotoFiles(files, { signal, onProgress = () =>
     try {
       abort(signal);
       canvas = document.createElement('canvas');
-      Object.assign(canvas, livePhotoDimensions(image.naturalWidth, image.naturalHeight));
+      // Compression is an explicit import choice. Use the available pixel
+      // budget for detail instead of applying the old 1440px export limit.
+      const scale = Math.min(1, LIVE_PHOTO_LIMITS.importMaxDimension / Math.max(image.naturalWidth, image.naturalHeight),
+        Math.sqrt(LIVE_PHOTO_LIMITS.maxDecodedPixels / files.length / (image.naturalWidth * image.naturalHeight)));
+      Object.assign(canvas, evenDimensions(image.naturalWidth * scale, image.naturalHeight * scale));
       const context = canvas.getContext('2d', { alpha: false });
       if (!context) throw new Error('当前设备无法压缩图片，请更换图片后重试。');
       context.fillStyle = '#fefcf6'; context.fillRect(0, 0, canvas.width, canvas.height);
@@ -133,7 +138,7 @@ export async function compressLivePhotoFiles(files, { signal, onProgress = () =>
             if (signal?.aborted) cancel();
             else if (!value?.size) finish(new Error('图片压缩失败，请重新选择或手动缩小图片。'));
             else finish(null, value);
-          }, 'image/jpeg', 0.92);
+          }, 'image/jpeg', 0.98);
         } catch (error) { finish(error); }
       });
       abort(signal);
@@ -147,9 +152,52 @@ export async function compressLivePhotoFiles(files, { signal, onProgress = () =>
   return compressed;
 }
 
-function videoConfig(width, height) {
-  return { codec: 'avc1.420033', width, height, bitrate: 6000000, framerate: LIVE_PHOTO_LIMITS.fps,
+export function livePhotoVideoConfig(width, height) {
+  // High profile, with a level that can describe the source frame size and
+  // 30fps throughput. Keep realtime mode: the MOV muxer requires no B-frames.
+  const macroblocks = Math.ceil(width / 16) * Math.ceil(height / 16);
+  const level = macroblocks <= 36864 && macroblocks * LIVE_PHOTO_LIMITS.fps <= 983040 ? '33'
+    : macroblocks <= 36864 && macroblocks * LIVE_PHOTO_LIMITS.fps <= 2073600 ? '34' : '3c';
+  return { codec: `avc1.6400${level}`, width, height,
+    bitrate: Math.min(240000000, Math.max(12000000, Math.round(width * height * LIVE_PHOTO_LIMITS.fps * 0.4))),
+    bitrateMode: 'variable', framerate: LIVE_PHOTO_LIMITS.fps,
     latencyMode: 'realtime', avc: { format: 'avc' }, hardwareAcceleration: 'no-preference' };
+}
+
+export async function selectLivePhotoVideoConfig(size, { signal } = {}) {
+  // The still image keeps all its native pixels even when the device's AVC
+  // encoder cannot make a movie at that resolution (e.g. a 24MP photograph).
+  // Probe the native frame first, then the largest practical AVC frame budgets.
+  const candidates = [size];
+  for (const [maxEdge, maxPixels, maxMacroblocks] of [[4096, 36864 * 256, 36864], [4096, 3840 * 2160, 32768],
+    [2560, 2560 * 1440, 32768], [1920, 1920 * 1080, 32768], [1280, 1280 * 720, 32768]]) {
+    let lower = 0, upper = Math.min(1, maxEdge / Math.max(size.width, size.height), Math.sqrt(maxPixels / (size.width * size.height)));
+    let candidate = evenDimensions(size.width * upper, size.height * upper);
+    // AVC limits count padded 16px blocks, not only visible pixels. Without
+    // this adjustment a near-limit frame accidentally requests level 6 and
+    // skips a larger supported level-5.2 result.
+    if (Math.ceil(candidate.width / 16) * Math.ceil(candidate.height / 16) > maxMacroblocks) {
+      for (let index = 0; index < 40; index++) {
+        const scale = (lower + upper) / 2, value = evenDimensions(size.width * scale, size.height * scale);
+        if (Math.ceil(value.width / 16) * Math.ceil(value.height / 16) <= maxMacroblocks) lower = scale;
+        else upper = scale;
+      }
+      candidate = evenDimensions(size.width * lower, size.height * lower);
+    }
+    // Some hardware AVC encoders resample non-macroblock-aligned frames. Keep
+    // fallback movie canvases aligned; the separate still keeps native pixels.
+    candidate = { width: candidate.width >= 16 ? Math.floor(candidate.width / 16) * 16 : candidate.width,
+      height: candidate.height >= 16 ? Math.floor(candidate.height / 16) * 16 : candidate.height };
+    if (!candidates.some(value => value.width === candidate.width && value.height === candidate.height)) candidates.push(candidate);
+  }
+  for (const dimensions of candidates) {
+    abort(signal);
+    const config = livePhotoVideoConfig(dimensions.width, dimensions.height);
+    try {
+      if ((await VideoEncoder.isConfigSupported(config)).supported) { abort(signal); return config; }
+    } catch (error) { if (signal?.aborted) throw error; }
+  }
+  throw new Error('当前设备无法编码此画幅的实况动态画面，请更换设备或裁切素材后重试。');
 }
 function recorderType() {
   if (typeof MediaRecorder === 'undefined') return null;
@@ -160,7 +208,7 @@ export async function checkLivePhotoSupport() {
   let supported = false, audioSupported = false;
   try {
     supported = typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined'
-      && (await VideoEncoder.isConfigSupported(videoConfig(640, 480))).supported;
+      && (await VideoEncoder.isConfigSupported(livePhotoVideoConfig(640, 480))).supported;
   } catch { /* Video and audio capability failures must remain independent. */ }
   try {
     audioSupported = typeof AudioEncoder !== 'undefined' && typeof AudioData !== 'undefined'
@@ -212,9 +260,15 @@ export function normalizeLivePhotoOptions({ kind, sourceDuration, start = 0, dur
 }
 
 export function livePhotoDimensions(width, height) {
-  if (![width, height].every(value => Number.isFinite(value) && value > 0)) throw new Error('素材尺寸无效。');
-  const scale = Math.min(1, LIVE_PHOTO_LIMITS.maxDimension / Math.max(width, height));
-  return { width: Math.max(2, Math.floor(width * scale / 2) * 2), height: Math.max(2, Math.floor(height * scale / 2) * 2) };
+  if (![width, height].every(value => Number.isSafeInteger(value) && value >= 2)) throw new Error('素材尺寸无效。');
+  if (Math.max(width, height) > LIVE_PHOTO_LIMITS.maxDimension || width * height > LIVE_PHOTO_LIMITS.maxDecodedPixels)
+    throw new Error('原始画面超过本地编码上限（长边 8192 像素、6400 万像素），请先裁剪素材。');
+  // H.264 4:2:0 needs even dimensions. Do not rescale a high-resolution source.
+  return evenDimensions(width, height);
+}
+
+function evenDimensions(width, height) {
+  return { width: Math.max(2, Math.floor(width / 2) * 2), height: Math.max(2, Math.floor(height / 2) * 2) };
 }
 
 async function seek(video, time, signal) {
@@ -233,26 +287,20 @@ async function encodingBackpressure(encoder, limit, signal) {
 
 function canvasBlob(canvas) {
   return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob)
-    : reject(new Error('封面生成失败。')), 'image/jpeg', 0.94));
-}
-
-function drawImage(context, image, width, height, time, duration, motion) {
-  context.fillStyle = '#fefcf6'; context.fillRect(0, 0, width, height);
-  const fit = Math.min(width / image.naturalWidth, height / image.naturalHeight);
-  const scale = fit * (motion === 'zoom' ? 1 + 0.055 * time / duration : 1);
-  const w = image.naturalWidth * scale, h = image.naturalHeight * scale;
-  context.drawImage(image, (width - w) / 2, (height - h) / 2, w, h);
+    : reject(new Error('封面生成失败。')), 'image/jpeg', 1));
 }
 
 /** Draw an image-group frame using the same layout used by the encoder. */
-export function drawLivePhotoImageFrame(context, images, { time, duration, motion = 'zoom', size } = {}) {
+export function drawLivePhotoImageFrame(context, images, { time, duration, motion = 'zoom', size, imageEdits = [] } = {}) {
   if (!context || !Array.isArray(images) || !images.length || !Number.isFinite(time) || time < 0 || !Number.isFinite(duration) || duration <= 0)
     throw new Error('实况预览帧参数无效。');
-  const dimensions = size || livePhotoDimensions(images[0].naturalWidth, images[0].naturalHeight);
+  const first = livePhotoImageDimensions(images[0], imageEdits[0]);
+  const dimensions = size || livePhotoDimensions(first.width, first.height);
   if (context.canvas.width !== dimensions.width) context.canvas.width = dimensions.width;
   if (context.canvas.height !== dimensions.height) context.canvas.height = dimensions.height;
+  context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high';
   const index = Math.min(images.length - 1, Math.floor(time / duration * images.length)), interval = duration / images.length;
-  drawImage(context, images[index], dimensions.width, dimensions.height, time % interval, interval, motion);
+  drawEditedLivePhotoImage(context, images[index], { edit: imageEdits[index], ...dimensions, time: time % interval, duration: interval, motion });
   return { ...dimensions, index };
 }
 
@@ -336,12 +384,14 @@ async function encodeAudio({ buffer, offset }, duration, signal) {
 }
 
 export async function createLivePhoto({ files, start = 0, duration = 3, keyPhotoTime = duration / 2,
-  motion = 'zoom', speed = 1, includeAudio = true, photoFormat = 'jpeg', signal, onProgress = () => {} }) {
+  motion = 'zoom', speed = 1, includeAudio = true, photoFormat = 'jpeg', imageEdits = [], signal, onProgress = () => {} }) {
   if (!['jpeg', 'heic'].includes(photoFormat)) throw new Error('请选择 HEIC 或 JPG 照片格式。');
   const kind = validateLivePhotoFiles(files), support = await checkLivePhotoSupport(); abort(signal);
   if (!support.supported) throw new Error(support.message);
   if (photoFormat === 'heic' && !support.heicSupported) throw new Error('当前设备不支持本地 HEIC 编码，请使用新版浏览器或桌面客户端。');
-  let source, encoder;
+  if (!Array.isArray(imageEdits) || imageEdits.length > files.length) throw new Error('图片调整参数与素材不匹配。');
+  const edits = files.map((_, index) => normalizeLivePhotoImageEdit(imageEdits[index]));
+  let source, encoder, canvas, coverCanvas;
   const images = [];
   try {
     onProgress({ progress: 0.02, message: '正在读取本地素材…' });
@@ -355,10 +405,13 @@ export async function createLivePhoto({ files, start = 0, duration = 3, keyPhoto
       }
     }
     const options = normalizeLivePhotoOptions({ kind, sourceDuration: source?.video.duration, start, duration, keyPhotoTime, motion, speed });
-    const size = kind === 'video' ? livePhotoDimensions(source.video.videoWidth, source.video.videoHeight)
-      : livePhotoDimensions(images[0].naturalWidth, images[0].naturalHeight);
-    const config = videoConfig(size.width, size.height);
-    if (!(await VideoEncoder.isConfigSupported(config)).supported) throw new Error('当前浏览器无法编码此画面尺寸，请换用桌面客户端。');
+    const firstImageSize = kind === 'images' ? livePhotoImageDimensions(images[0], edits[0]) : null;
+    const nativeSize = kind === 'video' ? livePhotoDimensions(source.video.videoWidth, source.video.videoHeight)
+      : livePhotoDimensions(firstImageSize.width, firstImageSize.height);
+    const config = await selectLivePhotoVideoConfig(nativeSize, { signal });
+    const size = { width: config.width, height: config.height };
+    const videoResized = size.width !== nativeSize.width || size.height !== nativeSize.height;
+    if (videoResized) onProgress({ progress: 0.04, message: `照片保留原始像素，动态画面按设备支持的 ${size.width} × ${size.height} 制作。` });
     abort(signal);
     let audio;
     if (kind === 'video' && options.speed === 1 && includeAudio && hasVideoAudio(source.video) !== false) {
@@ -367,8 +420,10 @@ export async function createLivePhoto({ files, start = 0, duration = 3, keyPhoto
       audio = await encodeAudio(await selectedAudio(source.video, options.start, options.duration, signal), options.duration, signal);
     }
     abort(signal);
-    const canvas = document.createElement('canvas'); Object.assign(canvas, size);
+    canvas = document.createElement('canvas'); Object.assign(canvas, size);
     const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('当前设备无法分配原始分辨率画面，请减少素材后重试。');
+    context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high';
     const samples = []; let decoderConfig, failed;
     encoder = new VideoEncoder({ output(chunk, metadata) {
       const data = new Uint8Array(chunk.byteLength); chunk.copyTo(data);
@@ -377,12 +432,12 @@ export async function createLivePhoto({ files, start = 0, duration = 3, keyPhoto
     }, error(error) { failed = error; } });
     encoder.configure(config);
     const frameCount = livePhotoFrameCount(options.duration);
-    const draw = async time => {
+    const draw = async (time, target = context, dimensions = size) => {
       if (kind === 'video') {
         await seek(source.video, Math.min(options.start + time * options.speed, source.video.duration - 0.001), signal);
-        context.drawImage(source.video, 0, 0, size.width, size.height);
+        target.drawImage(source.video, 0, 0, dimensions.width, dimensions.height);
       } else {
-        drawLivePhotoImageFrame(context, images, { time, duration: options.duration, motion: options.motion, size });
+        drawLivePhotoImageFrame(target, images, { time, duration: options.duration, motion: options.motion, size: dimensions, imageEdits: edits });
       }
     };
     for (let index = 0; index < frameCount; index++) {
@@ -393,14 +448,25 @@ export async function createLivePhoto({ files, start = 0, duration = 3, keyPhoto
       const frame = new VideoFrame(canvas, { timestamp, duration: end - timestamp });
       try { encoder.encode(frame, { keyFrame: index === 0 || index % 30 === 0 }); } finally { frame.close(); }
       onProgress({ progress: 0.2 + 0.7 * (index + 1) / frameCount, message: `正在制作画面 ${index + 1} / ${frameCount}…` });
-      await encodingBackpressure(encoder, 8, signal);
+      // Bound queued raw pixels as well as frame count for 4K/6K sources.
+      await encodingBackpressure(encoder, Math.max(1, Math.min(8, Math.floor(16_000_000 / (size.width * size.height)))), signal);
       if (index % 10 === 0) await new Promise(resolve => setTimeout(resolve, 0));
     }
     await encoder.flush(); abort(signal); if (failed) throw failed;
     if (!decoderConfig || samples.length !== frameCount) throw new Error('视频编码不完整，请重试。');
     // Cover and metadata refer to the same encoded frame, including image cuts.
     const coverTime = options.keyPhotoTime;
-    await draw(coverTime); abort(signal);
+    const coverIndex = kind === 'images' ? Math.min(images.length - 1, Math.floor(coverTime / options.duration * images.length)) : 0;
+    const photoSize = kind === 'video' ? { width: source.video.videoWidth, height: source.video.videoHeight }
+      : livePhotoImageDimensions(images[coverIndex], edits[coverIndex]);
+    coverCanvas = document.createElement('canvas'); Object.assign(coverCanvas, photoSize);
+    const coverContext = coverCanvas.getContext('2d', { alpha: false });
+    if (!coverContext) throw new Error('当前设备无法分配原始分辨率封面，请减少素材后重试。');
+    coverContext.imageSmoothingEnabled = true; coverContext.imageSmoothingQuality = 'high';
+    await draw(coverTime, coverContext, photoSize); abort(signal);
+    // Browsers cannot display HEIC directly. Preview the source cover rather
+    // than extracting and recompressing an already encoded H.264 frame.
+    const photoPreviewBlob = await canvasBlob(coverCanvas); abort(signal);
     const identifier = crypto.randomUUID();
     let photo;
     if (photoFormat === 'heic') {
@@ -409,8 +475,8 @@ export async function createLivePhoto({ files, start = 0, duration = 3, keyPhoto
         import('./live-photo-heic-encoder.js'), import('./live-photo-heic.js')
       ]);
       abort(signal);
-      photo = pairLivePhotoHeic(await encodeHeicCanvas(canvas, { signal }), identifier);
-    } else photo = pairLivePhotoJpeg(new Uint8Array(await (await canvasBlob(canvas)).arrayBuffer()), identifier);
+      photo = pairLivePhotoHeic(await encodeHeicCanvas(coverCanvas, { signal }), identifier);
+    } else photo = pairLivePhotoJpeg(new Uint8Array(await photoPreviewBlob.arrayBuffer()), identifier);
     abort(signal); onProgress({ progress: 0.96, message: '正在写入实况配对信息…' });
     const mov = muxLivePhotoMov({ samples, decoderConfig, ...size, duration: options.duration,
       keyPhotoTime: coverTime, assetIdentifier: identifier, audio });
@@ -418,11 +484,14 @@ export async function createLivePhoto({ files, start = 0, duration = 3, keyPhoto
     return { photo, photoFormat, photoExtension: photoFormat === 'heic' ? 'HEIC' : 'JPG',
       photoMimeType: photoFormat === 'heic' ? 'image/heic' : 'image/jpeg',
       ...(photoFormat === 'heic' ? { heic: photo } : { jpeg: photo }), mov,
-      previewBlob: new Blob([mov], { type: 'video/quicktime' }), ...size,
+      previewBlob: new Blob([mov], { type: 'video/quicktime' }), photoPreviewBlob, ...size,
+      photoWidth: photoSize.width, photoHeight: photoSize.height, videoBitrate: config.bitrate, videoResized,
       duration: options.duration, keyPhotoTime: coverTime, speed: options.speed,
       sourceSpan: options.sourceSpan, hasAudio: Boolean(audio), assetIdentifier: identifier };
   } finally {
     if (encoder && encoder.state !== 'closed') encoder.close(); source?.dispose();
+    if (canvas) canvas.width = canvas.height = 0;
+    if (coverCanvas) coverCanvas.width = coverCanvas.height = 0;
     images.forEach(image => { image.src = ''; });
   }
 }

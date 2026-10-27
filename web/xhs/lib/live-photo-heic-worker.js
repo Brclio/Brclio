@@ -7,7 +7,8 @@ self.onmessage = async event => {
   let encoder, input = 0;
   try {
     const { width, height, rgba } = event.data || {};
-    if (![width, height].every(value => Number.isSafeInteger(value) && value > 0 && value <= 1440)
+    if (![width, height].every(value => Number.isSafeInteger(value) && value > 0 && value <= 8192)
+      || width * height > 64_000_000
       || !(rgba instanceof ArrayBuffer) || rgba.byteLength !== width * height * 4)
       throw new Error('封面像素数据无效。');
     encoder = await createEncoder({
@@ -20,7 +21,7 @@ self.onmessage = async event => {
     if (!encoder._encode_heic(input, rgba.byteLength, width, height))
       throw new Error(encoder.UTF8ToString(encoder._get_error()) || 'HEVC 编码失败。');
     const size = encoder._get_result_size(), pointer = encoder._get_result_data();
-    if (!pointer || size < 24 || size > 20 * 1024 * 1024) throw new Error('HEIC 文件大小无效。');
+    if (!pointer || size < 24 || size > 128 * 1024 * 1024) throw new Error('HEIC 文件大小无效。');
     // Copy while the C++ result is still alive; never return a view of a freed
     // std::vector or transfer the WebAssembly linear memory itself.
     const data = encoder.HEAPU8.slice(pointer, pointer + size);

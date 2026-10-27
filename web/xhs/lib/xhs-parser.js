@@ -403,6 +403,23 @@ function videoQualityScore(video) {
   );
 }
 
+// Live Photos are saved as source media and may be silent. Prefer the most
+// detailed frame before playback compatibility or audio, unlike normal videos.
+function compareLivePhotoQuality(a, b) {
+  const key = video => [
+    normalizeNumber(video.width) * normalizeNumber(video.height),
+    normalizeNumber(video.bitrate),
+    video.hasAudio === true ? 2 : video.hasAudio === false ? 0 : 1,
+    codecPriority(video.codec),
+    normalizeNumber(video.size)
+  ];
+  const aKey = key(a), bKey = key(b);
+  for (let index = 0; index < aKey.length; index++) {
+    if (aKey[index] !== bKey[index]) return aKey[index] > bKey[index] ? -1 : 1;
+  }
+  return 0;
+}
+
 function streamAudioMetadata(item) {
   const audioCodec = String(item?.audioCodec ?? item?.audio_codec ?? '').toLowerCase();
   const audioChannels = normalizeNumber(item?.audioChannels ?? item?.audio_channels);
@@ -451,15 +468,17 @@ function extractStreamsFromRoot(streamRoot, source = "media-stream") {
     }
   }
 
+  const compareQuality = source === 'live-photo-stream' ? compareLivePhotoQuality
+    : (a, b) => videoQualityScore(b) - videoQualityScore(a);
   const deduped = new Map();
   for (const stream of streams) {
     const existing = deduped.get(stream.url);
-    if (!existing || videoQualityScore(stream) > videoQualityScore(existing)) {
+    if (!existing || compareQuality(stream, existing) < 0) {
       deduped.set(stream.url, stream);
     }
   }
 
-  return [...deduped.values()].sort((a, b) => videoQualityScore(b) - videoQualityScore(a));
+  return [...deduped.values()].sort(compareQuality);
 }
 
 function originalVideoUrl(value) {

@@ -201,12 +201,15 @@
   for (const [id, action] of [['profile-pause', 'pauseProfile'], ['profile-resume', 'resumeProfile'], ['profile-cancel', 'cancelProfile'], ['profile-retry', 'retryFailed']]) click(id, async () => renderProfile(await request(action)));
   let liveModulePromise;
   const liveModule = () => liveModulePromise ||= import('./xhs/lib/live-photo-maker.js');
+  const liveImageEdits = new WeakMap(), liveImageEditPresets = new WeakMap();
+  let liveEditorModulePromise, imageEditorController;
+  const imageEdits = () => state.files.map(file => liveImageEdits.get(file));
   let supportLoaded = false;
   async function loadLiveSupport() { if (supportLoaded) return; supportLoaded = true; try { const support = await (await liveModule()).checkLivePhotoSupport(); state.liveSupport = support; $('live-support').textContent = support.supported ? `支持本地制作 · ${support.heicSupported ? 'JPG / HEIC' : 'JPG'}${support.audioSupported ? ' · 支持保留声音' : ''}` : support.message; $('live-format').querySelector('[value="heic"]').disabled = !support.heicSupported; if (!support.heicSupported) $('live-format').value = 'jpeg'; syncLiveControls(); } catch (error) { supportLoaded = false; $('live-support').textContent = error.message; } }
   function clearPreview() { state.previewController?.abort(); state.previewController = null; cancelAnimationFrame(state.previewTimer); state.previewTimer = null; $('live-preview-video').pause(); $('live-preview-video').removeAttribute('src'); $('live-preview-video').hidden = true; $('live-preview-image').hidden = true; $('live-preview-canvas').hidden = true; $('live-preview-image').style.transform = ''; for (const url of state.previewUrls) URL.revokeObjectURL(url); state.previewUrls = []; $('live-preview-empty').hidden = false; }
   function objectURL(blob) { const url = URL.createObjectURL(blob); state.previewUrls.push(url); return url; }
   function invalidateLive() { state.liveResult = null; $('live-result').hidden = true; clearPreview(); $('live-status').textContent = ''; }
-  function liveOptions() { return { start: state.fileInfo?.kind === 'video' ? Number($('live-start').value) : 0, duration: Number($('live-duration').value), keyPhotoTime: Number($('live-cover').value), speed: state.fileInfo?.kind === 'video' ? Number($('live-speed').value) : 1, motion: $('live-motion').value, includeAudio: state.fileInfo?.kind === 'video' && state.liveSupport?.audioSupported === true && $('live-audio').checked && Number($('live-speed').value) === 1, photoFormat: $('live-format').value }; }
+  function liveOptions() { return { start: state.fileInfo?.kind === 'video' ? Number($('live-start').value) : 0, duration: Number($('live-duration').value), keyPhotoTime: Number($('live-cover').value), speed: state.fileInfo?.kind === 'video' ? Number($('live-speed').value) : 1, motion: $('live-motion').value, imageEdits: imageEdits(), includeAudio: state.fileInfo?.kind === 'video' && state.liveSupport?.audioSupported === true && $('live-audio').checked && Number($('live-speed').value) === 1, photoFormat: $('live-format').value }; }
   function syncLiveControls() {
     const busy = state.liveBusy, video = state.fileInfo?.kind === 'video';
     if (state.liveSupport) $('live-format').querySelector('[value="heic"]').disabled = !state.liveSupport.heicSupported;
@@ -215,7 +218,56 @@
     $('live-generate').disabled = busy || !state.fileInfo || !state.files.length || state.liveSupport?.supported !== true;
     $('live-preview').disabled = busy || !state.fileInfo || !state.files.length;
   }
-  function renderFiles() { $('live-file-list').replaceChildren(); state.files.forEach((file, index) => { const li = element('li'); li.append(element('span', '', `${index + 1}. ${file.name} · ${(file.size / 1048576).toFixed(1)} MB`)); for (const [label, shift] of [['↑', -1], ['↓', 1]]) { const button = element('button', '', label); button.type = 'button'; button.setAttribute('aria-label', `将 ${file.name} ${shift < 0 ? '上移' : '下移'}`); button.disabled = index + shift < 0 || index + shift >= state.files.length; button.addEventListener('click', () => { const files = [...state.files]; [files[index], files[index + shift]] = [files[index + shift], files[index]]; selectLiveFiles(files, true); }); li.append(button); } const remove = element('button', '', '移除'); remove.type = 'button'; remove.setAttribute('aria-label', `移除 ${file.name}`); remove.addEventListener('click', () => selectLiveFiles(state.files.filter((_,position) => position !== index)));  li.append(remove); $('live-file-list').append(li); }); }
+  async function editLiveImage(file) {
+    if (state.liveBusy || state.fileInfo?.kind !== 'images') return;
+    imageEditorController?.abort(); const controller = new AbortController(); imageEditorController = controller;
+    const revision = state.fileRevision; let batchBusy = false;
+    try {
+      const module = await (liveEditorModulePromise ||= import('./xhs/lib/live-photo-editor.js'));
+      if (controller.signal.aborted || revision !== state.fileRevision) return;
+      const result = await module.openLivePhotoImageEditor({ file, edit: liveImageEdits.get(file), preset: liveImageEditPresets.get(file), signal: controller.signal });
+      if (!result || controller.signal.aborted || revision !== state.fileRevision || !state.files.includes(file)) return;
+      let prepared;
+      if (result.all) {
+        batchBusy = true; setLiveBusy(true);
+        prepared = await module.prepareLivePhotoImageEdits([...state.files], result.edit, result.aspectRatio, { signal: controller.signal,
+          onProgress: (index, count) => { $('live-status').textContent = `正在统一调整图片 ${index} / ${count}…`; } });
+      } else prepared = [[file, result.edit]];
+      if (controller.signal.aborted || revision !== state.fileRevision) return;
+      const meaningful = edit => edit.crop.x !== 0 || edit.crop.y !== 0 || edit.crop.width !== 1 || edit.crop.height !== 1
+        || edit.rotation !== 0 || edit.flipX || edit.flipY || edit.brightness !== 1 || edit.contrast !== 1 || edit.saturation !== 1;
+      for (const [target, edit] of prepared) {
+        if (meaningful(edit)) liveImageEdits.set(target, edit);
+        else liveImageEdits.delete(target);
+        if (result.preset && result.preset !== 'free') liveImageEditPresets.set(target, result.preset);
+        else liveImageEditPresets.delete(target);
+      }
+      invalidateLive(); renderFiles();
+      $('live-status').textContent = result.all ? `已将裁切与调整应用到全部 ${state.files.length} 张图片，原文件保留。` : `已保存 ${file.name} 的裁切与调整，原文件保留。`;
+    } catch (error) {
+      if (controller.signal.aborted) { if (batchBusy && revision === state.fileRevision) $('live-status').textContent = '统一调整已取消，没有保存本次修改。'; }
+      else throw error;
+    } finally { if (imageEditorController === controller) { imageEditorController = null; if (batchBusy && revision === state.fileRevision) setLiveBusy(false); } }
+  }
+  function renderFiles() {
+    $('live-file-list').replaceChildren();
+    state.files.forEach((file, index) => {
+      const li = element('li');
+      li.append(element('span', '', `${index + 1}. ${file.name} · ${(file.size / 1048576).toFixed(1)} MB${liveImageEdits.has(file) ? ' · 已编辑' : ''}`));
+      if (state.fileInfo?.kind === 'images') {
+        const edit = element('button', 'xhs-file-edit', '编辑'); edit.type = 'button'; edit.setAttribute('aria-label', `编辑 ${file.name}`);
+        edit.disabled = state.liveBusy; edit.addEventListener('click', () => { void run(edit, () => editLiveImage(file)); }); li.append(edit);
+      }
+      for (const [label, shift] of [['↑', -1], ['↓', 1]]) {
+        const button = element('button', '', label); button.type = 'button'; button.setAttribute('aria-label', `将 ${file.name} ${shift < 0 ? '上移' : '下移'}`);
+        button.disabled = state.liveBusy || index + shift < 0 || index + shift >= state.files.length;
+        button.addEventListener('click', () => { const files = [...state.files]; [files[index], files[index + shift]] = [files[index + shift], files[index]]; selectLiveFiles(files, true); }); li.append(button);
+      }
+      const remove = element('button', '', '移除'); remove.type = 'button'; remove.setAttribute('aria-label', `移除 ${file.name}`); remove.disabled = state.liveBusy;
+      remove.addEventListener('click', () => selectLiveFiles(state.files.filter((_, position) => position !== index))); li.append(remove);
+      $('live-file-list').append(li);
+    });
+  }
   const compressedLiveFiles = new WeakSet();
   function confirmLiveCompression(info, count, signal, limits) {
     signal.throwIfAborted();
@@ -239,6 +291,7 @@
   }
   function selectLiveFiles(files, preserveOptions = false) {
     const revision = ++state.fileRevision;
+    imageEditorController?.abort(); imageEditorController = null;
     state.fileController?.abort(); state.liveController?.abort();
     invalidateLive(); message(''); $('live-progress').hidden = true; state.files = []; state.fileInfo = null; renderFiles();
     if (!files.length) { $('live-source-info').textContent = '素材留在你的设备上。'; setLiveBusy(false); return; }
@@ -264,7 +317,7 @@
         if (revision !== state.fileRevision || controller.signal.aborted) return;
         if (info.kind === 'video' && info.duration < .5) throw new Error('视频至少需要 0.5 秒，请选择更长的片段。');
         state.files = files; state.fileInfo = info;
-        $('live-source-info').textContent = `${info.kind === 'video' ? `视频 · ${info.duration.toFixed(2)} 秒` : `${files.length} 张图片`} · ${info.width} × ${info.height}${files.some(file => compressedLiveFiles.has(file)) ? ' · 已压缩导入，原文件保留' : ''}`;
+        $('live-source-info').textContent = `${info.kind === 'video' ? `视频 · ${info.duration.toFixed(2)} 秒` : `${files.length} 张图片`} · ${info.width} × ${info.height}${files.some(file => compressedLiveFiles.has(file)) ? ' · 已压缩导入，原文件保留' : ' · 原始分辨率'}`;
         if (!preserveOptions) { const duration = info.kind === 'video' ? Math.min(3, Math.floor(info.duration * 100) / 100) : 3;
           $('live-duration').value = String(duration); $('live-start').value = '0'; $('live-speed').value = '1'; $('live-cover').value = String(duration / 2);
           $('live-motion').value = 'zoom'; $('live-audio').checked = info.hasAudio !== false; }
@@ -312,7 +365,7 @@
       const begin = performance.now(), tick = () => {
         if (controller.signal.aborted) return;
         const elapsed = Math.min(options.duration, (performance.now() - begin) / 1000);
-        module.drawLivePhotoImageFrame(context, images, { time: elapsed < options.duration ? elapsed : options.keyPhotoTime, duration: options.duration, motion: options.motion });
+        module.drawLivePhotoImageFrame(context, images, { time: elapsed < options.duration ? elapsed : options.keyPhotoTime, duration: options.duration, motion: options.motion, imageEdits: options.imageEdits });
         if (elapsed < options.duration) state.previewTimer = requestAnimationFrame(tick);
       }; tick();
     }
@@ -328,29 +381,7 @@
   }
   async function liveCoverPreview(result, signal) {
     signal.throwIfAborted();
-    if (result.photoFormat !== 'heic') return new Blob([result.photo], { type: result.photoMimeType });
-    const video = document.createElement('video'), url = URL.createObjectURL(result.previewBlob);
-    video.muted = true; video.preload = 'auto';
-    const wait = (event, start, timeoutMessage) => new Promise((resolve, reject) => {
-      const cleanup = () => { clearTimeout(timer); video.removeEventListener(event, done); video.removeEventListener('error', failed); signal.removeEventListener('abort', aborted); };
-      const finish = error => { cleanup(); error ? reject(error) : resolve(); };
-      const done = () => finish(), failed = () => finish(new Error('无法读取实况封面预览。'));
-      const aborted = () => finish(signal.reason || new DOMException('制作已取消。', 'AbortError'));
-      const timer = setTimeout(() => finish(new Error(timeoutMessage)), 15000);
-      video.addEventListener(event, done, { once: true }); video.addEventListener('error', failed, { once: true }); signal.addEventListener('abort', aborted, { once: true });
-      if (signal.aborted) aborted(); else start();
-    });
-    try {
-      await wait('loadeddata', () => { video.src = url; }, '封面预览读取超时。');
-      if (result.keyPhotoTime > 0) await wait('seeked', () => { video.currentTime = result.keyPhotoTime; }, '封面预览定位超时。');
-      signal.throwIfAborted();
-      const canvas = document.createElement('canvas'); canvas.width = result.width; canvas.height = result.height; canvas.getContext('2d').drawImage(video, 0, 0);
-      return await new Promise((resolve, reject) => {
-        const aborted = () => reject(signal.reason || new DOMException('制作已取消。', 'AbortError'));
-        signal.addEventListener('abort', aborted, { once: true });
-        canvas.toBlob(blob => { signal.removeEventListener('abort', aborted); if (signal.aborted) aborted(); else if (blob) resolve(blob); else reject(new Error('封面预览生成失败。')); }, 'image/jpeg', .92);
-      });
-    } finally { video.pause(); video.removeAttribute('src'); video.load(); URL.revokeObjectURL(url); }
+    return result.photoPreviewBlob;
   }
   click('live-generate', async () => {
     assertLiveFiles(); invalidateLive();
@@ -368,7 +399,7 @@
       if (cover) { $('live-preview-image').src = objectURL(cover); $('live-preview-image').hidden = false; }
       $('live-preview-image').alt = `实况封面 · ${result.keyPhotoTime.toFixed(2)} 秒`;
       state.liveResult = result; $('live-result').hidden = false;
-      $('live-result-info').textContent = `${result.width} × ${result.height} · ${result.duration} 秒 · ${result.photoExtension} + MOV${result.hasAudio ? ' · 保留声音' : ''}`;
+      $('live-result-info').textContent = `${result.duration} 秒 · ${result.photoExtension} + MOV · 照片 ${result.photoWidth} × ${result.photoHeight} · 动态 ${result.width} × ${result.height} · 高画质${result.hasAudio ? ' · 保留声音' : ''}`;
       $('live-status').textContent = '实况已生成，照片与 MOV 已写入相同配对标识。';
     } catch (error) {
       if (revision !== state.fileRevision) return;
@@ -377,7 +408,7 @@
       if (!controller.signal.aborted && error.name !== 'AbortError') throw error;
     } finally { if (state.liveController === controller) { state.liveController = null; if (!state.fileController) setLiveBusy(false); } }
   });
-  click('live-cancel', () => { state.liveController?.abort(); state.fileController?.abort(); });
+  click('live-cancel', () => { state.liveController?.abort(); state.fileController?.abort(); imageEditorController?.abort(); });
   function resultRequired() { if (!state.liveResult) throw new Error('请先生成实况。'); return state.liveResult; }
   click('live-export-package', async () => { const { makeLivePhotoPackage } = await import('./xhs/lib/live-photo-package.js'), pack = makeLivePhotoPackage(resultRequired()); return download(pack.zip, `${pack.stem}.zip`); });
   click('live-export-pair', async () => { const result = resultRequired(), { makeZipBlob } = await import('./xhs/lib/archive.js'), stem = `Brclio-Live-${result.assetIdentifier}`; return download(makeZipBlob([{ name: `${stem}.${result.photoExtension}`, data: result.photo }, { name: `${stem}.MOV`, data: result.mov }]), `${stem}-配对文件.zip`); });
@@ -454,7 +485,7 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void checkClipboard(); updateProfileCountdown(); });
   async function refreshNativeState() { await platformReady; if (!isNative || state.hostPlatform === 'android') return; const results = await Promise.allSettled([request('loginState'), request('profileState')]); if (results[0].status === 'fulfilled') renderLogin(results[0].value); if (results[1].status === 'fulfilled') renderProfile(results[1].value); }
   window.addEventListener('brclio:view', event => { if (event.detail?.name === 'xhs') { void refreshNativeState(); void checkClipboard(); updateProfileCountdown(); } else { $('video-preview').pause(); $('live-preview-video').pause(); cancelAnimationFrame(state.previewTimer); updateProfileCountdown(); } });
-  window.addEventListener('beforeunload', () => { state.liveController?.abort(); state.fileController?.abort(); clearInterval(profileCountdownTimer); clearPreview(); });
+  window.addEventListener('beforeunload', () => { state.liveController?.abort(); state.fileController?.abort(); imageEditorController?.abort(); clearInterval(profileCountdownTimer); clearPreview(); });
   const platformReady = Promise.resolve(host?.getPlatform?.()).then(info => {
     state.hostPlatform = info?.platform || 'browser';
     if (state.hostPlatform === 'android') {

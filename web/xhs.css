@@ -109,3 +109,37 @@
 .xhs-compress-dialog .xhs-action-row { justify-content: flex-end; margin-top: 24px; }
 .xhs-compress-dialog button:focus-visible { outline: 3px solid #f4d758; outline-offset: 3px; }
 @media(max-width:600px) { .xhs-compress-dialog .xhs-action-row>.button { flex: 1 1 auto; } }
+/* Per-image edit recipes, using the existing Brclio functional dialog. */
+.xhs-edit-dialog { width: min(1100px,calc(100vw - 28px)); max-width: none; padding: clamp(18px,2.5vw,30px); }
+.xhs-edit-dialog [hidden] { display: none !important; }
+.xhs-edit-dialog h2,.xhs-edit-dialog h3 { color: var(--ink); font-family: Georgia,'Noto Serif SC','Songti SC',serif; }
+.xhs-edit-dialog h2 { margin: 8px 0 0; font-size: 1.15rem; }
+.xhs-edit-dialog h3 { margin: 0 0 12px; font-size: .95rem; }
+.xhs-edit-dialog .field-hint { line-height: 1.65; overflow-wrap: anywhere; }
+.xhs-edit-dialog>.field-hint { margin: 12px 0 18px; }
+.xhs-edit-dialog button:focus-visible,.xhs-edit-dialog input:focus-visible,.xhs-edit-dialog select:focus-visible { outline: 3px solid #f4d758; outline-offset: 3px; }
+.xhs-edit-dialog .app-input,.xhs-edit-dialog .app-select { min-width: 0; max-width: none; box-sizing: border-box; }
+.xhs-edit-layout { display: grid; grid-template-columns: minmax(0,1.5fr) minmax(0,1fr); gap: clamp(20px,3vw,34px); }
+.xhs-edit-layout section { min-width: 0; }
+.xhs-edit-stage,.xhs-edit-effect { display: flex; align-items: center; justify-content: center; background: #faf6eb; border: 1px solid rgba(26,26,46,.1); border-radius: 10px; overflow: hidden; padding: 10px; min-height: 170px; }
+.xhs-edit-stage canvas { display: block; max-width: 100%; height: auto; max-height: 48vh; touch-action: none; cursor: crosshair; }
+.xhs-edit-effect canvas { display: block; max-width: 100%; height: auto; max-height: 230px; }
+.xhs-edit-tools,.xhs-edit-coordinates { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin-top: 16px; }
+.xhs-edit-coordinates { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.xhs-edit-dialog .xhs-label { font-size: .78rem; }
+.xhs-edit-dialog .app-input,.xhs-edit-dialog .app-select { margin-top: 6px; font-size: .8rem; }
+.xhs-edit-transform { margin: 20px 0; gap: 8px; }
+.xhs-edit-transform .button { padding: 9px 11px; font-size: .75rem; }
+.xhs-edit-transform button[aria-pressed=true] { color: #2b7fd8; background: #eaf2fa; border-color: #2b7fd8; }
+#xhs-live-edit-rotation { color: var(--ink-light); margin-left: 5px; }
+.xhs-edit-slider { display: block; margin-top: 18px; font-size: .82rem; }
+.xhs-edit-slider>span { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.xhs-edit-slider output { color: #2b7fd8; font-variant-numeric: tabular-nums; }
+.xhs-edit-slider input { display: block; width: 100%; height: 22px; margin: 9px 0 0; accent-color: #2b7fd8; cursor: pointer; }
+.xhs-edit-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding-top: 18px; border-top: 1px solid rgba(26,26,46,.1); }
+.xhs-edit-footer .button { font-size: .8rem; }
+.xhs-file-list li { flex-wrap: wrap; }
+.xhs-file-list li>span { min-width: 0; flex-basis: 200px; }
+.xhs-file-list .xhs-file-edit { color: #2b7fd8; }
+@media(max-width:900px) { .xhs-edit-layout { grid-template-columns: minmax(0,1fr); } .xhs-edit-stage canvas { max-height: 40vh; } .xhs-edit-adjustments { padding-top: 18px; border-top: 1px solid rgba(26,26,46,.1); } }
+@media(max-width:600px) { .xhs-edit-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); padding: 18px 14px; } .xhs-edit-coordinates { grid-template-columns: repeat(2,minmax(0,1fr)); } .xhs-edit-footer>.xhs-action-row { width: 100%; } .xhs-edit-footer .button { flex: 1 1 100px; } .xhs-edit-dialog .xhs-label-row { align-items: flex-start; } }
