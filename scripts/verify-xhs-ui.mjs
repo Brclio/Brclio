@@ -271,6 +271,21 @@ try {
   assert.match(await nativePage.evaluate(() => window.__xhsCalls.find(call => call.action === 'saveVideo').input.video.url), /original/);
   assert.deepEqual(await nativePage.evaluate(()=>window.__xhsCalls.find(call=>call.action==='saveVideo').input.video.backupUrls),['https://fixture/original-backup.mp4']);assert.match(await nativePage.evaluate(()=>window.__xhsCalls.find(call=>call.action==='saveVideo').input.filename),/-原视频\.mp4$/);
   report.nativeUI.push('Selected originals and links, inversion, selected images/live ZIP payloads with full note text, archive cancellation, original-video selection and video cancellation match the native contracts.');
+  for (const [button,successMessage] of [
+    [nativePage.locator('.xhs-image-card').first().getByRole('button',{name:'复制原图',exact:true}),'原图已复制。'],
+    [nativePage.locator('#xhs-copy-images'),'所选原图已复制。']
+  ]) {
+    await nativePage.evaluate(()=>window.__deferTransfer=true); await button.click();
+    await nativePage.locator('#xhs-transfer-cancel').waitFor(); await nativePage.locator('#xhs-transfer-cancel').click();
+    await nativePage.locator('#xhs-transfer-status').filter({hasText:'素材处理已取消'}).waitFor();
+    assert.equal(await nativePage.locator('#xhs-message').innerText(),'已取消复制。','Cancelled original-image copying must not report clipboard success.');
+    assert.equal(await nativePage.locator('#xhs-transfer-progress').isHidden(),true);
+    await nativePage.evaluate(()=>window.__deferTransfer=false); await button.click();
+    await nativePage.locator('#xhs-message').filter({hasText:successMessage}).waitFor();
+    assert.equal(await nativePage.locator('#xhs-transfer-status').innerText(),'所选素材已处理完成。');
+    assert.equal(await nativePage.locator('#xhs-transfer-progress').evaluate(progress=>progress.value),100);
+  }
+  report.nativeUI.push('Single-image and selected-image clipboard cancellation report cancellation in both global and transfer status; only successful copies show success and 100% progress.');
   for (const [button,action,type] of [['xhs-save-images','saveImages','transfer'],['xhs-save-note','saveNote','transfer'],['xhs-copy-images','copyImages','clipboard']]) {
     await nativePage.evaluate(()=>window.__deferTransfer=true); await nativePage.locator('#'+button).click();
     await nativePage.locator('#xhs-transfer-cancel').waitFor();
@@ -284,6 +299,7 @@ try {
     await nativePage.evaluate(type=>window.__xhsEmit({type,state:{requestId:'older-request',message:'过期进度'}}),type);
     assert.equal(await nativePage.locator('#xhs-transfer-status').innerText(),'本次请求进度');
     await nativePage.locator('#xhs-transfer-cancel').click(); await nativePage.locator('#xhs-transfer-status').filter({hasText:'素材处理已取消'}).waitFor();assert.equal(await nativePage.locator('#xhs-transfer-progress').isHidden(),true);
+    if (action==='copyImages') assert.equal(await nativePage.locator('#xhs-message').innerText(),'已取消复制。');
     assert.equal(await nativePage.locator('#xhs-parse').isDisabled(),false); await nativePage.evaluate(()=>window.__deferTransfer=false);
   }
   report.nativeUI.push('Mixed selected-media ZIP preserves every selected image; image/note/clipboard operations have unique progress, cancellation and mutual exclusion, and ignore stale progress.');
