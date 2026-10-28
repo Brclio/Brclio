@@ -28,6 +28,7 @@ async function fixture(t, { saveDialog, openDialog } = {}) {
   const service = await createXhsService({
     app: { getPath: name => name === 'downloads' ? output : directory, getAppPath: () => path.resolve(__dirname, '..'), isPackaged: true },
     session: { fromPartition(name) { partitions.push(name); return mediaSession; } }, BrowserWindow: class {},
+    fetchImpl: (url, options) => mediaSession.fetch(url, options),
     dialog: { showOpenDialog: openDialog || (async () => ({ canceled: false, filePaths: [output] })),
       showSaveDialog: saveDialog || (async () => ({ canceled: false, filePath: path.join(output, 'archive.zip') })) },
     clipboard: { readText: () => '' }, shell: {}, onEvent: event => events.push(event),

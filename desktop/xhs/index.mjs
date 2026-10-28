@@ -7,6 +7,7 @@ import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { PythonBackend } from './desktop/python-backend.js';
+import { createElectronUpdateFetch } from './desktop/electron-fetch.js';
 import { XhsBrowser } from './desktop/profile-browser.js';
 import { ProfileManager } from './desktop/profile-manager.js';
 import { XhsLoginReset } from './desktop/xhs-login-reset.js';
@@ -136,9 +137,13 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
   // Pin this isolated session to direct connections before making any requests.
   await browserSession.setProxy?.({ mode: 'direct' });
   const lifetime = new AbortController();
-  const baseFetch = fetchImpl || ((url, options) => browserSession.fetch(url, options));
-  const network = (url, options = {}) => abortableFetch(baseFetch, url, { ...options,
+  // Match the source client: page parsing, profile jobs and media proxies use
+  // Node fetch; native video/clipboard downloads use the unchanged net.request
+  // adapter. Electron session.fetch rejects the manual redirects both need.
+  const withLifetime = transport => (url, options = {}) => abortableFetch(transport, url, { ...options,
     signal: options.signal ? AbortSignal.any([lifetime.signal, options.signal]) : lifetime.signal });
+  const network = withLifetime(fetchImpl || globalThis.fetch);
+  const nativeNetwork = withLifetime(fetchImpl || createElectronUpdateFetch(net, { session: browserSession }));
   const emit = (type, state) => { try { onEvent({ type, state }); } catch { /* Closed renderer. */ } };
   const browser = new XhsBrowser({ BrowserWindow, session, fetchPage: (url, options) => fetchNotePage(url, { ...options, fetchImpl: network }),
     onLoginState: state => emit('login', state) });
@@ -174,7 +179,7 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
   // Python is an optional alternate parser. Initialize it on demand, without delaying the existing app or the native parser.
   let pythonReady;
   const ensurePython = () => pythonReady ||= python.initialize();
-  const video = new NativeVideoDownload({ fetchImpl: network,
+  const video = new NativeVideoDownload({ fetchImpl: nativeNetwork,
     showSaveDialog: options => dialog.showSaveDialog(getWindow(), options), onProgress: state => emit('video', state) });
   let imageClipboard;
   async function copyImages(input) {
@@ -184,7 +189,7 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
       emit('clipboard', { requestId, phase: 'preparing', completed: 0, total: input.images?.length || 0 });
       if (!imageClipboard) {
         const writers = clipboardWriters || await import('./desktop/native-clipboard.js');
-        imageClipboard = new NativeImageClipboard({ directory: path.join(directory, 'clipboard-images'), fetchImpl: network,
+        imageClipboard = new NativeImageClipboard({ directory: path.join(directory, 'clipboard-images'), fetchImpl: nativeNetwork,
           writeFiles: writers.writeImageFiles, writeImage: writers.writeSingleImage, onProgress: state => emit('clipboard', state), signal: lifetime.signal });
       }
       const result = await imageClipboard.copy({ ...input, requestId }, { signal: transfer.controller.signal });
@@ -247,7 +252,7 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
         if (urls.length > 20) throw new Error('媒体备用地址过多。');
         for (const url of urls) {
           try {
-            const result = await downloadMedia({ root, directory: target, asset: { ...asset, url }, signal: controller.signal, fetchImpl: network,
+            const result = await downloadMedia({ root, directory: target, asset: { ...asset, url }, signal: controller.signal, fetchImpl: nativeNetwork,
               onProgress: state => progress({ ...state, completed: files.length, receivedBytes: completedBytes + (state.loadedBytes || 0), message: `正在保存第 ${files.length + 1} 个素材` }) });
             files.push(result); completedBytes += result.bytes;
             progress({ completed: files.length, receivedBytes: completedBytes, message: `已保存 ${files.length} / ${total} 个素材` }); return;
@@ -306,7 +311,11 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
     const controller = new AbortController(); archives.set(requestId, controller); transfers.add(controller);
     let stage;
     const signal = controller.signal;
+    // Keep the source downloader's shared desktop ZIP budget: all originals,
+    // paired clips and note text share 256 MiB, with space reserved for headers.
     const maxTotalBytes = 256 * 1024 ** 2;
+    const payloadLimitBytes = maxTotalBytes - 256 * 1024;
+    const archiveLimitError = () => Object.assign(new Error('所选媒体超过当前桌面端 256 MiB 的归档上限，请减少勾选数量、分批下载或保存到文件夹。'), { name: 'ArchiveSizeLimitError', limitBytes: maxTotalBytes });
     const text = makeNoteTextFileData({ title: note.title, content: note.content, sourceUrl: note.sourceUrl, engine: note.engine || 'desktop' });
     let consumed = text.byteLength;
     let receivedBytes = 0;
@@ -325,47 +334,73 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
       const assets = images.flatMap(image => {
         const key = `${String(image.index).padStart(3, '0')}-${safeFilename(note.title || '小红书', 40, 100)}`;
         if (input.format === 'selected' && image.livePhoto && !image.liveVideo?.url) throw new Error('所选实况缺少配对视频，请重新解析后保存。');
-        return [{ key, kind: 'image', url: image.url }, ...(['live', 'selected'].includes(input.format) && image.liveVideo?.url ? [{ key, kind: 'video', url: image.liveVideo.url,
+        return [{ key, kind: 'image', imageIndex: image.index, url: image.url }, ...(['live', 'selected'].includes(input.format) && image.liveVideo?.url ? [{ key, kind: 'video', imageIndex: image.index, url: image.liveVideo.url,
           backupUrls: image.liveVideo.backupUrls, size: image.liveVideo.size, requireAudio: false }] : [])];
       });
-      for (const asset of assets) if (Number.isFinite(asset.size) && asset.size > 0) {
-        if (asset.size > 128 * 1024 ** 2 || consumed + asset.size > maxTotalBytes) throw new Error('所选实况素材超过 ZIP 256 MiB 上限，请分批保存或使用文件夹下载。');
-      }
+      const declaredBytes = assets.reduce((total, asset) => {
+        if (asset.size === undefined || asset.size === null || asset.size === '') return total;
+        const size = Number(asset.size);
+        return total + (Number.isFinite(size) && size >= 0 && Number.isSafeInteger(Math.ceil(size)) ? Math.ceil(size) : Number.MAX_SAFE_INTEGER);
+      }, 0);
+      if (!Number.isSafeInteger(declaredBytes) || consumed + declaredBytes > payloadLimitBytes) throw archiveLimitError();
       stage = await fs.mkdtemp(path.join(root, '.brclio-xhs-zip-'));
       const files = [{ name: '笔记.txt', data: text }];
+      const failures = [], failedImages = new Set();
       for (const [index, asset] of assets.entries()) {
         throwIfAborted(signal);
-        const remaining = maxTotalBytes - consumed;
-        if (remaining <= 0) throw new Error('所选素材超过 ZIP 256 MiB 上限，请分批保存。');
-        const urls = [...new Set([asset.url, ...(asset.backupUrls || [])])];
-        if (urls.length > 20) throw new Error('媒体备用地址过多。');
-        let file, lastError;
-        for (const url of urls) {
-          try {
-            file = await downloadMedia({ root, directory: stage, asset: { ...asset, url }, signal, fetchImpl: network,
-              maxBytes: Math.min(remaining, (asset.kind === 'image' ? 64 : 128) * 1024 ** 2),
-              onProgress: state => emitProgress({ completed: index, total: assets.length, ...state,
-                receivedBytes: receivedBytes + (state.loadedBytes || 0) }) });
-            break;
-          } catch (error) { lastError = error; if (signal.aborted) throw error; }
+        try {
+          // Match the source: never add an orphan live clip when its still failed.
+          if (asset.kind === 'video' && failedImages.has(asset.imageIndex)) throw new Error('配对原图下载失败，未加入孤立的实况 MP4。');
+          const remaining = payloadLimitBytes - consumed;
+          if (remaining <= 0) throw archiveLimitError();
+          const urls = [...new Set([asset.url, ...(asset.backupUrls || [])])];
+          if (urls.length > 20) throw new Error('媒体备用地址过多。');
+          let file, lastError;
+          for (const url of urls) {
+            try {
+              file = await downloadMedia({ root, directory: stage, asset: { ...asset, url }, signal, fetchImpl: network,
+                maxBytes: remaining,
+                onProgress: state => emitProgress({ completed: index, total: assets.length, ...state,
+                  receivedBytes: receivedBytes + (state.loadedBytes || 0) }) });
+              break;
+            } catch (error) {
+              if (signal.aborted || ['AbortError', 'ArchiveSizeLimitError'].includes(error.name)) throw error;
+              if (/^媒体文件(?:大小)?超过 .+ 限制。$/.test(error.message)) throw archiveLimitError();
+              lastError = error;
+            }
+          }
+          if (!file) throw lastError || new Error('压缩包素材下载失败。');
+          const stat = await fs.lstat(path.join(stage, file.name));
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== file.bytes || stat.size > remaining) throw new Error('压缩包素材大小校验失败。');
+          const data = await fs.readFile(path.join(stage, file.name));
+          consumed += file.bytes;
+          receivedBytes += file.bytes;
+          files.push({ name: file.name, data });
+        } catch (error) {
+          if (signal.aborted || ['AbortError', 'ArchiveSizeLimitError'].includes(error.name)) throw error;
+          failures.push({ kind: asset.kind, index: asset.imageIndex, message: error.message });
+          if (asset.kind === 'image') failedImages.add(asset.imageIndex);
+        } finally {
+          emitProgress({ phase: 'downloading', completed: index + 1, total: assets.length, receivedBytes,
+            savedCount: files.length - 1, failedCount: failures.length });
         }
-        if (!file) throw lastError || new Error('压缩包素材下载失败。');
-        const stat = await fs.lstat(path.join(stage, file.name));
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== file.bytes || stat.size > remaining) throw new Error('压缩包素材大小校验失败。');
-        consumed += file.bytes;
-        receivedBytes += file.bytes;
-        files.push({ name: file.name, data: await fs.readFile(path.join(stage, file.name)) });
-        emitProgress({ phase: 'downloading', completed: index + 1, total: assets.length, receivedBytes });
       }
+      const savedCount = files.length - 1;
+      if (!savedCount) throw Object.assign(new Error(`所有图片均下载失败。${failures[0]?.message || ''}`), { code: 'ARCHIVE_ALL_MEDIA_FAILED', failures });
       throwIfAborted(signal); emitProgress({ phase: 'archiving', completed: assets.length, total: assets.length, receivedBytes });
+      const { estimateStoredZipSize } = await import('./lib/archive.js');
+      const expectedSize = estimateStoredZipSize(files);
+      if (expectedSize > maxTotalBytes) throw archiveLimitError();
       const zip = makeZipBlob(files); files.length = 0;
-      if (zip.size > maxTotalBytes + 1024 ** 2) throw new Error('压缩包超过保存上限。');
+      if (zip.size > maxTotalBytes || zip.size !== expectedSize) throw archiveLimitError();
       const temporary = path.join(stage, 'archive.zip');
       await pipeline(Readable.fromWeb(zip.stream()), createWriteStream(temporary, { flags: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), mode: 0o600 }), { signal });
       await assertSafeTarget(root, root, name); throwIfAborted(signal);
       const target = path.join(root, name); await fs.rename(temporary, target);
-      emitProgress({ phase: 'saved', completed: assets.length, total: assets.length, receivedBytes });
-      return { ok: true, cancelled: false, path: target, count: assets.length, bytes: zip.size };
+      emitProgress({ phase: 'saved', completed: assets.length, total: assets.length, receivedBytes, savedCount, failedCount: failures.length,
+        message: failures.length ? `ZIP 已保存：${savedCount} 个素材成功，${failures.length} 个未加入。` : 'ZIP 已保存，内含所选素材与笔记文案。' });
+      return { ok: true, cancelled: false, path: target, count: savedCount, total: assets.length,
+        failedCount: failures.length, failures, bytes: zip.size };
     } catch (error) {
       if (signal.aborted || error.name === 'AbortError') {
         emitProgress({ phase: 'cancelled', receivedBytes });

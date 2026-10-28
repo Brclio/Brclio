@@ -33,7 +33,11 @@ async function main() {
   const metadata = require('../package.json');
   await fs.writeFile(path.join(temporary, 'package.json'), JSON.stringify({ name: metadata.name, version: metadata.version, main: 'bootstrap.cjs' }));
   await fs.writeFile(bootstrap, `
-const {app,session,dialog}=require('electron');
+const {app,session,dialog,net}=require('electron');
+// UI fixture transports are explicit; verify-xhs-redirects.cjs covers real TLS/network.
+const {mockElectronRequest}=require(${JSON.stringify(path.join(root, 'test/electron-update-request-fixture.cjs'))});
+globalThis.fetch=(url,options)=>fixtureResponse({url:String(url),headers:new Headers(options?.headers)});
+net.request=mockElectronRequest(globalThis.fetch);
 const fs=require('node:fs');
 app.getAppPath=()=>${JSON.stringify(root)};
 global.__xhsNetwork=[];
@@ -44,7 +48,9 @@ dialog.showMessageBox=async()=>({response:0});
 const observed=new WeakSet();
 function mock(value){
  if(observed.has(value))return;observed.add(value);
- for(const scheme of ['https','http'])value.protocol.handle(scheme,request=>{
+ for(const scheme of ['https','http'])value.protocol.handle(scheme,fixtureResponse);
+}
+function fixtureResponse(request){
   global.__xhsNetwork.push(request.url);
   const url=new URL(request.url);
   if(url.hostname==='tools.brclio.com'&&url.pathname.startsWith('/api/account/'))return Response.json({user:null,csrf:'fixture-csrf',googleEnabled:false});
@@ -56,7 +62,6 @@ function mock(value){
   const range=request.headers.get('range');let status=200;const headers={'content-type':type,'accept-ranges':'bytes'};
   if(range){const [,start,end]=/^bytes=(\\d+)-(\\d*)$/.exec(range)||[];const from=Number(start),to=end?Math.min(Number(end),data.length-1):data.length-1;headers['content-range']='bytes '+from+'-'+to+'/'+data.length;data=data.subarray(from,to+1);status=206;}
   headers['content-length']=String(data.length);return new Response(data,{status,headers});
- });
 }
 app.on('session-created',mock);app.whenReady().then(()=>mock(session.defaultSession));
 require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
@@ -151,6 +156,10 @@ require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
     report.network = await app.evaluate(() => global.__xhsNetwork);
     report.passed = true;
   } finally {
+    if (app && !report.passed) report.failureContext = await app.firstWindow().then(async page => ({
+      message: await page.locator('#xhs-message').textContent(),
+      network: await app.evaluate(() => global.__xhsNetwork),
+    })).catch(() => null);
     if (app) await app.close();
     await fs.writeFile(path.join(artifacts, 'xhs-desktop-verification.json'), JSON.stringify(report, null, 2) + '\n');
     await fs.rm(temporary, { recursive: true, force: true });

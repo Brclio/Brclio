@@ -288,33 +288,46 @@ export class ProfileManager {
       this.state.phase = "discovery";
       this.state.status = "discovering";
       this._emit();
-      for await (const page of this.browser.discover(this.state.profileUrl, {
-        signal, intervalSeconds: this.state.intervalSeconds, jitterSeconds: this.state.jitterSeconds
-      })) {
-        throwIfAborted(signal);
+      try {
+        for await (const page of this.browser.discover(this.state.profileUrl, {
+          signal, intervalSeconds: this.state.intervalSeconds, jitterSeconds: this.state.jitterSeconds
+        })) {
+          throwIfAborted(signal);
 
-        this._lastRequestAt = this.now();
-        const indexed = new Map(this.state.items.map((item) => [item.id, item]));
-        let nextSequence = this.state.items.reduce((highest, item) => Math.max(highest, item.sequence || 0), 0) + 1;
-        for (const raw of page.notes || []) {
-          const note = noteDescriptor(raw);
-          const existing = indexed.get(note.id);
-          if (existing) { existing.url = note.url; if (note.title && !existing.titleResolved) existing.title = note.title; }
-          else {
-            const sequence = nextSequence++;
-            const item = { ...note, sequence, directoryName: "", titleResolved: false, status: "pending", error: "", complete: false, files: [] };
-            this.state.items.push(item);
-            indexed.set(note.id, item);
+          this._lastRequestAt = this.now();
+          const indexed = new Map(this.state.items.map((item) => [item.id, item]));
+          let nextSequence = this.state.items.reduce((highest, item) => Math.max(highest, item.sequence || 0), 0) + 1;
+          for (const raw of page.notes || []) {
+            const note = noteDescriptor(raw);
+            const existing = indexed.get(note.id);
+            if (existing) { existing.url = note.url; if (note.title && !existing.titleResolved) existing.title = note.title; }
+            else {
+              const sequence = nextSequence++;
+              const item = { ...note, sequence, directoryName: "", titleResolved: false, status: "pending", error: "", complete: false, files: [] };
+              this.state.items.push(item);
+              indexed.set(note.id, item);
+            }
           }
+          if (page.profileName) this.state.profileName = String(page.profileName).slice(0, 200);
+          this.state.discoveryComplete = page.done === true;
+          this.state.message = `已发现 ${this.state.items.length} 篇帖子${page.done ? "，开始保存媒体。" : "，继续加载主页…"}`;
+          await this._save();
+          this._emit();
+          if (page.done) break;
         }
-        if (page.profileName) this.state.profileName = String(page.profileName).slice(0, 200);
-        this.state.discoveryComplete = page.done === true;
-        this.state.message = `已发现 ${this.state.items.length} 篇帖子${page.done ? "，开始保存媒体。" : "，继续加载主页…"}`;
+      } catch (error) {
+        // An incomplete list does not invalidate notes already confirmed as this
+        // author's. Save those now instead of leaving the whole queue waiting.
+        // Login/verification gates and user cancellation still stop immediately.
+        if (signal.aborted || error.name === "AbortError" || error.code !== "DISCOVERY_INCOMPLETE" || !this.state.items.length) throw error;
+        this._diagnostic('discovery.incomplete', { code: error.code, discovered: this.state.items.length });
+      }
+      if (!this.state.discoveryComplete) {
+        if (!this.state.items.length) throw Object.assign(new Error("主页尚未确认加载到底，任务已暂停。继续后会重新检查并补全列表。"), { code: "DISCOVERY_INCOMPLETE" });
+        this.state.message = `主页列表暂未加载完整，先保存已发现的 ${this.state.items.length} 篇帖子…`;
         await this._save();
         this._emit();
-        if (page.done) break;
       }
-      if (!this.state.discoveryComplete) throw Object.assign(new Error("主页尚未确认加载到底，任务已暂停。继续后会重新检查并补全列表。"), { code: "DISCOVERY_INCOMPLETE" });
     }
     this.state.phase = "download";
     for (const item of this.state.items) {
@@ -345,9 +358,12 @@ export class ProfileManager {
     const unfinished = !this.state.discoveryComplete || this.state.items.some(item => item.status === "pending");
     this.state.status = unfinished ? "paused" : "completed";
     this.state.phase = unfinished ? "download" : "done";
+    this.state.pauseReason = !this.state.discoveryComplete ? "DISCOVERY_INCOMPLETE" : "";
     this.state.currentTitle = "";
     this.state.nextRequestAt = null;
-    this.state.message = unfinished ? "重试已结束，其余任务已保留。点击继续任务可处理剩余帖子。"
+    this.state.message = !retryIds && !this.state.discoveryComplete
+      ? `已处理当前发现的 ${this.state.items.length} 篇帖子${failed ? `，${failed} 篇失败` : ""}。主页列表尚未确认加载到底，点击继续可补全列表。`
+      : unfinished ? "重试已结束，其余任务已保留。点击继续任务可处理剩余帖子。"
       : failed ? `任务结束，${failed} 篇帖子失败，可点击重试失败项。` : `主页加载完成，已处理 ${this.state.items.length} 篇帖子。`;
     await this._save();
     this._emit();
