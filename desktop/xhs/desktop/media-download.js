@@ -162,7 +162,7 @@ function cancelQuietly(stream) {
   try { Promise.resolve(stream?.cancel()).catch(() => {}); } catch { /* Already locked or closed. */ }
 }
 
-export function abortableOperation(operation, signal, onLateResult = () => {}) {
+function abortableOperation(operation, signal, onLateResult = () => {}) {
   throwIfAborted(signal);
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -245,7 +245,7 @@ export async function downloadMedia({ root, directory, asset, fetchImpl, signal,
     }
     const contentType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
     const allowed = asset.kind === "image"
-      ? /^image\/(?:jpeg|jpg|png|webp|gif|avif|heic|heif)$/.test(contentType)
+      ? /^image\/(?:jpeg|jpg|png|webp|gif|avif|heic|heif)$/.test(contentType) || contentType === 'application/octet-stream'
       : ["video/mp4", "video/x-m4v", "video/quicktime", "application/octet-stream"].includes(contentType);
     if (!allowed) throw new Error(`媒体响应类型异常（${contentType || "未知"}），未保存。`);
     const lengthHeader = response.headers.get("content-length");
@@ -316,3 +316,5 @@ export async function downloadMedia({ root, directory, asset, fetchImpl, signal,
     if (temporary) await fs.unlink(temporary).catch(() => {});
   }
 }
+
+export { detectImageType, abortableOperation };

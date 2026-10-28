@@ -33,9 +33,10 @@ try {
   await page.addInitScript(() => {
     const noteId = '0123456789abcdef01234567';
     const original = 'https://sns-video-bd.xhscdn.com/spectrum/fixture-original.mp4';
+    const live = 'https://sns-video-bd.xhscdn.com/spectrum/fixture-live.mp4';
     const image = 'https://ci.xiaohongshu.com/fixture-original?imageView2/format/jpg';
     const ordinary = 'https://sns-video-bd.xhscdn.com/stream/fixture.mp4';
-    const html = '<script>window.__INITIAL_STATE__=' + JSON.stringify({ note: { noteDetailMap: { [noteId]: { note: { noteId, title: '本地补充原视频', desc: '保留文案', imageList: [{ urlDefault: image, livePhoto: true, stream: { h264: [{ masterUrl: original }] } }], video: { consumer: { originVideoKey: original } } } } } } }) + '</script>';
+    const html = '<script>window.__INITIAL_STATE__=' + JSON.stringify({ note: { noteDetailMap: { [noteId]: { note: { noteId, title: '本地补充原视频', desc: '保留文案', imageList: [{ urlDefault: image, livePhoto: true, stream: { h264: [{ masterUrl: live }] } }], video: { consumer: { originVideoKey: original } } } } } } }) + '</script>';
     window.__fixture = { noteId, original, image, ordinary };
     window.__mode = 'local'; window.__calls = []; window.__chunks = [];
     window.AndroidBridge = { postMessage(raw) {
@@ -77,7 +78,7 @@ try {
   report.checks.push('Python routes through parsePython; a blocked supplement retains successful public media and the accurate original-video count.');
   const supplemented = await page.evaluate(async () => { __mode = 'local'; return BrclioHost.xhsRequest('parse', { text: 'https://www.xiaohongshu.com/explore/' + __fixture.noteId, engine: 'python' }); });
   assert.equal(supplemented.content, 'Python 文案'); assert.equal(supplemented.originalVideos[0].url, 'https://sns-video-bd.xhscdn.com/spectrum/fixture-original.mp4');
-  assert.equal(supplemented.images[0].liveVideo.url, 'https://sns-video-bd.xhscdn.com/spectrum/fixture-original.mp4');
+  assert.equal(supplemented.images[0].liveVideo.url, 'https://sns-video-bd.xhscdn.com/spectrum/fixture-live.mp4');
   assert.equal(supplemented.images[0].url, 'https://ci.xiaohongshu.com/fixture-original?imageView2/format/jpg');
   assert.equal(supplemented.originalVideoCount, 2); assert.equal(supplemented.originalVideoUnavailable, false);
   report.checks.push('A same-note local supplement restores declared original URLs and overlapping live pairs by image index/token, without replacing Python content or original images.');

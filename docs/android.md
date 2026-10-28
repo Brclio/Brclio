@@ -1,6 +1,6 @@
 # Android 客户端
 
-Android 客户端使用 Kotlin Activity 和离线 WebView，共用 `web/` 中的 Brclio 界面。包名为 `com.brclio.toolbox`，调试包为 `com.brclio.toolbox.debug`，当前版本 `0.2.5`，最低 Android 8.0（API 26）。
+Android 客户端使用 Kotlin Activity 和离线 WebView，共用 `web/` 中的 Brclio 界面。包名为 `com.brclio.toolbox`，调试包为 `com.brclio.toolbox.debug`，当前版本 `0.2.6`，最低 Android 8.0（API 26）。
 
 ## 使用方式
 

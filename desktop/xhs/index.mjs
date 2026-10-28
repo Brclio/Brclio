@@ -14,10 +14,12 @@ import { XhsLoginReset } from './desktop/xhs-login-reset.js';
 import { NativeVideoDownload } from './desktop/native-video-download.js';
 import { NativeImageClipboard } from './desktop/image-clipboard.js';
 import { createParseHandler } from './api/parse.js';
+import { createImageHandler } from './api/image.js';
 import { createVideoHandler } from './api/video.js';
+import { createSourceDownload } from './lib/source-download.js';
 import { buildNoWatermarkUrl, extractOriginalAssetToken, isXhsImageUrl, isXhsVideoUrl, normalizeImageUrl, fetchNotePage } from './lib/xhs.js';
 import { makeNoteTextFileData, makeZipBlob } from './lib/archive.js';
-import { atomicWrite, assertSafeDirectory, assertSafeTarget, ensureNoteDirectory, safeFilename, downloadMedia, throwIfAborted, abortableOperation } from './desktop/media-download.js';
+import { atomicWrite, assertSafeDirectory, assertSafeTarget, ensureNoteDirectory, safeFilename, downloadMedia, detectImageType, throwIfAborted, abortableOperation } from './desktop/media-download.js';
 
 const sourceDirectory = path.dirname(fileURLToPath(import.meta.url));
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, HEAD, OPTIONS',
@@ -86,6 +88,37 @@ export async function invokeHandler(handler, { method = 'GET', body = '', query 
   return new Response(payload, { status, headers });
 }
 
+async function imageResponseWithType(response) {
+  if (!response.body) throw new Error('图片响应为空。');
+  const reader = response.body.getReader(), chunks = [];
+  let prefix = Buffer.alloc(0);
+  try {
+    while (prefix.length < 32) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      prefix = Buffer.concat([prefix, Buffer.from(value.subarray(0, 32 - prefix.length))]);
+    }
+    const type = detectImageType(prefix);
+    if (!type) throw new Error('媒体文件内容不符合图片格式，未读取。');
+    const headers = new Headers(response.headers);
+    headers.set('content-type', `image/${type === 'jpg' ? 'jpeg' : type}`);
+    const body = new ReadableStream({
+      async pull(controller) {
+        try {
+          if (chunks.length) { controller.enqueue(chunks.shift()); return; }
+          const { value, done } = await reader.read();
+          if (done) { controller.close(); reader.releaseLock(); } else controller.enqueue(value);
+        } catch (error) { controller.error(error); }
+      },
+      cancel(reason) { void reader.cancel(reason).catch(() => {}); },
+    });
+    const normalized = new Response(body, { status: response.status, statusText: response.statusText, headers });
+    Object.defineProperty(normalized, 'url', { value: response.url });
+    return normalized;
+  } catch (error) { void reader.cancel().catch(() => {}); throw error; }
+}
+
 /** Every redirect is validated before connecting; loopback/private hosts never qualify. */
 export async function fetchMedia(source, { fetchImpl = fetch, kind, range, signal } = {}) {
   let url = normalizeImageUrl(String(source || ''));
@@ -107,10 +140,17 @@ export async function fetchMedia(source, { fetchImpl = fetch, kind, range, signa
     }
     if (response.url && !valid(response.url)) { await response.body?.cancel().catch(() => {}); throw new Error('媒体服务器重定向异常。'); }
     if (![200, 206].includes(response.status)) { await response.body?.cancel().catch(() => {}); throw new Error(`媒体服务器返回 HTTP ${response.status}。`); }
-    const type = (response.headers.get('content-type') || '').split(';')[0];
-    if (!(kind === 'image' ? /^image\/(jpeg|jpg|png|webp|gif|avif|heic|heif)$/.test(type) : ['video/mp4', 'video/quicktime', 'video/x-m4v', 'application/octet-stream'].includes(type))) {
+    if (!range && (response.status === 206 || response.headers.has('content-range'))) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error('媒体服务器返回了局部内容，未将其作为完整素材保存。');
+    }
+    const type = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (!(kind === 'image' ? /^image\/(jpeg|jpg|png|webp|gif|avif|heic|heif)$/.test(type) || type === 'application/octet-stream' : ['video/mp4', 'video/quicktime', 'video/x-m4v', 'application/octet-stream'].includes(type))) {
       await response.body?.cancel().catch(() => {}); throw new Error('媒体响应类型异常。');
     }
+    // The source image API accepts binary CDN responses. Preserve that fallback
+    // while checking their image signature before giving a preview a MIME type.
+    if (kind === 'image' && type === 'application/octet-stream') return imageResponseWithType(response);
     return response;
   }
   throw new Error('媒体请求失败。');
@@ -249,7 +289,6 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
       const files = [];
       async function saveAsset(asset) {
         const urls = [...new Set([asset.url, ...(asset.backupUrls || [])])]; let lastError;
-        if (urls.length > 20) throw new Error('媒体备用地址过多。');
         for (const url of urls) {
           try {
             const result = await downloadMedia({ root, directory: target, asset: { ...asset, url }, signal: controller.signal, fetchImpl: nativeNetwork,
@@ -271,13 +310,17 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
       }
       if (format === 'all') {
         const originals = (note.originalVideos || []).filter(item => item.hasAudio !== false);
-        const candidates = originals.length ? originals : (note.videos || []).filter(item => item.hasAudio !== false);
+        const candidates = originals.length ? originals : (note.videos || []);
         const selected = candidates.find(item => item.isDefault) || candidates[0];
         if (!selected && ((note.videos?.length || note.originalVideos?.length) || ['video', 'mixed'].includes(note.type))) {
           throw new Error('当前笔记未提供包含声音的完整视频，未将整篇标为保存完成。');
         }
-        if (selected) await saveAsset({ key: 'video', kind: 'video', url: selected.url,
-          backupUrls: [...(selected.backupUrls || []), ...candidates.filter(item => item !== selected && item.hasAudio !== false).map(item => item.url)], requireAudio: true });
+        if (selected) {
+          const alternatives = candidates.filter(item => item !== selected && item.hasAudio !== false);
+          await saveAsset({ key: 'video', kind: 'video', url: selected.url,
+            backupUrls: [...alternatives.map(item => item.url), ...(selected.backupUrls || []),
+              ...alternatives.flatMap(item => item.backupUrls || [])], requireAudio: true });
+        }
       }
       if (!imagesOnly) {
         throwIfAborted(controller.signal);
@@ -311,16 +354,60 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
     const controller = new AbortController(); archives.set(requestId, controller); transfers.add(controller);
     let stage;
     const signal = controller.signal;
-    // Keep the source downloader's shared desktop ZIP budget: all originals,
-    // paired clips and note text share 256 MiB, with space reserved for headers.
-    const maxTotalBytes = 256 * 1024 ** 2;
-    const payloadLimitBytes = maxTotalBytes - 256 * 1024;
-    const archiveLimitError = () => Object.assign(new Error('所选媒体超过当前桌面端 256 MiB 的归档上限，请减少勾选数量、分批下载或保存到文件夹。'), { name: 'ArchiveSizeLimitError', limitBytes: maxTotalBytes });
     const text = makeNoteTextFileData({ title: note.title, content: note.content, sourceUrl: note.sourceUrl, engine: note.engine || 'desktop' });
-    let consumed = text.byteLength;
     let receivedBytes = 0;
     const emitProgress = state => emit('archive', { requestId, ...state });
+    // Run the source app's image proxy/413 fallback and video meta/chunk/CDN
+    // algorithms unchanged. Only the HTTP entry points are routed in-process.
+    const archiveNetwork = (url, options = {}) => {
+      throwIfAborted(signal);
+      return network(url, { ...options, signal: options.signal ? AbortSignal.any([signal, options.signal]) : signal });
+    };
+    let archiveProgress = { completed: 0, total: 0 };
+    const imageHandler = createImageHandler({ onError: () => {}, fetchImpl: async (url, options = {}) => {
+      const response = await fetchMedia(url, { fetchImpl: archiveNetwork, kind: 'image', signal: options.signal });
+      const declaredBytes = Number(response.headers.get('content-length') || 0);
+      // The unchanged source handler returns 413 from the declared length.
+      // Release that unused upstream body before the source starts direct fallback.
+      if (declaredBytes > 4_200_000) {
+        await response.body?.cancel().catch(() => {});
+        return new Response(null, { status: response.status, headers: response.headers });
+      }
+      if (!response.body) return response;
+      let loadedBytes = 0;
+      const totalBytes = Number.isSafeInteger(declaredBytes) && declaredBytes > 0 ? declaredBytes : 0;
+      return new Response(response.body.pipeThrough(new TransformStream({
+        transform(chunk, controller) {
+          loadedBytes += chunk.byteLength;
+          emitProgress({ phase: 'downloading', ...archiveProgress, loadedBytes, totalBytes, receivedBytes: receivedBytes + loadedBytes });
+          controller.enqueue(chunk);
+        },
+      })), { status: response.status, headers: response.headers });
+    } });
+    const videoHandler = createVideoHandler({ fetchImpl: archiveNetwork });
+    let downloadingKind = 'image';
+    const sourceDownload = createSourceDownload({
+      proxyUrl: image => `brclio-xhs://local/source-image?token=${encodeURIComponent(image.token || extractOriginalAssetToken(image.url) || '')}`,
+      videoApiUrl: (action, url, extra = {}) => `brclio-xhs://local/source-video?${new URLSearchParams({ action, url, ...extra })}`,
+      fetch: async (url, options = {}) => {
+        throwIfAborted(signal);
+        const parsed = new URL(url);
+        if (parsed.protocol === 'brclio-xhs:' && parsed.hostname === 'local') {
+          const handler = parsed.pathname === '/source-image' ? imageHandler : parsed.pathname === '/source-video' ? videoHandler : null;
+          if (!handler) throw new Error('素材下载接口无效。');
+          if (note.engine === 'python') {
+            if (!await ensurePython()) throw new Error('Python 备用引擎不可用，请使用完整安装包。');
+            const route = parsed.pathname === '/source-image' ? '/api/python_image' : '/api/python_video';
+            return python.request({ path: `${route}${parsed.search}`, method: 'GET', headers: {}, body: '' }, signal);
+          }
+          return invokeHandler(handler, { query: Object.fromEntries(parsed.searchParams) });
+        }
+        return fetchMedia(url, { fetchImpl: archiveNetwork, kind: downloadingKind, signal });
+      },
+    });
+    const archiveBudget = sourceDownload.createArchiveBudget('batch');
     try {
+      archiveBudget.consumeData(text, '笔记文案');
       emitProgress({ phase: 'preparing', completed: 0, message: '请选择保存位置。' });
       const kind = input.format === 'live' ? '实况' : input.format === 'selected' ? '所选素材' : '原图';
       const choice = await abortableOperation(() => dialog.showSaveDialog(getWindow(), { title: `保存${kind}压缩包`,
@@ -337,43 +424,32 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
         return [{ key, kind: 'image', imageIndex: image.index, url: image.url }, ...(['live', 'selected'].includes(input.format) && image.liveVideo?.url ? [{ key, kind: 'video', imageIndex: image.index, url: image.liveVideo.url,
           backupUrls: image.liveVideo.backupUrls, size: image.liveVideo.size, requireAudio: false }] : [])];
       });
-      const declaredBytes = assets.reduce((total, asset) => {
-        if (asset.size === undefined || asset.size === null || asset.size === '') return total;
-        const size = Number(asset.size);
-        return total + (Number.isFinite(size) && size >= 0 && Number.isSafeInteger(Math.ceil(size)) ? Math.ceil(size) : Number.MAX_SAFE_INTEGER);
-      }, 0);
-      if (!Number.isSafeInteger(declaredBytes) || consumed + declaredBytes > payloadLimitBytes) throw archiveLimitError();
+      sourceDownload.preflightLiveArchive(input.format === 'images' ? [] : images, archiveBudget, '所选实况动态片段');
       stage = await fs.mkdtemp(path.join(root, '.brclio-xhs-zip-'));
       const files = [{ name: '笔记.txt', data: text }];
       const failures = [], failedImages = new Set();
       for (const [index, asset] of assets.entries()) {
         throwIfAborted(signal);
+        archiveProgress = { completed: index, total: assets.length };
         try {
           // Match the source: never add an orphan live clip when its still failed.
           if (asset.kind === 'video' && failedImages.has(asset.imageIndex)) throw new Error('配对原图下载失败，未加入孤立的实况 MP4。');
-          const remaining = payloadLimitBytes - consumed;
-          if (remaining <= 0) throw archiveLimitError();
-          const urls = [...new Set([asset.url, ...(asset.backupUrls || [])])];
-          if (urls.length > 20) throw new Error('媒体备用地址过多。');
-          let file, lastError;
-          for (const url of urls) {
-            try {
-              file = await downloadMedia({ root, directory: stage, asset: { ...asset, url }, signal, fetchImpl: network,
-                maxBytes: remaining,
-                onProgress: state => emitProgress({ completed: index, total: assets.length, ...state,
-                  receivedBytes: receivedBytes + (state.loadedBytes || 0) }) });
-              break;
-            } catch (error) {
-              if (signal.aborted || ['AbortError', 'ArchiveSizeLimitError'].includes(error.name)) throw error;
-              if (/^媒体文件(?:大小)?超过 .+ 限制。$/.test(error.message)) throw archiveLimitError();
-              lastError = error;
-            }
-          }
-          if (!file) throw lastError || new Error('压缩包素材下载失败。');
+          downloadingKind = asset.kind;
+          const label = `第 ${asset.imageIndex} 张${asset.kind === 'image' ? '原图' : '实况动态片段'}`;
+          const remaining = archiveBudget.remainingBytes(label);
+          const blob = asset.kind === 'image'
+            ? await sourceDownload.fetchImageBlob(asset, { signal, maxBytes: remaining, limitErrorFactory: archiveBudget.limitErrorFactory(label) })
+            : await sourceDownload.fetchVideoBlobWithFallback(asset, { maxBytes: remaining, limitErrorFactory: archiveBudget.limitErrorFactory(label),
+              onProgress: state => emitProgress({ completed: index, total: assets.length, ...state, receivedBytes: receivedBytes + (state.loadedBytes || 0) }) });
+          throwIfAborted(signal);
+          // Keep the existing native file validation after the source algorithm
+          // assembles bytes; no additional network request is made here.
+          const file = await downloadMedia({ root, directory: stage, asset, signal, maxBytes: remaining,
+            fetchImpl: async () => new Response(blob.stream(), { headers: { 'content-type': blob.type || 'application/octet-stream', 'content-length': String(blob.size) } }) });
           const stat = await fs.lstat(path.join(stage, file.name));
           if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== file.bytes || stat.size > remaining) throw new Error('压缩包素材大小校验失败。');
           const data = await fs.readFile(path.join(stage, file.name));
-          consumed += file.bytes;
+          archiveBudget.consumeData(data, label);
           receivedBytes += file.bytes;
           files.push({ name: file.name, data });
         } catch (error) {
@@ -388,11 +464,9 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
       const savedCount = files.length - 1;
       if (!savedCount) throw Object.assign(new Error(`所有图片均下载失败。${failures[0]?.message || ''}`), { code: 'ARCHIVE_ALL_MEDIA_FAILED', failures });
       throwIfAborted(signal); emitProgress({ phase: 'archiving', completed: assets.length, total: assets.length, receivedBytes });
-      const { estimateStoredZipSize } = await import('./lib/archive.js');
-      const expectedSize = estimateStoredZipSize(files);
-      if (expectedSize > maxTotalBytes) throw archiveLimitError();
+      const expectedSize = archiveBudget.assertFilesFit(files);
       const zip = makeZipBlob(files); files.length = 0;
-      if (zip.size > maxTotalBytes || zip.size !== expectedSize) throw archiveLimitError();
+      archiveBudget.assertFinalZip(zip, expectedSize);
       const temporary = path.join(stage, 'archive.zip');
       await pipeline(Readable.fromWeb(zip.stream()), createWriteStream(temporary, { flags: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), mode: 0o600 }), { signal });
       await assertSafeTarget(root, root, name); throwIfAborted(signal);

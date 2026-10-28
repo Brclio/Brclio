@@ -1,7 +1,7 @@
 {
   "name": "brclio-toolbox",
   "productName": "Brclio",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Brclio 跨平台工具箱 · 复制路径与小红书媒体工具",
   "author": "Brclio",
   "private": true,
@@ -27,6 +27,7 @@
     "test:accounts": "npm run sync && node scripts/verify-account-ui.mjs",
     "prepare:xhs": "node scripts/prepare-xhs-runtime.cjs",
     "test:xhs": "node --test test/xhs-*.test.cjs",
+    "test:xhs-source-parity": "node scripts/check-xhs-source-parity.cjs",
     "test:xhs-ui": "npm run sync && node scripts/verify-xhs-ui.mjs",
     "test:xhs-profile-ui": "npm run sync && node scripts/verify-xhs-profile-ui.mjs",
     "test:xhs-download-ui": "npm run sync && node scripts/verify-xhs-download-ui.mjs",
