@@ -31,6 +31,7 @@
     "test:xhs-profile-ui": "npm run sync && node scripts/verify-xhs-profile-ui.mjs",
     "test:xhs-download-ui": "npm run sync && node scripts/verify-xhs-download-ui.mjs",
     "test:xhs-desktop": "npm run sync && node scripts/verify-xhs-desktop.cjs",
+    "test:xhs-redirects": "npm run sync && node scripts/verify-xhs-redirects.cjs",
     "test:xhs-live": "npm run sync && node scripts/verify-xhs-live.cjs",
     "test:xhs-live-import": "npm run sync && node scripts/verify-xhs-live-import.mjs",
     "test:xhs-live-quality": "npm run sync && node scripts/verify-xhs-live-quality.cjs",

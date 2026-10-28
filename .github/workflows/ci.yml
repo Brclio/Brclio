@@ -132,6 +132,7 @@ jobs:
           DEBUG: pw:browser
         run: |
           xvfb-run -a node scripts/verify-xhs-desktop.cjs
+          xvfb-run -a node scripts/verify-xhs-redirects.cjs
           xvfb-run -a node scripts/verify-xhs-live.cjs
           xvfb-run -a node scripts/verify-xhs-live-import.mjs --electron
           node scripts/verify-xhs-live-editor.mjs
