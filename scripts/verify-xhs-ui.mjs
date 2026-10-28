@@ -76,30 +76,41 @@ try {
   const liveAudit = await liveAuditContext.newPage(); liveAudit.on('pageerror',error=>report.errors.push(error.message));
   await liveAudit.route('**/xhs/lib/live-photo-maker.js',async route=>{
     const response=await route.fetch(),body=await response.text();
-    await route.fulfill({response,body:body.replace('export async function inspectLivePhotoFiles(', 'async function inspectActualFiles(')
-      .replace('export async function createLivePhoto(', 'async function createActualLivePhoto(')+`
+    await route.fulfill({response,body:body.replace('export async function inspectLivePhotoFiles(', 'async function inspectActualFiles(')+`
       export async function inspectLivePhotoFiles(files,options={}) {
         if(globalThis.__pauseInspect) { globalThis.__inspectStarted=true; await new Promise((resolve,reject)=>{
           const finish=()=>{options.signal?.removeEventListener('abort',abort);resolve()},abort=()=>{options.signal?.removeEventListener('abort',abort);reject(options.signal.reason)};
           globalThis.__finishInspect=finish; options.signal?.addEventListener('abort',abort,{once:true});
         }); }
         return inspectActualFiles(files,options);
+      }`});
+  });
+  await liveAudit.addInitScript(()=>{
+    const NativeWorker=window.Worker;
+    window.__heicTerminations=0;
+    window.Worker=class extends NativeWorker {
+      constructor(url,options) {
+        super(url,options);
+        this.heicAudit=new URL(String(url),location.href).pathname.endsWith('/live-photo-heic-worker.js');
       }
-      export async function createLivePhoto(options) {
-        const result=await createActualLivePhoto(options);
-        if(globalThis.__pauseResult) {
-          globalThis.__resultStarted=true;
-          await new Promise((resolve,reject)=>{
-            let settled=false;
-            const finish=error=>{if(settled)return;settled=true;options.signal?.removeEventListener('abort',abort);error?reject(error):resolve()};
-            const abort=()=>finish(options.signal.reason);
-            globalThis.__finishResult=()=>finish();
-            if(options.signal?.aborted)abort();else options.signal?.addEventListener('abort',abort,{once:true});
-          });
-        }
-        return result;
+      get onmessage() { return this.auditOnMessage; }
+      set onmessage(handler) {
+        this.auditOnMessage=handler;
+        super.onmessage=typeof handler==='function'?event=>{
+          if(this.heicAudit&&window.__pauseHeicReply&&event.data?.buffer instanceof ArrayBuffer) {
+            // The production cover comes directly from the original canvas.
+            // Hold a real encoded HEIC reply at its actual asynchronous boundary.
+            window.__heicReplyReady=true;
+            window.__heicReplyBytes=event.data.buffer.byteLength;
+            window.__releaseHeicReply=()=>handler.call(this,event);
+          } else handler.call(this,event);
+        }:handler;
       }
-      `});
+      terminate() {
+        if(this.heicAudit)window.__heicTerminations++;
+        return super.terminate();
+      }
+    };
   });
   await liveAudit.goto(url);await liveAudit.waitForFunction(()=>document.body.dataset.ready==='true');
   await liveAudit.locator('[data-view="xhs"]').first().click();await liveAudit.locator('#xhs-tab-live').click();
@@ -119,14 +130,16 @@ try {
   await liveAudit.locator('#xhs-live-source-info').filter({hasText:'1 张图片'}).waitFor();
   await liveAudit.locator('#xhs-live-duration').fill('.5');await liveAudit.locator('#xhs-live-duration').dispatchEvent('change');
   await liveAudit.locator('#xhs-live-format').selectOption('heic');
-  await liveAudit.evaluate(()=>{window.__pauseResult=true;window.__resultStarted=false});
-  await liveAudit.locator('#xhs-live-generate').click();await liveAudit.waitForFunction(()=>window.__resultStarted,null,{timeout:60000});
-  assert.equal(await liveAudit.locator('#xhs-live-result').isHidden(),true,'The result is not published before the completed HEIC pair is delivered.');
+  await liveAudit.evaluate(()=>{window.__pauseHeicReply=true;window.__heicReplyReady=false;window.__heicTerminationsBeforeHold=window.__heicTerminations});
+  await liveAudit.locator('#xhs-live-generate').click();await liveAudit.waitForFunction(()=>window.__heicReplyReady,null,{timeout:60000});
+  assert.ok(await liveAudit.evaluate(()=>window.__heicReplyBytes)>24,'The held reply must contain a real encoded HEIC file.');
+  assert.equal(await liveAudit.locator('#xhs-live-result').isHidden(),true,'The result is not published while a completed HEIC worker reply is pending.');
   await liveAudit.locator('#xhs-live-cancel').click();await liveAudit.locator('#xhs-live-status').filter({hasText:'制作已取消'}).waitFor();
-  await liveAudit.evaluate(()=>{window.__finishResult?.();window.__pauseResult=false});
-  assert.equal(await liveAudit.locator('#xhs-live-result').isHidden(),true,'Late pair delivery cannot resurrect a cancelled export.');
+  assert.equal(await liveAudit.evaluate(()=>window.__heicTerminations-window.__heicTerminationsBeforeHold),1,'Cancellation must terminate the actual HEIC worker.');
+  await liveAudit.evaluate(()=>{window.__releaseHeicReply();window.__pauseHeicReply=false});
+  assert.equal(await liveAudit.locator('#xhs-live-result').isHidden(),true,'A late HEIC worker callback cannot resurrect a cancelled export.');
   await liveAudit.locator('#xhs-live-generate').click();await liveAudit.locator('#xhs-live-result').waitFor({timeout:60000});
-  report.browser.push('Input inspection clears old exports and blocks overlapping generation; cancellation after real HEIC encoding but before pair delivery remains cancelled, ignores late completion and permits a real retry.');
+  report.browser.push('Input inspection clears old exports and blocks overlapping generation; cancellation with a real completed HEIC worker reply pending terminates the worker, ignores its late callback and permits a real retry.');
   const imageFixtures=await liveAudit.evaluate(()=>[[320,192,'#d94435'],[128,256,'#1e50dc']].map(([width,height,color])=>{
     const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;const context=canvas.getContext('2d');context.fillStyle=color;context.fillRect(0,0,width,height);return canvas.toDataURL('image/png').split(',')[1];
   }));
@@ -140,18 +153,17 @@ try {
   assert.deepEqual(previewPixels.edge.slice(0,3),[254,252,246]);assert.deepEqual(previewPixels.center.slice(0,3),[30,80,220]);
   await liveAudit.locator('#xhs-live-generate').click();await liveAudit.locator('#xhs-live-result').waitFor({timeout:60000});
   await liveAudit.waitForFunction(()=>{const img=document.getElementById('xhs-live-preview-image');return img.complete&&img.naturalWidth>0});
-  const coverPixels=await liveAudit.evaluate(()=>{const img=document.getElementById('xhs-live-preview-image'),c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const x=c.getContext('2d');x.drawImage(img,0,0);return {width:c.width,height:c.height,edge:[...x.getImageData(0,128,1,1).data],center:[...x.getImageData(64,128,1,1).data]}});
-  assert.equal(coverPixels.width,128);assert.equal(coverPixels.height,256,'Cover keeps the selected source image dimensions while motion retains the first image canvas.');
-  for(const key of ['edge','center'])for(let i=0;i<3;i++)assert.ok(Math.abs(coverPixels[key][i]-previewPixels.center[i])<8,`${key} native cover and source image differ`);
+  const coverPixels=await liveAudit.evaluate(()=>{const img=document.getElementById('xhs-live-preview-image'),c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const x=c.getContext('2d');x.drawImage(img,0,0);return {width:c.width,height:c.height,edge:[...x.getImageData(0,c.height/2,1,1).data],center:[...x.getImageData(c.width/2,c.height/2,1,1).data]}});
+  assert.equal(coverPixels.width,128);assert.equal(coverPixels.height,256,'The selected portrait cover retains its original dimensions independently of the landscape movie.');
+  for(const key of ['edge','center'])for(let i=0;i<3;i++)assert.ok(Math.abs(coverPixels[key][i]-previewPixels.center[i])<8,`${key} of the native cover must retain the selected blue image`);
+  assert.match(await liveAudit.locator('#xhs-live-result-info').innerText(),/照片 128 × 256 · 动态 320 × 192/);
   const geometry=await liveAudit.evaluate(async fixtures=>{
     const images=await Promise.all(fixtures.map(value=>new Promise(resolve=>{const image=new Image();image.onload=()=>resolve(image);image.src='data:image/png;base64,'+value})));
-    const module=await import('./xhs/lib/live-photo-maker.js');let drawn;
-    const canvas=document.createElement('canvas');canvas.width=320;canvas.height=192;
-    const context=canvas.getContext('2d'),draw=context.drawImage.bind(context);
-    context.drawImage=(...args)=>{
-      const [x,y,width,height]=args.slice(-4),matrix=context.getTransform();
-      const start=new DOMPoint(x,y).matrixTransform(matrix),end=new DOMPoint(x+width,y+height).matrixTransform(matrix);
-      drawn=[start.x,start.y,end.x-start.x,end.y-start.y];draw(...args);
+    const module=await import('./xhs/lib/live-photo-maker.js'),canvas=document.createElement('canvas');canvas.width=320;canvas.height=192;
+    const context=canvas.getContext('2d'),drawImage=context.drawImage;let drawn;
+    context.drawImage=function(image,...args){
+      const matrix=this.getTransform(),from=matrix.transformPoint(new DOMPoint(args[4],args[5])),to=matrix.transformPoint(new DOMPoint(args[4]+args[6],args[5]+args[7]));
+      drawn=[from.x,from.y,to.x-from.x,to.y-from.y];return drawImage.call(this,image,...args);
     };
     module.drawLivePhotoImageFrame(context,images,{time:.75,duration:1,motion:'zoom'});
     return drawn;
@@ -177,7 +189,7 @@ try {
   },imageFixtures[0]);
   await liveAudit.locator('#xhs-live-file-list').filter({hasText:'dropped.png'}).waitFor();
   assert.equal(await liveAudit.locator('#view-xhs').isVisible(),true);
-  report.browser.push('Mixed portrait/landscape preview and encoded cover keep the same canvas, letterboxing, frame choice and 5.5% push geometry; drag-and-drop uses the same validated local-material path.');
+  report.browser.push('Mixed portrait/landscape movie preview keeps its letterboxing and 5.5% push geometry while the selected still cover retains its own original dimensions and pixels; drag-and-drop uses the same validated local-material path.');
   await liveAuditContext.close();
 
   const noAudioContext = await browser.newContext({viewport:{width:1440,height:1060}});
@@ -399,4 +411,4 @@ try {
   assert.deepEqual(report.errors,[]); report.passed=true;
   console.log(JSON.stringify(report,null,2));
 } catch (error) { report.passed=false; report.failure=error.stack; throw error; }
-finally { await browser?.close(); server.closeAllConnections(); await new Promise(resolve=>server.close(resolve)); await writeFile(path.join(output,'xhs-ui-verification.json'),JSON.stringify(report,null,2)+'\n'); }
+finally { await browser?.close(); await new Promise(resolve=>server.close(resolve)); await writeFile(path.join(output,'xhs-ui-verification.json'),JSON.stringify(report,null,2)+'\n'); }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import vm from 'node:vm';
-import { XhsBrowser } from '../desktop/profile-browser.js';
+import { XhsBrowser, scrollProfileList } from '../desktop/profile-browser.js';
 
 // Adapted from the downloader regression suite; account gates are intentionally absent.
 export async function run(t) {
@@ -93,6 +93,55 @@ await t.test('stalled profile is incomplete, never silently successful, and pagi
   }, { code: 'DISCOVERY_INCOMPLETE' });
   assert.ok(pages.every(page => !page.done));
   assert.equal(delays.filter(ms => ms === 12000).length, 4);
+});
+
+await t.test('profile scrolling finds nested feed owners and crosses the bottom again when loading stalls', async () => {
+  const writes = [], windowScrolls = [];
+  const root = { scrollHeight: 800, clientHeight: 800 };
+  const nested = { scrollHeight: 3000, clientHeight: 800, parentElement: root,
+    set scrollTop(value) { writes.push(value); } };
+  const card = { parentElement: nested };
+  const context = {
+    document: {
+      scrollingElement: root, documentElement: root,
+      querySelectorAll: selector => selector.includes('.note-item') ? [card] : []
+    },
+    window: { scrollTo: (...args) => windowScrolls.push(args) }
+  };
+  assert.equal(vm.runInNewContext(`(${scrollProfileList.toString()})(false)`, context), undefined);
+  assert.deepEqual(writes, [3000]);
+  writes.length = 0;
+  assert.equal(vm.runInNewContext(`(${scrollProfileList.toString()})(true)`, context), undefined);
+  assert.deepEqual(writes, [1800]);
+  assert.equal(windowScrolls.length, 1);
+  vm.runInNewContext(`(${scrollProfileList.toString()})(false)`, context);
+  assert.deepEqual(writes, [1800, 3000]);
+  assert.equal(windowScrolls.length, 2);
+});
+
+await t.test('pausing during the retry delay prevents a late bottom scroll and another lazy-load request', async () => {
+  const { browser, getWindow } = fixture({ snapshots: [{}] });
+  const controller = new AbortController(), scrolls = [];
+  let began;
+  const recovery = new Promise(resolve => { began = resolve; });
+  const execute = browser.execute.bind(browser);
+  browser.execute = async (win, script, signal) => {
+    if (script.includes('scrollProfileList')) scrolls.push(script.endsWith('(true)') ? 'up' : 'down');
+    return execute(win, script, signal);
+  };
+  browser.wait = async (ms, _, { signal }) => {
+    signal?.throwIfAborted();
+    if (ms === 150) {
+      began();
+      await new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    }
+  };
+  const discovering = (async () => { for await (const _ of browser.discover(PROFILE, { signal: controller.signal })) {} })();
+  await recovery;
+  controller.abort();
+  await assert.rejects(discovering, { name: 'AbortError' });
+  assert.deepEqual(scrolls, ['up']);
+  assert.equal(getWindow().webContents.debugger.listenerCount('message'), 0);
 });
 
 await t.test('unrelated author response cannot complete requested profile', async () => {

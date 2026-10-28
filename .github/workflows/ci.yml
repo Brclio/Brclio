@@ -116,6 +116,7 @@ jobs:
       - name: Verify XHS browser behavior and native UI contracts
         run: |
           node scripts/verify-xhs-ui.mjs
+          node scripts/verify-xhs-profile-ui.mjs
           node scripts/verify-xhs-download-ui.mjs
           node scripts/verify-xhs-live-import.mjs
           node scripts/verify-xhs-android-bridge.mjs
@@ -131,6 +132,7 @@ jobs:
           DEBUG: pw:browser
         run: |
           xvfb-run -a node scripts/verify-xhs-desktop.cjs
+          xvfb-run -a node scripts/verify-xhs-redirects.cjs
           xvfb-run -a node scripts/verify-xhs-live.cjs
           xvfb-run -a node scripts/verify-xhs-live-import.mjs --electron
           node scripts/verify-xhs-live-editor.mjs

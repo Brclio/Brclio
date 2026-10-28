@@ -4,12 +4,13 @@
   const $ = id => document.getElementById('xhs-' + id);
   const host = window.BrclioHost;
   const native = host?.xhsRequest;
+  let profileRevision = 0, nativeRefreshRevision = 0;
   const state = { hostPlatform: 'browser', note: null, selected: new Set(), directory: '', profile: null, videoRequest: null, archiveRequest: null, transferRequest: null, profileFilter: 'all', profileVisible: 100, profileRowsKey: '', profileDirty: new Set(), clipboardSeen: '', clipboardPending: '', clipboardChecking: false, previewController: null, fileController: null, liveBusy: false, files: [], fileInfo: null, liveResult: null, liveController: null, previewUrls: [], previewTimer: null, fileRevision: 0 };
   const labels = { idle: '尚未开始', discovering: '正在发现笔记', downloading: '正在下载', waiting: '等待下一次请求', paused: '已暂停', completed: '已完成', canceled: '已停止', cancelled: '已停止', error: '任务出错', pending: '等待中', skipped: '已跳过', failed: '失败' };
   const isNative = typeof native === 'function';
-  function message(text, failed = false) { $('message').textContent = text || ''; $('message').hidden = !text; $('message').classList.toggle('error', failed); }
+  function message(text, failed = false, reason = '') { $('message').textContent = text || ''; $('message').hidden = !text; $('message').classList.toggle('error', failed); $('message').dataset.reason = reason; }
   async function request(action, input = {}) { if (!isNative) throw new Error('请在 Brclio 桌面客户端中使用此功能。'); const result = await native(action, input); if (result?.ok === false) throw new Error(typeof result.error === 'string' ? result.error : result.error?.message || result.message || '操作未完成，请重试。'); return result; }
-  async function run(button, task) { const old = button?.disabled; if (button) button.disabled = true; try { return await task(); } catch (error) { message(error.message || '操作未完成，请重试。', true); } finally { if (button) button.disabled = old; if (button?.id?.startsWith('xhs-profile-') && state.profile) renderProfile(state.profile); if (button?.id === 'xhs-live-generate' || button?.id === 'xhs-live-preview') syncLiveControls(); if (button?.closest('#xhs-panel-note') || button?.closest('#xhs-live-result')) syncNativeBusy(); } }
+  async function run(button, task) { const old = button?.disabled; if (button) button.disabled = true; try { return await task(); } catch (error) { message(error.message || '操作未完成，请重试。', true, error.reason); } finally { if (button) button.disabled = old; if ((button?.id?.startsWith('xhs-profile-') || button?.id === 'xhs-choose-directory') && state.profile) renderProfile(state.profile); if (button?.id === 'xhs-live-generate' || button?.id === 'xhs-live-preview') syncLiveControls(); if (button?.closest('#xhs-panel-note') || button?.closest('#xhs-live-result')) syncNativeBusy(); } }
   function click(id, task) { $(id).addEventListener('click', event => { void run(event.currentTarget, task); }); }
   function element(tag, className, value) { const result = document.createElement(tag); if (className) result.className = className; if (value !== undefined) result.textContent = value; return result; }
   function actionButton(text, task, requiresNative = true) { const button = element('button', 'text-button', text); button.type = 'button'; button.addEventListener('click', () => { void run(button, task); }); if (requiresNative) { button.dataset.xhsNative = ''; if (!isNative || nativeBusy()) button.disabled = true; } return button; }
@@ -121,7 +122,13 @@
   async function exportArchive(format, images = selectedImages()) {
     if (nativeBusy()) throw new Error('已有素材正在处理，请完成或取消后重试。');
     const requestId = `archive-${crypto.randomUUID()}`; state.archiveRequest = requestId; syncNativeBusy(); showDownloadProgress('archive', '正在准备下载素材并打包 ZIP…');
-    try { const result = await request('exportArchive', { requestId, note: state.note, images, format }); const cancelled = Boolean(result?.canceled || result?.cancelled); const description = cancelled ? 'ZIP 导出已取消。' : 'ZIP 已保存，内含所选素材与笔记文案。'; finishDownloadProgress('archive', description, cancelled); message(description); return result; }
+    try {
+      const result = await request('exportArchive', { requestId, note: state.note, images, format });
+      const cancelled = Boolean(result?.canceled || result?.cancelled), failedCount = result?.failedCount || result?.failures?.length || 0;
+      const details = (result?.failures || []).map(failure => `第 ${failure.index} 张${failure.kind === 'video' ? '实况视频' : '原图'}：${failure.message}`).join('；');
+      const description = cancelled ? 'ZIP 导出已取消。' : failedCount ? `ZIP 已保存：${result.count} 个素材成功，${failedCount} 个未加入。${details}` : 'ZIP 已保存，内含所选素材与笔记文案。';
+      finishDownloadProgress('archive', description, cancelled || failedCount > 0); message(description, !cancelled && failedCount > 0); return result;
+    }
     catch (error) { finishDownloadProgress('archive', error.message, true); throw error; }
     finally { state.archiveRequest = null; $('cancel-archive').hidden = true; syncNativeBusy(); }
   }
@@ -147,7 +154,20 @@
   function renderLogin(login = {}) { $('login-status').textContent = login.loggedIn || login.status === 'logged-in' ? `已登录小红书${login.nickname ? ' · ' + login.nickname : ''}` : login.status === 'unknown' ? '暂未确认小红书会话，请打开登录窗口检查。' : '尚未登录小红书；需要时打开登录窗口。'; }
   click('login', async () => { const result = await request('login', { profileUrl: $('profile-url').value.trim() }); if (result) renderLogin(result); });
   click('clear-login', async () => { const result = await request('clearLogin'); if (result?.cancelled || result?.canceled) { message('已取消清除小红书会话。'); return; } renderLogin(result?.loginState || result); if (result?.profileState) renderProfile(result.profileState); message(result?.message || '小红书网页会话已清除。'); });
-  click('choose-directory', async () => { const result = await request('chooseDirectory'); const directory = typeof result === 'string' ? result : result?.directory; if (directory) { state.directory = directory; $('directory').textContent = directory; } }); click('open-directory', () => request('openDirectory', { directory: state.directory || undefined }));
+  function setProfileDirectory(directory) {
+    state.directory = directory; $('directory').textContent = directory;
+    if ($('message').dataset.reason === 'directory') message('');
+  }
+  click('choose-directory', async () => {
+    const result = await request('chooseDirectory'), directory = typeof result === 'string' ? result : result?.directory;
+    if (directory) {
+      state.profileDirty.add('directory'); setProfileDirectory(directory);
+      const existing = state.profile?.directory;
+      message(existing && existing !== directory && state.profile?.status === 'paused'
+        ? '保存目录已设置；开始新任务会使用此目录，继续原任务仍使用原目录。' : '保存目录已设置。');
+    }
+  });
+  click('open-directory', () => request('openDirectory', { directory: state.directory || undefined }));
   let profileCountdownTimer;
   function updateProfileCountdown() {
     const label = $('profile-countdown'), next = Number(state.profile?.nextRequestAt);
@@ -158,8 +178,9 @@
     if (active && !profileCountdownTimer) profileCountdownTimer = setInterval(updateProfileCountdown,1000);
   }
   function renderProfile(profile = {}) {
+    if (profile !== state.profile) profileRevision++;
     state.profile = profile; updateProfileCountdown(); const desktop = isNative && state.hostPlatform !== 'android'; const active = ['discovering', 'downloading', 'waiting'].includes(profile.status);
-    if (profile.directory) { state.directory = profile.directory; $('directory').textContent = profile.directory; }
+    if (profile.directory && !state.profileDirty.has('directory')) setProfileDirectory(profile.directory);
     if (profile.profileUrl && !state.profileDirty.has('profile-url') && document.activeElement !== $('profile-url')) $('profile-url').value = profile.profileUrl;
     for (const [id, key] of [['interval', 'intervalSeconds'], ['jitter', 'jitterSeconds']]) if (profile[key] !== undefined && !state.profileDirty.has(id) && document.activeElement !== $(id)) $(id).value = String(profile[key]);
     $('profile-status').textContent = labels[profile.status] || profile.status || '尚未开始';
@@ -172,6 +193,7 @@
     $('profile-stats').replaceChildren();
     for (const [key, label] of [['discovered', '发现'], ['completed', '完成'], ['skipped', '跳过'], ['failed', '失败']]) { const span = element('span', '', label + ' '); span.append(element('strong', '', String(profile[key] ?? (key === 'discovered' ? items.length : items.filter(item => item.status === key).length)))); $('profile-stats').append(span); }
     $('profile-start').disabled = !desktop || active; $('profile-pause').disabled = !desktop || !active; $('profile-resume').disabled = !desktop || profile.status !== 'paused'; $('profile-cancel').disabled = !desktop || !active && profile.status !== 'paused'; $('profile-retry').disabled = !desktop || active || !failed;
+    $('choose-directory').disabled = !desktop || active;
     $('copy-failed').disabled = !failed;
     const filtered = items.map((item,index) => ({...item, sequence:item.sequence || index + 1})).filter(item => state.profileFilter !== 'failed' || item.status === 'failed')
       .sort((a,b) => Number(b.status === 'failed') - Number(a.status === 'failed') || a.sequence - b.sequence);
@@ -185,7 +207,7 @@
       const row = element('li'), detail = element('div', 'xhs-queue-detail'); detail.append(element('strong', '', item.title || item.id || '待解析笔记'));
       if (item.directoryName) detail.append(element('small', '', `文件夹：${item.directoryName}`)); if (item.error) detail.append(element('small', '', item.error));
       row.append(element('span', 'xhs-queue-number', String(item.sequence).padStart(3, '0')), detail, element('span', 'xhs-queue-state ' + item.status, labels[item.status] || item.status));
-      if (item.status === 'failed') { const actions = element('div', 'xhs-queue-actions'), retry = actionButton('重试', async () => renderProfile(await request('retryItem', { noteId: item.id }))); retry.disabled = !desktop || active;
+      if (item.status === 'failed') { const actions = element('div', 'xhs-queue-actions'), retry = actionButton('重试', async () => { profileRevision++; message(''); const profile = await request('retryItem', { noteId: item.id }); state.profileDirty.delete('directory'); renderProfile(profile); }); retry.disabled = !desktop || active;
         actions.append(retry, actionButton('复制链接', () => copyText(failedURL(item)), false), actionButton('转单篇', () => transferToNote(failedURL(item)), false)); row.append(actions); }
       fragment.append(row);
     }
@@ -197,8 +219,12 @@
   function transferToNote(text) { setTab('note'); $('share').value = text; $('share').focus(); $('share').scrollIntoView({ block: 'center', behavior: 'instant' }); message('链接已填入单篇下载，点击“解析笔记”继续。'); }
   click('copy-failed', () => copyText((state.profile?.items || []).filter(item => item.status === 'failed').map(failedURL).join('\n')));
   for (const id of ['profile-url', 'interval', 'jitter']) $(id).addEventListener('input', () => state.profileDirty.add(id));
-  $('profile-form').addEventListener('submit', event => { event.preventDefault(); void run($('profile-start'), async () => { if (!state.directory) throw new Error('请先选择保存目录。'); const profile = await request('startProfile', { profileUrl: $('profile-url').value.trim(), directory: state.directory, intervalSeconds: Number($('interval').value), jitterSeconds: Number($('jitter').value) }); state.profileDirty.clear(); state.profileFilter = 'all'; state.profileVisible = 100; state.profileRowsKey = ''; renderProfile(profile); }); });
-  for (const [id, action] of [['profile-pause', 'pauseProfile'], ['profile-resume', 'resumeProfile'], ['profile-cancel', 'cancelProfile'], ['profile-retry', 'retryFailed']]) click(id, async () => renderProfile(await request(action)));
+  $('profile-form').addEventListener('submit', event => { event.preventDefault(); void run($('profile-start'), async () => { if (!state.directory) throw Object.assign(new Error('请先选择保存目录。'), { reason: 'directory' }); profileRevision++; message(''); const profile = await request('startProfile', { profileUrl: $('profile-url').value.trim(), directory: state.directory, intervalSeconds: Number($('interval').value), jitterSeconds: Number($('jitter').value) }); state.profileDirty.clear(); state.profileFilter = 'all'; state.profileVisible = 100; state.profileRowsKey = ''; renderProfile(profile); }); });
+  for (const [id, action] of [['profile-pause', 'pauseProfile'], ['profile-resume', 'resumeProfile'], ['profile-cancel', 'cancelProfile'], ['profile-retry', 'retryFailed']]) click(id, async () => {
+    profileRevision++; message(''); const profile = await request(action);
+    if (action === 'resumeProfile' || action === 'retryFailed') state.profileDirty.delete('directory');
+    renderProfile(profile);
+  });
   let liveModulePromise;
   const liveModule = () => liveModulePromise ||= import('./xhs/lib/live-photo-maker.js');
   const liveImageEdits = new WeakMap(), liveImageEditPresets = new WeakMap();
@@ -483,7 +509,15 @@
   click('dismiss-clipboard', () => { $('clipboard-notice').hidden = true; state.clipboardPending = ''; });
   window.addEventListener('focus', () => { void checkClipboard(); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void checkClipboard(); updateProfileCountdown(); });
-  async function refreshNativeState() { await platformReady; if (!isNative || state.hostPlatform === 'android') return; const results = await Promise.allSettled([request('loginState'), request('profileState')]); if (results[0].status === 'fulfilled') renderLogin(results[0].value); if (results[1].status === 'fulfilled') renderProfile(results[1].value); }
+  async function refreshNativeState() {
+    await platformReady; if (!isNative || state.hostPlatform === 'android') return;
+    const revision = profileRevision, refresh = ++nativeRefreshRevision;
+    const results = await Promise.allSettled([request('loginState'), request('profileState')]);
+    if (refresh !== nativeRefreshRevision) return;
+    if (results[0].status === 'fulfilled') renderLogin(results[0].value);
+    // A task event or local action is newer than the snapshot read it overtook.
+    if (results[1].status === 'fulfilled' && revision === profileRevision) renderProfile(results[1].value);
+  }
   window.addEventListener('brclio:view', event => { if (event.detail?.name === 'xhs') { void refreshNativeState(); void checkClipboard(); updateProfileCountdown(); } else { $('video-preview').pause(); $('live-preview-video').pause(); cancelAnimationFrame(state.previewTimer); updateProfileCountdown(); } });
   window.addEventListener('beforeunload', () => { state.liveController?.abort(); state.fileController?.abort(); imageEditorController?.abort(); clearInterval(profileCountdownTimer); clearPreview(); });
   const platformReady = Promise.resolve(host?.getPlatform?.()).then(info => {

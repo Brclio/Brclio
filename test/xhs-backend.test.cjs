@@ -212,7 +212,7 @@ test('archive cancellation and size preflight preserve an existing file and leav
   let began; const started = new Promise(resolve => { began = resolve; }); let requests = 0;
   const f = await serviceFixture(t, { fetchImpl: async () => { requests++; began(); return new Promise(() => {}); } });
   const target = path.join(f.output, 'archive.zip'); await fs.writeFile(target, 'prior archive');
-  const image = { index: 1, url: imageUrl, liveVideo: { url: originalUrl, size: 129 * 1024 ** 2 } };
+  const image = { index: 1, url: imageUrl, liveVideo: { url: originalUrl, size: 256 * 1024 ** 2 } };
   await assert.rejects(f.service.request('exportArchive', { note: { title: '超限' }, images: [image], format: 'live' }), /256 MiB/);
   assert.equal(requests, 0);
   const pending = f.service.request('exportArchive', { note: { title: '取消' }, images: [image], format: 'images', requestId: 'cancel-zip' });

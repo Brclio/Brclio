@@ -11,6 +11,24 @@ const WINDOW_KEYS = ['profileWindow', 'detailWindow', 'accountWindow'];
 const POSTED = /^\/api\/sns\/web\/v\d+\/user_posted\/?$/;
 const require = createRequire(import.meta.url);
 
+// Executed in the isolated page. Find the actual feed scroll owner as well as
+// known layouts; profile pages can nest it inside an unnamed container.
+export function scrollProfileList(retry = false) {
+  const nodes = new Set([document.scrollingElement,
+    ...document.querySelectorAll('.main-container, .user-page, .feeds-tab-container, .scroll-container')]);
+  const cards = document.querySelectorAll('.feeds-tab-container .note-item, .note-item');
+  for (let node = cards[cards.length - 1]?.parentElement; node; node = node.parentElement) nodes.add(node);
+  const scrollable = [...nodes].filter(node => node && node.scrollHeight > node.clientHeight);
+  if (retry) {
+    // Crossing the bottom boundary again re-arms lazy loading after a transient
+    // empty response. Reassigning the same scrollTop cannot trigger a scroll.
+    for (const node of scrollable) node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight - Math.max(120, node.clientHeight / 2));
+    return;
+  }
+  for (const node of scrollable) node.scrollTop = node.scrollHeight;
+  window.scrollTo(0, document.documentElement.scrollHeight);
+}
+
 function allowedNavigation(value) {
   try {
     const url = new URL(value);
@@ -336,11 +354,13 @@ export class XhsBrowser {
         const wait = Math.max(3, Number(intervalSeconds) || 10) + Math.random() * Math.max(0, Number(jitterSeconds) || 0);
         this.onStatus(`已发现 ${seen.size} 篇，${Math.ceil(wait)} 秒后加载下一页。`);
         await this.wait(wait * 1000, undefined, { signal });
-        await this.execute(win, `(() => {
-          const nodes = [document.scrollingElement, ...document.querySelectorAll('.main-container, .user-page, .feeds-tab-container, .scroll-container')];
-          for (const node of nodes) if (node && node.scrollHeight > node.clientHeight) node.scrollTop = node.scrollHeight;
-          window.scrollTo(0, document.documentElement.scrollHeight);
-        })()`, signal);
+        if (stale > 0) {
+          await this.execute(win, `(${scrollProfileList.toString()})(true)`, signal);
+          // Keep the recovery delay in the host so pausing cancels it before
+          // another bottom crossing can trigger a late list request.
+          await this.wait(150, undefined, { signal });
+        }
+        await this.execute(win, `(${scrollProfileList.toString()})(false)`, signal);
         await this.wait(1000, undefined, { signal });
       }
     } finally {

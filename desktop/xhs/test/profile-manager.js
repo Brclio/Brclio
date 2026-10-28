@@ -159,7 +159,7 @@ await t.test("restart performs no network and skips only files whose size and SH
   assert.equal(f.requests.filter((item) => item.type === "media").length, 1);
 });
 
-await t.test("incomplete discovery is persisted and pauses without claiming completion; resume merges and finishes", async (t) => {
+await t.test("incomplete discovery saves confirmed notes before pausing; resume merges and verifies saved files", async (t) => {
   let run = 0;
   const f = await fixture(t, { browser: {
     async *discover() { run++; yield { notes: [note(A)], done: run > 1 }; },
@@ -170,7 +170,9 @@ await t.test("incomplete discovery is persisted and pauses without claiming comp
   assert.equal(result.status, "paused");
   assert.equal(result.discoveryComplete, false);
   assert.equal(result.discovered, 1);
-  assert.equal(result.completed, 0);
+  assert.equal(result.completed, 1);
+  assert.equal(result.pauseReason, "DISCOVERY_INCOMPLETE");
+  assert.match(result.message, /已处理当前发现的 1 篇帖子.*补全列表/);
   const restored = new ProfileManager(f.config);
   assert.equal((await restored.initialize()).status, "paused");
   assert.equal(run, 1);
@@ -180,7 +182,61 @@ await t.test("incomplete discovery is persisted and pauses without claiming comp
   assert.equal(result.status, "completed");
   assert.equal(result.discoveryComplete, true);
   assert.equal(result.discovered, 1);
-  assert.equal(result.completed, 1);
+  assert.equal(result.skipped, 1);
+  assert.equal(result.pauseReason, "");
+});
+
+await t.test("a stalled list still downloads every confirmed queued note and keeps discovery resumable", async (t) => {
+  const resolved = [], updates = [];
+  const f = await fixture(t, { onUpdate: state => updates.push(state), browser: {
+    async *discover() {
+      yield { notes: [note(A), note(B)], done: false };
+      throw Object.assign(new Error("列表连续多次没有加载新帖子。"), { code: "DISCOVERY_INCOMPLETE" });
+    },
+    async resolveNote(item) { resolved.push(item.id); return parsed(); }
+  } });
+  await f.start();
+  const result = await f.settle();
+  assert.deepEqual(resolved, [A, B]);
+  assert.equal(result.completed, 2);
+  assert.equal(result.status, "paused");
+  assert.equal(result.discoveryComplete, false);
+  assert.equal(result.pauseReason, "DISCOVERY_INCOMPLETE");
+  assert.ok(updates.some(state => /先保存已发现的 2 篇帖子/.test(state.message)));
+  const saved = JSON.parse(await fs.readFile(path.join(f.stateDirectory, "profile-job.json"), "utf8"));
+  assert.equal(saved.discoveryComplete, false);
+  assert.ok(saved.items.every(item => item.complete && item.status === "completed"));
+});
+
+await t.test("incomplete-list fallback cannot bypass login, verification, cancellation, or invalid note data", async (t) => {
+  for (const code of ["AUTH_REQUIRED", "RATE_LIMITED", "INVALID_NOTE", "AbortError"]) {
+    let resolved = 0;
+    const f = await fixture(t, { browser: {
+      async *discover() {
+        yield { notes: [note(A)], done: false };
+        throw Object.assign(new Error("discovery interrupted"), code === "AbortError" ? { name: code } : { code });
+      },
+      async resolveNote() { resolved++; return parsed(); }
+    } });
+    await f.start();
+    const result = await f.settle();
+    assert.equal(resolved, 0, code);
+    assert.equal(result.completed, 0, code);
+    assert.equal(result.items[0].status, "pending", code);
+    assert.equal(result.discoveryComplete, false, code);
+  }
+});
+
+await t.test("an incomplete empty list remains paused instead of reporting a completed empty profile", async (t) => {
+  const f = await fixture(t, { browser: {
+    async *discover() { yield { notes: [], done: false }; },
+    async resolveNote() { throw new Error("must not resolve an empty list"); }
+  } });
+  await f.start();
+  const result = await f.settle();
+  assert.equal(result.status, "paused");
+  assert.equal(result.pauseReason, "DISCOVERY_INCOMPLETE");
+  assert.equal(result.discovered, 0);
 });
 
 await t.test("pause aborts detail parsing, flushes pending state, and resumes successfully", async (t) => {
