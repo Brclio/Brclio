@@ -24,7 +24,9 @@ app.whenReady().then(async () => {
   const environment = { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' };
   delete environment.ELECTRON_RUN_AS_NODE;
   application = await _electron.launch({ executablePath: require('electron'),
-    args: [...(process.platform === 'linux' ? ['--no-sandbox', '--headless', '--ozone-platform=headless'] : []), temporary],
+    // Linux runs under the browser job's Xvfb display. Combining its virtual
+    // display with Electron's headless Ozone backend crashes before CDP starts.
+    args: [...(process.platform === 'linux' ? ['--no-sandbox'] : []), temporary],
     env: environment, timeout: 30000 });
   const page = await application.firstWindow();
   const makerUrl = pathToFileURL(path.resolve(__dirname, '../web/xhs/lib/live-photo-maker.js')).href;
