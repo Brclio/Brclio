@@ -76,7 +76,7 @@ function mediaAssets(note) {
     if (image.liveVideo?.url) assets.push({ key: `live-${number}`, kind: "video", url: image.liveVideo.url, backupUrls: image.liveVideo.backupUrls });
   }
   const originalVideos = (note.originalVideos || []).filter(candidate => candidate.hasAudio !== false);
-  const videos = originalVideos.length ? originalVideos : (note.videos || []).filter(candidate => candidate.hasAudio !== false);
+  const videos = originalVideos.length ? originalVideos : (note.videos || []);
   const video = videos.find((item) => item.isDefault) || videos[0];
   if (video?.url) {
     const other = videos.filter(candidate => candidate !== video && candidate.hasAudio !== false);
@@ -522,9 +522,6 @@ export class ProfileManager {
       throw new Error("未取得完整且属于当前帖子的媒体信息，未将此帖标为完成；请登录后重试。");
     }
     const assets = mediaAssets(note);
-    if (((note.videos?.length || note.originalVideos?.length) || note.noteType === 'video') && !assets.some(asset => asset.key === 'video')) {
-      throw new Error('当前帖子缺少包含声音的完整视频，未将此帖标为完成。');
-    }
     if (!assets.length) throw new Error("此帖未解析到可下载的媒体，请登录后重试。");
     if ((note.images || []).some((image) => image.livePhoto && !image.liveVideo?.url)) throw new Error("实况照片缺少配对视频，未将此帖标为完整下载。请稍后重试。");
     item.title = String(note.title || item.title || "未命名帖子");

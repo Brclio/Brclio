@@ -12,6 +12,8 @@ const artifacts = path.join(root, 'artifacts');
 const noteId = 'abcdef1234567890abcdef12';
 const imageURL = 'https://ci.xiaohongshu.com/fixture-image?imageView2/format/png';
 const videoURL = 'https://sns-video-bd.xhscdn.com/spectrum/fixture-original.mp4';
+const liveURL = 'https://sns-video-bd.xhscdn.com/spectrum/fixture-live.mp4';
+const playbackURL = 'https://sns-video-bd.xhscdn.com/spectrum/fixture-playback.mp4';
 const noteURL = `https://www.xiaohongshu.com/explore/${noteId}`;
 
 async function main() {
@@ -25,9 +27,9 @@ async function main() {
   execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x96:rate=30', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '0.8', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', videoPath], { timeout: 30000, stdio: 'pipe' });
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64');
   const note = { noteId, title: '本地验证笔记', desc: '完整中文文案 #Brclio', imageList: [
-    { urlDefault: imageURL, livePhoto: true, stream: { h264: [{ masterUrl: videoURL, width: 160, height: 96, audioCodec: 'aac' }] } },
+    { urlDefault: imageURL, livePhoto: true, stream: { h264: [{ masterUrl: liveURL, width: 160, height: 96, audioCodec: 'aac' }] } },
     { urlDefault: imageURL },
-  ], video: { consumer: { originVideoKey: videoURL }, media: { stream: { h264: [{ masterUrl: videoURL, width: 160, height: 96, audioCodec: 'aac' }] } } } };
+  ], video: { consumer: { originVideoKey: videoURL }, media: { stream: { h264: [{ masterUrl: playbackURL, width: 160, height: 96, audioCodec: 'aac' }] } } } };
   const html = `<!doctype html><title>Fixture</title><script>window.__INITIAL_STATE__=${JSON.stringify({ note: { noteDetailMap: { [noteId]: { note } } } })}</script><p>Offline fixture</p>`;
   const bootstrap = path.join(temporary, 'bootstrap.cjs');
   const metadata = require('../package.json');

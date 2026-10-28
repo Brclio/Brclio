@@ -47,6 +47,10 @@ Brclio 的「全部工具」与侧栏新增「小红书工具」，分为单篇�
 
 `desktop/main.cjs` 延迟加载 `desktop/xhs/index.mjs`；只有受信任的 Brclio 主窗口可以通过 `brclio:xhs:request` 发起操作。`desktop/preload.cjs` 仅暴露限定入口 `xhsRequest` 和可取消订阅的状态事件。
 
+下载逻辑按上述源提交直接移植：`lib/xhs.js` 整文件相同，Python 的解析与逐跳请求函数保持原文；原图 HTTP handler、ZIP、媒体轨道与图片尺寸模块也保留原文件。`lib/source-download.js` 从原 `app.js` 提取原文函数，执行原图代理及 HTTP 413 直连回退、视频 meta/chunk 分段、全部备用地址分段失败后再逐个直连，以及共用的 256 MiB 桌面归档预算。Brclio 只把原 HTTP 入口接入本地 handler，并传入取消和进度事件；媒体落盘后仍校验格式与音轨。原生单视频和原图剪贴板使用源 `net.request` 适配函数，页面与主页解析使用 Node 请求，避免 Electron `session.fetch` 拒绝手动重定向。
+
+`npm run test:xhs-source-parity` 在源仓库可用时逐字核对整模块、提取函数与预算常量，并列出需要本地主机或账号适配的文件。它不是把所有适配模块都声明为整文件相同，也不要求 CI 存在原项目目录。界面、保存对话框及 Brclio 账号沿用本项目；源会员与支付接口不迁入。
+
 图片与视频通过 `brclio-xhs://local/api/…` 本地协议读取，保留小红书 CDN 域名、HTTPS、每次重定向、类型和 Range 校验。保存目录必须由系统对话框授权；原生视频使用暂存目录，完整校验后发布目标文件。退出应用时暂停主页任务并等待下载清理。
 
 实况纯计算模块在 `web/xhs/lib/`，HEIC 使用本地 Worker/WASM，素材留在本机。`web/xhs/assets/vendor/heic/` 含对应许可证、来源和可重建源码。CSP 只新增本地媒体协议、Blob/Worker 和 WASM 所需权限，未开启 Node renderer 或通用 `unsafe-eval`。

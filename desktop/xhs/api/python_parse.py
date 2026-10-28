@@ -457,18 +457,6 @@ def video_quality_score(video: dict[str, Any]) -> int:
     )
 
 
-def live_photo_quality_key(video: dict[str, Any]) -> tuple[int, ...]:
-    # Source detail takes priority for Live Photos, which may legitimately be
-    # silent. Normal videos retain their audio and compatibility ordering.
-    return (
-        normalize_number(video.get("width")) * normalize_number(video.get("height")),
-        normalize_number(video.get("bitrate")),
-        2 if video.get("hasAudio") is True else 0 if video.get("hasAudio") is False else 1,
-        codec_priority(video.get("codec")),
-        normalize_number(video.get("size")),
-    )
-
-
 def stream_audio_metadata(item: dict[str, Any]) -> dict[str, Any]:
     codec = str(item.get("audioCodec") or item.get("audio_codec") or "").lower()
     channels = normalize_number(item.get("audioChannels") or item.get("audio_channels"))
@@ -540,15 +528,14 @@ def extract_streams_from_root(
                 }
             )
 
-    quality_key = live_photo_quality_key if source == "live-photo-stream" else video_quality_score
     deduped: dict[str, dict[str, Any]] = {}
     for stream in streams:
         url = str(stream.get("url") or "")
         existing = deduped.get(url)
-        if existing is None or quality_key(stream) > quality_key(existing):
+        if existing is None or video_quality_score(stream) > video_quality_score(existing):
             deduped[url] = stream
 
-    return sorted(deduped.values(), key=quality_key, reverse=True)
+    return sorted(deduped.values(), key=video_quality_score, reverse=True)
 
 
 def original_video_url(value: Any) -> str | None:
@@ -646,13 +633,23 @@ def exclude_original_video_urls(streams: list[dict[str, Any]], originals: list[d
 
 
 def extract_video_streams_from_note(note: Any) -> list[dict[str, Any]]:
-    """Ordinary playback streams are separate from original source candidates."""
+    """Ordinary playback streams are separate from member-only original candidates."""
     video = note.get("video") if isinstance(note, dict) else None
     media = video.get("media") if isinstance(video, dict) else None
     stream_root = media.get("stream") if isinstance(media, dict) else None
     return exclude_original_video_urls(extract_streams_from_root(stream_root, "media-stream"),
                                        declared_original_video_fields(note))
 
+
+def exclude_original_live_videos(images: list[dict[str, Any]], originals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for image in images:
+        if image.get("liveVideo"):
+            remaining = exclude_original_video_urls([image["liveVideo"]], originals)
+            results.append({**image, "liveVideo": remaining[0] if remaining else None})
+        else:
+            results.append(image)
+    return results
 
 
 def prepare_original_video_results(videos: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -919,7 +916,7 @@ def select_exact_note_from_states(
             image_list = direct_image_list(candidate)
             original_videos = extract_original_videos_from_note(candidate)
             declared_originals = declared_original_video_fields(candidate)
-            images = choose_image_assets(image_list) if image_list is not None else []
+            images = exclude_original_live_videos(choose_image_assets(image_list) if image_list is not None else [], declared_originals)
             videos = extract_video_streams_from_note(candidate)
             if not images and not videos and not original_videos and not declared_originals:
                 continue
@@ -1338,7 +1335,7 @@ def parse_note_html(page_html: str, note_id: str) -> dict[str, Any]:
             ) or extract_page_title(page_html),
             "content": "",
             "images": convert_image_assets(
-                local_images.get("images", []) if local_images else []
+                exclude_original_live_videos(local_images.get("images", []) if local_images else [], local_video_assets.get("declaredOriginals", []))
             )[:50],
             "videos": prepare_video_results(local_videos),
             "originalVideos": prepare_original_video_results(local_original_videos),

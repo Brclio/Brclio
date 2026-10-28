@@ -42,7 +42,7 @@
     },
     accountGoogle: async () => { location.assign('/api/account/google/start'); return { redirecting: true }; },
     accountCancelGoogle: async () => ({ canceled: true }),
-    getPlatform: async () => ({ platform: 'browser', version: '0.2.5', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
+    getPlatform: async () => ({ platform: 'browser', version: '0.2.6', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
     getSettings: async () => { const saved = localStorage.getItem(STORE); return saved ? JSON.parse(saved) : {}; },
     saveSettings: async settings => { localStorage.setItem(STORE, JSON.stringify(settings)); return settings; },
     copyText: async text => {
@@ -62,7 +62,7 @@
     onPaths: () => () => {},
     getUpdateProxyState: async () => ({ enabled: true, supported: false, route: 'direct' }),
     setUpdateProxyEnabled: async () => { throw new Error('请在客户端中设置更新代理。'); },
-    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.2.5' }),
+    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.2.6' }),
     downloadUpdate: async () => { throw new Error('请在客户端中下载安装包。'); },
     installUpdate: async () => { throw new Error('请在客户端中安装更新。'); },
     onUpdateState: () => () => {},

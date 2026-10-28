@@ -403,23 +403,6 @@ function videoQualityScore(video) {
   );
 }
 
-// Live Photos are saved as source media and may be silent. Prefer the most
-// detailed frame before playback compatibility or audio, unlike normal videos.
-function compareLivePhotoQuality(a, b) {
-  const key = video => [
-    normalizeNumber(video.width) * normalizeNumber(video.height),
-    normalizeNumber(video.bitrate),
-    video.hasAudio === true ? 2 : video.hasAudio === false ? 0 : 1,
-    codecPriority(video.codec),
-    normalizeNumber(video.size)
-  ];
-  const aKey = key(a), bKey = key(b);
-  for (let index = 0; index < aKey.length; index++) {
-    if (aKey[index] !== bKey[index]) return aKey[index] > bKey[index] ? -1 : 1;
-  }
-  return 0;
-}
-
 function streamAudioMetadata(item) {
   const audioCodec = String(item?.audioCodec ?? item?.audio_codec ?? '').toLowerCase();
   const audioChannels = normalizeNumber(item?.audioChannels ?? item?.audio_channels);
@@ -468,17 +451,15 @@ function extractStreamsFromRoot(streamRoot, source = "media-stream") {
     }
   }
 
-  const compareQuality = source === 'live-photo-stream' ? compareLivePhotoQuality
-    : (a, b) => videoQualityScore(b) - videoQualityScore(a);
   const deduped = new Map();
   for (const stream of streams) {
     const existing = deduped.get(stream.url);
-    if (!existing || compareQuality(stream, existing) < 0) {
+    if (!existing || videoQualityScore(stream) > videoQualityScore(existing)) {
       deduped.set(stream.url, stream);
     }
   }
 
-  return [...deduped.values()].sort(compareQuality);
+  return [...deduped.values()].sort((a, b) => videoQualityScore(b) - videoQualityScore(a));
 }
 
 function originalVideoUrl(value) {
@@ -552,7 +533,7 @@ function excludeOriginalVideoUrls(streams, originals) {
   });
 }
 
-/** Ordinary playback streams are kept separate from original source candidates. */
+/** Ordinary playback streams are kept separate from member-only original candidates. */
 function extractVideoStreamsFromNote(note) {
   return excludeOriginalVideoUrls(
     extractStreamsFromRoot(note?.video?.media?.stream, "media-stream"),
@@ -560,6 +541,11 @@ function extractVideoStreamsFromNote(note) {
   );
 }
 
+function excludeOriginalLiveVideos(images, originals) {
+  return images.map(image => image.liveVideo
+    ? { ...image, liveVideo: excludeOriginalVideoUrls([image.liveVideo], originals)[0] ?? null }
+    : image);
+}
 
 function prepareOriginalVideoResults(videos) {
   return videos.slice(0, 12).map((video, index) => ({
@@ -830,7 +816,7 @@ function selectExactNoteFromStates(html, noteId) {
       const imageList = directImageList(candidate);
       const originalVideos = extractOriginalVideosFromNote(candidate);
       const declaredOriginals = declaredOriginalVideoFields(candidate);
-      const images = imageList ? chooseImageAssets(imageList) : [];
+      const images = excludeOriginalLiveVideos(imageList ? chooseImageAssets(imageList) : [], declaredOriginals);
       const videos = extractVideoStreamsFromNote(candidate);
       if (images.length === 0 && videos.length === 0 && originalVideos.length === 0 && declaredOriginals.length === 0) continue;
 
@@ -1237,7 +1223,7 @@ export function parseNoteHtml(html, options = {}) {
     return {
       title: localImages?.title || extractPageTitle(html),
       content: "",
-      images: convertImageAssets(localImages?.images ?? []).slice(0, 50),
+      images: convertImageAssets(excludeOriginalLiveVideos(localImages?.images ?? [], localVideoAssets.declaredOriginals ?? [])).slice(0, 50),
       videos: prepareVideoResults(localVideos),
       originalVideos: prepareOriginalVideoResults(localOriginalVideos),
       strategy: localImages && hasLocalVideo

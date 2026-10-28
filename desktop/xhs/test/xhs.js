@@ -423,7 +423,7 @@ await t.test('published original keys stay separate from playback and backup URL
   assert.equal(parsed.videos.length, 2);
   assert.equal(parsed.videos[0].url, videoUrl('ordinary'));
   assert.ok(parsed.videos.every(video => ![video.url, ...video.backupUrls].includes(originalUrl)));
-  assert.equal(parsed.images[0].liveVideo.url, originalUrl);
+  assert.equal(parsed.images[0].liveVideo, null);
 });
 
 await t.test('origin-only exact and broken-state local notes retain explicit provenance and reject unsafe origin fields', () => {
@@ -518,7 +518,7 @@ function makeVideo(codec, id, width, height, bitrate, size) {
   };
 }
 
-await t.test('Live Photo sources prefer resolution and bitrate in Node and Python while ordinary video ordering stays unchanged', async () => {
+await t.test('Live Photo sources retain source downloader audio and codec ordering in Node and Python', async () => {
   const stream = (codec, id, width, height, bitrate, hasAudio = null, size = 0) =>
     ({ ...makeVideo(codec, id, width, height, bitrate, size), hasAudio });
   const low = stream('h264', 'live-720-audio', 1280, 720, 2000000, true);
@@ -539,23 +539,23 @@ await t.test('Live Photo sources prefer resolution and bitrate in Node and Pytho
   const small = stream('h264', 'live-small', 1920, 1080, 4000000, null, 600000);
   const large = stream('h264', 'live-large', 1920, 1080, 4000000, null, 900000);
   const cases = [
-    ['resolution before audio and codec', [low, high], high, low],
-    ['resolution before excessive bitrate', [lowHighBitrate, highLowBitrate], highLowBitrate, highLowBitrate],
-    ['same resolution prefers bitrate', [sameLowBitrate, sameHighBitrate], sameHighBitrate, sameLowBitrate],
-    ['known dimensions before missing dimensions', [unknown, known], known, unknown],
-    ['missing dimensions fall back to bitrate', [unknown, unknownHigh], unknownHigh, unknown],
-    ['equal detail prefers audio', [silent, audio], audio, audio],
-    ['equal detail and audio prefer compatibility', [efficient, compatible], compatible, compatible],
-    ['duplicate URL keeps best detail metadata', [duplicateLow, duplicateHigh], duplicateHigh, duplicateLow],
-    ['remaining ties prefer larger source', [small, large], large, large]
-  ].map(([name, candidates, live, ordinary]) => {
+    ['audio before resolution and codec', [low, high], low],
+    ['resolution before excessive bitrate', [lowHighBitrate, highLowBitrate], highLowBitrate],
+    ['same resolution prefers audio', [sameLowBitrate, sameHighBitrate], sameLowBitrate],
+    ['audio before known dimensions', [unknown, known], unknown],
+    ['missing dimensions retain audio priority', [unknown, unknownHigh], unknown],
+    ['equal detail prefers audio', [silent, audio], audio],
+    ['equal detail and audio prefer compatibility', [efficient, compatible], compatible],
+    ['duplicate URL retains source compatibility priority', [duplicateLow, duplicateHigh], duplicateLow],
+    ['remaining ties prefer larger source', [small, large], large]
+  ].map(([name, candidates, selected]) => {
     const streams = {};
     for (const candidate of candidates) (streams[candidate.videoCodec] ??= []).push(candidate);
     const noteId = '6a81c37e0000000025016000';
     const note = { noteId, imageList: [{ urlDefault: imageUrl('live-quality'), livePhoto: true, stream: streams }],
       video: { media: { stream: streams } } };
     return { name, noteId, html: `<script>window.__INITIAL_STATE__=${JSON.stringify({ noteData: { data: note } })}</script>`,
-      expected: { live: live.masterUrl, width: live.width, height: live.height, ordinary: ordinary.masterUrl } };
+      expected: { live: selected.masterUrl, width: selected.width, height: selected.height, ordinary: selected.masterUrl } };
   });
   const summary = parsed => ({ live: parsed.images[0].liveVideo.url, width: parsed.images[0].liveVideo.width,
     height: parsed.images[0].liveVideo.height, ordinary: parsed.videos[0].url });

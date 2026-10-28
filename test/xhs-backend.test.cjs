@@ -68,6 +68,22 @@ test('media proxy rejects private hosts and validates redirect targets before co
   assert.equal(await response.text(), 'video');
 });
 
+test('whole-media reads reject partial responses while explicit video ranges remain usable', async () => {
+  const { fetchMedia } = await import('../desktop/xhs/index.mjs');
+  for (const kind of ['image', 'video']) {
+    for (const status of [200, 206]) {
+      let cancelled = false;
+      await assert.rejects(fetchMedia(kind === 'image' ? imageUrl : originalUrl, { kind, fetchImpl: async () => new Response(new ReadableStream({
+        cancel() { cancelled = true; },
+      }), { status, headers: { 'content-type': kind === 'image' ? 'image/png' : 'video/mp4', 'content-range': 'bytes 0-32/70' } }) }), /局部内容/);
+      assert.equal(cancelled, true);
+    }
+  }
+  const response = await fetchMedia(originalUrl, { kind: 'video', range: 'bytes=0-1', fetchImpl: async () => new Response('ok', { status: 206,
+    headers: { 'content-type': 'video/mp4', 'content-range': 'bytes 0-1/70' } }) });
+  assert.equal(await response.text(), 'ok');
+});
+
 test('service isolates storage, requires an OS-approved directory, and gives custom protocol responses CORS', async t => {
   const directory = await temporary(t); const output = path.join(directory, 'downloads'); await fs.mkdir(output);
   const { createXhsService } = await import('../desktop/xhs/index.mjs');
@@ -140,7 +156,7 @@ test('video download cancellation returns cancelled and does not publish a file'
   await downloader.shutdown();
 });
 
-test('a paired Live Photo keeps its video when the same URL is also a declared original source', async () => {
+test('parse preserves the source separation between declared originals and paired playback streams', async () => {
   const { createParseHandler } = await import('../desktop/xhs/api/parse.js');
   const { invokeHandler } = await import('../desktop/xhs/index.mjs');
   const value = { note: { noteDetailMap: { [noteId]: { note: { noteId, title: '实况',
@@ -151,7 +167,8 @@ test('a paired Live Photo keeps its video when the same URL is also a declared o
     html: `<script>window.__INITIAL_STATE__=${JSON.stringify(value)}</script>` }), onError: () => {} });
   const response = await invokeHandler(handler, { method: 'POST', body: JSON.stringify({ text: `https://www.xiaohongshu.com/explore/${noteId}` }) });
   const result = await response.json(); assert.equal(result.success, true);
-  assert.equal(result.images[0].liveVideo.url, originalUrl); assert.equal(result.originalVideos[0].url, originalUrl);
+  assert.equal(result.images[0].liveVideo, null);
+  assert.equal(result.originalVideos[0].url, originalUrl);
 });
 
 test('ZIP export preserves selected originals, includes UTF-8 note text, and pairs silent live clips', async t => {
@@ -213,7 +230,7 @@ test('archive cancellation and size preflight preserve an existing file and leav
   const f = await serviceFixture(t, { fetchImpl: async () => { requests++; began(); return new Promise(() => {}); } });
   const target = path.join(f.output, 'archive.zip'); await fs.writeFile(target, 'prior archive');
   const image = { index: 1, url: imageUrl, liveVideo: { url: originalUrl, size: 256 * 1024 ** 2 } };
-  await assert.rejects(f.service.request('exportArchive', { note: { title: '超限' }, images: [image], format: 'live' }), /256 MiB/);
+  await assert.rejects(f.service.request('exportArchive', { note: { title: '超限' }, images: [image], format: 'live' }), { name: 'ArchiveSizeLimitError', limitBytes: 256 * 1024 ** 2 });
   assert.equal(requests, 0);
   const pending = f.service.request('exportArchive', { note: { title: '取消' }, images: [image], format: 'images', requestId: 'cancel-zip' });
   await started; assert.equal((await f.service.request('cancelArchive', { requestId: 'cancel-zip' })).cancelled, true);
@@ -230,11 +247,13 @@ test('archive export refuses a symlink save target before fetching any media', a
 });
 
 test('single-note export rejects silent or missing ordinary video instead of reporting a complete save', async t => {
-  const f = await serviceFixture(t); const directory = await f.service.request('chooseDirectory');
-  for (const note of [
-    { title: '静音', type: 'video', videos: [{ url: originalUrl, hasAudio: false }] },
-    { title: '缺少视频', type: 'video', videos: [] },
-  ]) await assert.rejects(f.service.request('saveNote', { note, directory, format: 'all' }), /包含声音的完整视频/);
+  const { mp4Fixture } = await import('../desktop/xhs/test/fixtures/mp4.js');
+  const clip = mp4Fixture({ audio: false });
+  const f = await serviceFixture(t, { fetchImpl: async () => new Response(clip, { headers: { 'content-type': 'video/mp4' } }) });
+  const directory = await f.service.request('chooseDirectory');
+  await assert.rejects(f.service.request('saveNote', { note: { title: '静音', type: 'video', videos: [{ url: originalUrl, hasAudio: false }] }, directory, format: 'all' }),
+    error => error.code === 'VIDEO_AUDIO_MISSING');
+  await assert.rejects(f.service.request('saveNote', { note: { title: '缺少视频', type: 'video', videos: [] }, directory, format: 'all' }), /包含声音的完整视频/);
   for (const name of await fs.readdir(f.output)) assert.deepEqual(await fs.readdir(path.join(f.output, name)), []);
 });
 

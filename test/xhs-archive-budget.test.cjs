@@ -79,8 +79,60 @@ test('ZIP accepts a live clip declared above 128 MiB and preserves backup URL fa
   const result = await f.exportImages([{ index: 1, url: imageUrl, livePhoto: true,
     liveVideo: { url: videoUrl, backupUrls: [videoUrl, backupUrl, backupUrl], size: 129 * MiB } }]);
   assert.equal(result.ok, true); assert.equal(result.count, 2);
-  assert.deepEqual(calls, [imageUrl, videoUrl, backupUrl]);
+  assert.deepEqual(calls, [imageUrl, videoUrl, backupUrl, backupUrl], 'source meta probe precedes its successful chunk');
   assert.deepEqual((await zipEntryHeaders(f.target)).map(entry => entry.name), ['笔记.txt', '001-共享预算.png', '001-共享预算.mp4']);
+});
+
+test('ZIP uses the source segmented-then-direct fallback through the production handlers', async t => {
+  const { mp4Fixture } = await import('../desktop/xhs/test/fixtures/mp4.js');
+  const clip = mp4Fixture({ audio: false }), calls = [];
+  const f = await fixture(t, async (url, options) => {
+    const range = new Headers(options?.headers).get('range');
+    calls.push({ url, range });
+    if (url === imageUrl) return imageResponse();
+    if (range || url === videoUrl) return new Response(null, { status: 503 });
+    assert.equal(url, backupUrl);
+    return new Response(clip, { headers: { 'content-type': 'video/mp4', 'content-length': String(clip.length) } });
+  });
+  const result = await f.exportImages([{ index: 1, url: imageUrl, livePhoto: true,
+    liveVideo: { url: videoUrl, backupUrls: [backupUrl] } }]);
+  assert.equal(result.count, 2); assert.equal(result.failedCount, 0);
+  assert.deepEqual(calls, [{ url: imageUrl, range: null }, { url: videoUrl, range: 'bytes=0-0' },
+    { url: backupUrl, range: 'bytes=0-0' }, { url: videoUrl, range: null }, { url: backupUrl, range: null }]);
+  const archive = await fs.readFile(f.target);
+  assert.ok(archive.includes(clip), 'the valid direct backup bytes are retained in the ZIP');
+});
+
+test('a Python-parsed archive routes the source image request through the local Python engine', async t => {
+  const { PythonBackend } = await import('../desktop/xhs/desktop/python-backend.js');
+  const originalInitialize = PythonBackend.prototype.initialize, originalRequest = PythonBackend.prototype.request;
+  const calls = [];
+  PythonBackend.prototype.initialize = async () => true;
+  PythonBackend.prototype.request = async (request, signal) => { calls.push(request); assert.ok(signal); return imageResponse(); };
+  t.after(() => { PythonBackend.prototype.initialize = originalInitialize; PythonBackend.prototype.request = originalRequest; });
+  const f = await fixture(t, async () => { throw new Error('Node transport cannot substitute for the selected Python engine'); });
+  const result = await f.exportImages([{ index: 1, url: imageUrl }], 'images', { note: { title: 'Python', engine: 'python' } });
+  assert.equal(result.count, 1);
+  assert.equal(calls.length, 1); assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[0].path, '/api/python_image?token=archive-budget');
+});
+
+test('ZIP never turns a partial CDN image into a successful complete original', async t => {
+  for (const [label, status, direct] of [['partial proxy', 206, false], ['range header with 200', 200, false], ['partial direct fallback', 206, true]]) {
+    await t.test(label, async t => {
+      let calls = 0;
+      const f = await fixture(t, async () => {
+        calls++;
+        if (direct && calls === 1) return new Response(png, { headers: { 'content-type': 'image/png', 'content-length': '4200001' } });
+        return new Response(png.subarray(0, 33), { status, headers: { 'content-type': 'image/png', 'content-length': '33', 'content-range': `bytes 0-32/${png.length}` } });
+      });
+      await fs.writeFile(f.target, 'existing archive');
+      await assert.rejects(f.exportImages([{ index: 1, url: imageUrl }], 'images'), error => error.code === 'ARCHIVE_ALL_MEDIA_FAILED');
+      assert.equal(calls, direct ? 2 : 1);
+      assert.equal(await fs.readFile(f.target, 'utf8'), 'existing archive');
+      assert.deepEqual((await fs.readdir(f.directory)).sort(), ['archive.zip', 'xhs']);
+    });
+  }
 });
 
 test('ZIP preflight sums all declared live clips against one budget before downloading', async t => {
@@ -107,12 +159,12 @@ test('ZIP rejects an actual oversized response without replacing an existing arc
   });
   await fs.writeFile(f.target, 'existing archive');
   await assert.rejects(f.exportImages([{ index: 1, url: imageUrl }], 'images'), { name: 'ArchiveSizeLimitError' });
-  assert.equal(calls, 1); assert.equal(await fs.readFile(f.target, 'utf8'), 'existing archive');
+  assert.equal(calls, 2, 'source image proxy returns 413 before the bounded direct fallback'); assert.equal(await fs.readFile(f.target, 'utf8'), 'existing archive');
   assert.deepEqual((await fs.readdir(f.directory)).sort(), ['archive.zip', 'xhs']);
 });
 
 test('ZIP continues after an image failure, omits its orphan live clip and reports each omitted asset', async t => {
-  const failedImage = imageUrl + '&failure=1', calls = [];
+  const failedImage = imageUrl.replace('archive-budget?', 'archive-budget-failure?'), calls = [];
   const f = await fixture(t, async url => {
     calls.push(url);
     return url === failedImage ? new Response(null, { status: 503 }) : imageResponse();
@@ -140,7 +192,7 @@ test('ZIP keeps an original whose paired clip failed and continues to later medi
   ]);
   assert.equal(result.count, 2); assert.equal(result.total, 3); assert.equal(result.failedCount, 1);
   assert.equal(result.failures[0].kind, 'video'); assert.equal(result.failures[0].index, 1);
-  assert.deepEqual(calls, [imageUrl, videoUrl, backupUrl, imageUrl]);
+  assert.deepEqual(calls, [imageUrl, videoUrl, backupUrl, videoUrl, backupUrl, imageUrl], 'source tries all chunk candidates before all direct candidates');
   assert.deepEqual((await zipEntryHeaders(f.target)).map(entry => entry.name), ['笔记.txt', '001-共享预算.png', '002-共享预算.png']);
 });
 
@@ -176,6 +228,6 @@ test('ZIP budget overflow after a successful asset aborts immediately without pa
   });
   await fs.writeFile(f.target, 'existing archive');
   await assert.rejects(f.exportImages([1, 2, 3].map(index => ({ index, url: imageUrl })), 'images'), { name: 'ArchiveSizeLimitError' });
-  assert.equal(calls, 2); assert.equal(await fs.readFile(f.target, 'utf8'), 'existing archive');
+  assert.equal(calls, 3, 'the second asset crosses the image proxy limit then the shared direct-read budget'); assert.equal(await fs.readFile(f.target, 'utf8'), 'existing archive');
   assert.deepEqual((await fs.readdir(f.directory)).sort(), ['archive.zip', 'xhs']);
 });
