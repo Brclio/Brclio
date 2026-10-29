@@ -188,10 +188,16 @@
     const items = profile.items || [], failed = profile.failed ?? items.filter(item => item.status === 'failed').length;
     const total = profile.discovered ?? items.length, processed = ['completed','skipped','failed'].reduce((sum, key) => sum + (profile[key] ?? items.filter(item => item.status === key).length), 0);
     $('profile-progress').hidden = !active && !total;
-    if (profile.status === 'discovering' || !total) $('profile-progress').removeAttribute('value');
+    if (!profile.discoveryComplete || profile.status === 'discovering' || !total) $('profile-progress').removeAttribute('value');
     else $('profile-progress').value = Math.min(profile.status === 'completed' ? 100 : 99, processed / total * 100);
+    $('profile-progress').setAttribute('aria-valuetext', profile.discoveryComplete ? `已处理 ${processed} / ${total} 篇` : `已处理 ${processed} 篇，发现数量仍可能增加`);
+    const completeness = $('profile-completeness');
+    completeness.hidden = !profile.profileUrl && !total;
+    completeness.textContent = profile.discoveryComplete ? `已确认主页末尾，共发现 ${total} 篇。`
+      : [`尚未确认主页末尾；当前已发现 ${total} 篇，数量仍可能增加。`,
+        profile.discoveryIssue || (active ? '每发现一批就保存一批，然后继续加载主页。' : '继续任务会重新扫描、去重并补全列表。')].join(' ');
     $('profile-stats').replaceChildren();
-    for (const [key, label] of [['discovered', '发现'], ['completed', '完成'], ['skipped', '跳过'], ['failed', '失败']]) { const span = element('span', '', label + ' '); span.append(element('strong', '', String(profile[key] ?? (key === 'discovered' ? items.length : items.filter(item => item.status === key).length)))); $('profile-stats').append(span); }
+    for (const [key, label] of [['discovered', '已发现'], ['completed', '完成'], ['skipped', '跳过'], ['failed', '失败']]) { const span = element('span', '', label + ' '); span.append(element('strong', '', String(profile[key] ?? (key === 'discovered' ? items.length : items.filter(item => item.status === key).length)))); $('profile-stats').append(span); }
     $('profile-start').disabled = !desktop || active; $('profile-pause').disabled = !desktop || !active; $('profile-resume').disabled = !desktop || profile.status !== 'paused'; $('profile-cancel').disabled = !desktop || !active && profile.status !== 'paused'; $('profile-retry').disabled = !desktop || active || !failed;
     $('choose-directory').disabled = !desktop || active;
     $('copy-failed').disabled = !failed;

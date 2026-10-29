@@ -8,7 +8,7 @@ const asar = require('@electron/asar');
 
 const requiredXhsFiles = Object.freeze([
   'desktop/xhs/index.mjs', 'desktop/xhs/desktop/python-backend.js', 'desktop/xhs/desktop/profile-manager.js',
-  'desktop/xhs/desktop/profile-browser.js', 'desktop/xhs/desktop/native-video-download.js',
+  'desktop/xhs/desktop/profile-browser.js', 'desktop/xhs/desktop/profile-source.js', 'desktop/xhs/desktop/native-video-download.js',
   'desktop/xhs/desktop/image-clipboard.js', 'desktop/xhs/desktop/native-clipboard.js',
   'desktop/xhs/desktop/xhs-login-reset.js', 'desktop/xhs/api/parse.js', 'desktop/xhs/api/image.js', 'desktop/xhs/api/video.js',
   'desktop/xhs/lib/xhs.js', 'desktop/xhs/lib/archive.js', 'desktop/xhs/lib/source-download.js',

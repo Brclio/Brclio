@@ -47,7 +47,7 @@ function restoreItems(items) {
 function initialState(now) {
   return {
     version: 1, status: "idle", phase: "idle", profileUrl: "", profileName: "", directory: "",
-    intervalSeconds: 10, jitterSeconds: 3, discoveryComplete: false, currentTitle: "",
+    intervalSeconds: 10, jitterSeconds: 3, discoveryComplete: false, discoveryIssue: "", currentTitle: "",
     nextRequestAt: null, pauseReason: "", message: "选择保存目录并输入小红书主页链接。", items: [], updatedAt: now
   };
 }
@@ -265,6 +265,7 @@ export class ProfileManager {
     this._emit();
     this._runTask = this._run(signal, retryIds).catch(async (error) => {
       if (signal.aborted || error.name === "AbortError") return;
+      if (this.state.phase === "discovery") this.state.discoveryIssue = error.message || "主页列表读取中断。";
       this.state.status = PAUSE_CODES.has(error.code) ? "paused" : "error";
       this.state.pauseReason = error.code || 'TASK_FAILED';
       this.state.message = error.message || "主页下载中断，请重试。";
@@ -283,8 +284,11 @@ export class ProfileManager {
   }
 
   async _run(signal, retryIds = null) {
-
+    // A note can appear on several pages (for example, a pinned post). Verify or
+    // download it once per run while retaining the stable discovery sequence.
+    const processedIds = new Set();
     if (!retryIds && !this.state.discoveryComplete) {
+      this.state.discoveryIssue = "";
       this.state.phase = "discovery";
       this.state.status = "discovering";
       this._emit();
@@ -296,9 +300,11 @@ export class ProfileManager {
 
           this._lastRequestAt = this.now();
           const indexed = new Map(this.state.items.map((item) => [item.id, item]));
+          const pageIds = new Set();
           let nextSequence = this.state.items.reduce((highest, item) => Math.max(highest, item.sequence || 0), 0) + 1;
           for (const raw of page.notes || []) {
             const note = noteDescriptor(raw);
+            pageIds.add(note.id);
             const existing = indexed.get(note.id);
             if (existing) { existing.url = note.url; if (note.title && !existing.titleResolved) existing.title = note.title; }
             else {
@@ -310,30 +316,59 @@ export class ProfileManager {
           }
           if (page.profileName) this.state.profileName = String(page.profileName).slice(0, 200);
           this.state.discoveryComplete = page.done === true;
-          this.state.message = `已发现 ${this.state.items.length} 篇帖子${page.done ? "，开始保存媒体。" : "，继续加载主页…"}`;
+          this.state.message = `已发现 ${this.state.items.length} 篇帖子，正在保存本页已确认的笔记…`;
           await this._save();
           this._emit();
+          await this._downloadItems(signal, { onlyIds: pageIds, processedIds });
           if (page.done) break;
+          this.state.phase = "discovery";
+          this.state.status = "discovering";
+          this.state.currentTitle = "";
+          this.state.nextRequestAt = null;
+          this.state.message = `已发现 ${this.state.items.length} 篇帖子，继续加载主页…`;
+          await this._save();
+          this._emit();
         }
       } catch (error) {
         // An incomplete list does not invalidate notes already confirmed as this
         // author's. Save those now instead of leaving the whole queue waiting.
         // Login/verification gates and user cancellation still stop immediately.
-        if (signal.aborted || error.name === "AbortError" || error.code !== "DISCOVERY_INCOMPLETE" || !this.state.items.length) throw error;
+        if (signal.aborted || error.name === "AbortError" || error.code !== "DISCOVERY_INCOMPLETE" || this.state.phase !== "discovery") throw error;
+        this.state.discoveryIssue = error.message || "主页列表尚未确认加载到底。";
         this._diagnostic('discovery.incomplete', { code: error.code, discovered: this.state.items.length });
       }
       if (!this.state.discoveryComplete) {
-        if (!this.state.items.length) throw Object.assign(new Error("主页尚未确认加载到底，任务已暂停。继续后会重新检查并补全列表。"), { code: "DISCOVERY_INCOMPLETE" });
-        this.state.message = `主页列表暂未加载完整，先保存已发现的 ${this.state.items.length} 篇帖子…`;
+        this.state.discoveryIssue ||= "主页尚未确认加载到底。继续后会重新检查并补全列表。";
+        if (!this.state.items.length) throw Object.assign(new Error(this.state.discoveryIssue), { code: "DISCOVERY_INCOMPLETE" });
+        this.state.message = `主页列表暂未加载完整，继续处理已发现的 ${this.state.items.length} 篇帖子…`;
         await this._save();
         this._emit();
       }
     }
+    await this._downloadItems(signal, { retryIds, processedIds });
+    throwIfAborted(signal);
+    const failed = this.state.items.filter((item) => item.status === "failed").length;
+    const unfinished = !this.state.discoveryComplete || this.state.items.some(item => item.status === "pending");
+    this.state.status = unfinished ? "paused" : "completed";
+    this.state.phase = !this.state.discoveryComplete ? "discovery" : unfinished ? "download" : "done";
+    this.state.pauseReason = !this.state.discoveryComplete ? "DISCOVERY_INCOMPLETE" : "";
+    this.state.currentTitle = "";
+    this.state.nextRequestAt = null;
+    this.state.message = !retryIds && !this.state.discoveryComplete
+      ? `已处理当前发现的 ${this.state.items.length} 篇帖子${failed ? `，${failed} 篇失败` : ""}。主页列表尚未确认加载到底，点击继续可补全列表。`
+      : unfinished ? "重试已结束，其余任务已保留。点击继续任务可处理剩余帖子。"
+      : failed ? `任务结束，${failed} 篇帖子失败，可点击重试失败项。` : `主页加载完成，已处理 ${this.state.items.length} 篇帖子。`;
+    await this._save();
+    this._emit();
+  }
+
+  async _downloadItems(signal, { retryIds = null, onlyIds = null, processedIds = new Set() } = {}) {
     this.state.phase = "download";
     for (const item of this.state.items) {
       throwIfAborted(signal);
-      if (item.status === "failed" || (retryIds && !retryIds.has(item.id))) continue;
-
+      if (processedIds.has(item.id) || item.status === "failed"
+        || (retryIds && !retryIds.has(item.id)) || (onlyIds && !onlyIds.has(item.id))) continue;
+      processedIds.add(item.id);
       this.state.status = "downloading";
       this.state.currentTitle = item.title || item.id;
       item.status = "downloading";
@@ -353,24 +388,11 @@ export class ProfileManager {
       await this._save();
       this._emit();
     }
-    throwIfAborted(signal);
-    const failed = this.state.items.filter((item) => item.status === "failed").length;
-    const unfinished = !this.state.discoveryComplete || this.state.items.some(item => item.status === "pending");
-    this.state.status = unfinished ? "paused" : "completed";
-    this.state.phase = unfinished ? "download" : "done";
-    this.state.pauseReason = !this.state.discoveryComplete ? "DISCOVERY_INCOMPLETE" : "";
-    this.state.currentTitle = "";
-    this.state.nextRequestAt = null;
-    this.state.message = !retryIds && !this.state.discoveryComplete
-      ? `已处理当前发现的 ${this.state.items.length} 篇帖子${failed ? `，${failed} 篇失败` : ""}。主页列表尚未确认加载到底，点击继续可补全列表。`
-      : unfinished ? "重试已结束，其余任务已保留。点击继续任务可处理剩余帖子。"
-      : failed ? `任务结束，${failed} 篇帖子失败，可点击重试失败项。` : `主页加载完成，已处理 ${this.state.items.length} 篇帖子。`;
-    await this._save();
-    this._emit();
   }
 
   async _pace(signal) {
     throwIfAborted(signal);
+    this.browser.assertDiscoveryAccess?.();
     const delay = this.state.intervalSeconds * 1000 + Math.max(0, Math.min(1, this.random())) * this.state.jitterSeconds * 1000;
     if (this._lastRequestAt !== null) {
       const next = this._lastRequestAt + delay;
@@ -384,6 +406,7 @@ export class ProfileManager {
       }
     }
     throwIfAborted(signal);
+    this.browser.assertDiscoveryAccess?.();
     this._lastRequestAt = this.now();
     this.state.status = "downloading";
     this.state.nextRequestAt = null;
@@ -524,7 +547,9 @@ export class ProfileManager {
     const assets = mediaAssets(note);
     if (!assets.length) throw new Error("此帖未解析到可下载的媒体，请登录后重试。");
     if ((note.images || []).some((image) => image.livePhoto && !image.liveVideo?.url)) throw new Error("实况照片缺少配对视频，未将此帖标为完整下载。请稍后重试。");
-    item.title = String(note.title || item.title || "未命名帖子");
+    // The shared parser supplies a display placeholder when the detail has no
+    // title. Its provenance must be explicit: a real title may use those words.
+    item.title = String((note.titleSource === "fallback" ? item.title || note.title : note.title || item.title) || "未命名帖子");
     item.titleResolved = true;
     directory = await this._prepareDirectory(item, signal);
     item.strategy = String(note.strategy || "");

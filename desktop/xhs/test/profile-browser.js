@@ -62,6 +62,70 @@ function fixture({ snapshots = [], response, status = 200, responseAuthor = ID, 
   return { browser, getWindow: () => window, delays };
 }
 
+// Drive the real discover() iterator through CDP events. The clock and renderer
+// are controlled so slow, overlapping responses need no network or wall time.
+function discoveryFixture({ snapshot = () => ({}), onNavigate = () => {}, onWait = () => {} } = {}) {
+  const state = { reads: 0, elapsed: 0, scrolls: [], waits: [], stopped: false };
+  const bodies = new Map();
+  const debug = new EventEmitter();
+  debug.attached = false;
+  debug.isAttached = () => debug.attached;
+  debug.attach = () => { debug.attached = true; };
+  debug.detach = () => { debug.attached = false; };
+  debug.sendCommand = async (command, args) => {
+    if (command !== 'Network.getResponseBody') return {};
+    return { body: JSON.stringify(await bodies.get(args.requestId)) };
+  };
+  const win = {
+    shown: false, isDestroyed: () => false,
+    show() { this.shown = true; },
+    webContents: { debugger: debug, getURL: () => PROFILE, stop() { state.stopped = true; } }
+  };
+  const api = {
+    state, debug, win,
+    request(requestId, cursor = '') {
+      debug.emit('message', {}, 'Network.requestWillBeSent', {
+        requestId, type: 'XHR', request: { method: 'GET',
+          url: `https://edith.xiaohongshu.com/api/sns/web/v1/user_posted?user_id=${ID}&cursor=${cursor}` }
+      });
+    },
+    response(requestId, status = 200) {
+      debug.emit('message', {}, 'Network.responseReceived', { requestId, type: 'XHR',
+        response: { url: `https://edith.xiaohongshu.com/api/sns/web/v1/user_posted?user_id=${ID}`, status } });
+    },
+    async finish(requestId, payload) {
+      bodies.set(requestId, payload);
+      debug.emit('message', {}, 'Network.loadingFinished', { requestId, encodedDataLength: 200 });
+      await new Promise(resolve => setImmediate(resolve));
+    },
+    async reply(requestId, payload) {
+      api.response(requestId);
+      await api.finish(requestId, payload);
+    }
+  };
+  const browser = new XhsBrowser({ now: () => state.elapsed,
+    wait: async (ms, _value, { signal }) => {
+      signal?.throwIfAborted();
+      state.elapsed += ms;
+      state.waits.push(ms);
+      await onWait(ms, api);
+    }
+  });
+  browser.window = async () => win;
+  browser.navigate = async (_win, url) => { assert.equal(url, PROFILE); await onNavigate(api); };
+  browser.execute = async (_win, script, signal) => {
+    signal?.throwIfAborted();
+    if (script.includes('readProfileSnapshot')) {
+      assert.ok(++state.reads <= 100, 'discovery must make bounded progress or report a timeout');
+      return { list: [], cards: [], done: false, fetching: false, pageText: '', ...await snapshot(state.reads, api) };
+    }
+    if (script.includes('scrollProfileList')) state.scrolls.push(state.reads);
+  };
+  return { browser, ...api };
+}
+
+const postedPage = (notes, hasMore) => ({ success: true, data: { notes, has_more: hasMore } });
+
 await t.test('browser merges observed API and DOM notes, preserves token and waits for definitive end', async () => {
   const { browser, getWindow } = fixture({
     snapshots: [{ cards: [{ id: NOTE, url: `https://www.xiaohongshu.com/explore/${NOTE}` }] }],
@@ -83,6 +147,204 @@ await t.test('CORS preflight with the same API URL is never read as a note respo
   for await (const page of browser.discover(PROFILE)) pages.push(page);
   assert.equal(pages[0].done, true);
   assert.equal(pages[0].notes[0].id, NOTE);
+});
+
+await t.test('an in-flight request without response headers prevents a premature end and keeps its notes', async () => {
+  const second = '668d2967000000002500100a';
+  const { browser, state, debug } = discoveryFixture({
+    onNavigate(api) { api.request('next'); },
+    async snapshot(read, api) {
+      if (read === 3) await api.reply('next', postedPage([{ id: second }], false));
+      return { list: [{ id: NOTE }], done: true };
+    }
+  });
+  const pages = [];
+  for await (const page of browser.discover(PROFILE)) pages.push(page);
+  assert.ok(state.reads >= 3);
+  assert.ok(pages.slice(0, -1).every(page => !page.done));
+  assert.equal(pages.at(-1).done, true);
+  assert.deepEqual(new Set(pages.flatMap(page => page.notes.map(note => note.id))), new Set([NOTE, second]));
+  assert.deepEqual(state.scrolls, [], 'waiting for the existing request must not trigger another page');
+  assert.equal(debug.listenerCount('message'), 0);
+});
+
+await t.test('a slow response body survives more than five observations without scrolling or losing the last page', async () => {
+  let releaseBody;
+  const body = new Promise(resolve => { releaseBody = resolve; });
+  const second = '668d2967000000002500100a';
+  const { browser, state } = discoveryFixture({
+    async onNavigate(api) {
+      api.request('slow'); api.response('slow'); await api.finish('slow', body);
+    },
+    async snapshot(read) {
+      if (read === 8) { releaseBody(postedPage([{ id: second }], false)); await new Promise(resolve => setImmediate(resolve)); }
+      return { list: [{ id: NOTE }], done: false };
+    }
+  });
+  const pages = [];
+  for await (const page of browser.discover(PROFILE, { intervalSeconds: 3, jitterSeconds: 0 })) pages.push(page);
+  assert.ok(state.reads >= 8);
+  assert.ok(state.elapsed < 45000, 'the fixture completes before the actual request timeout');
+  assert.deepEqual(state.scrolls, []);
+  assert.equal(pages.at(-1).done, true);
+  assert.ok(pages.flatMap(page => page.notes).some(note => note.id === second));
+});
+
+await t.test('a request that never returns headers is bounded by its request timeout and never marked complete', async () => {
+  const { browser, state, debug } = discoveryFixture({
+    onNavigate(api) { api.request('stuck'); },
+    snapshot: () => ({ list: [{ id: NOTE }], done: true })
+  });
+  const pages = [];
+  await assert.rejects(async () => {
+    for await (const page of browser.discover(PROFILE, { intervalSeconds: 3, jitterSeconds: 0 })) pages.push(page);
+  }, error => error.code === 'DISCOVERY_INCOMPLETE' && /45 秒/.test(error.message));
+  assert.ok(state.elapsed >= 45000 && state.elapsed < 60000);
+  assert.ok(pages.every(page => !page.done));
+  assert.deepEqual(state.scrolls, []);
+  assert.equal(debug.listenerCount('message'), 0);
+});
+
+await t.test('fresh has_more=true revokes stale snapshot completion until a later last-page response', async () => {
+  const { browser, state } = discoveryFixture({
+    onNavigate(api) { api.request('first'); },
+    async snapshot(read, api) {
+      if (read === 2) await api.reply('first', postedPage([{ id: NOTE }], true));
+      if (read === 3) { api.request('last', 'next'); await api.reply('last', postedPage([], false)); }
+      return { list: [{ id: NOTE }], done: true };
+    }
+  });
+  const pages = [];
+  for await (const page of browser.discover(PROFILE, { intervalSeconds: 3, jitterSeconds: 0 })) pages.push(page);
+  assert.ok(state.reads >= 3);
+  assert.deepEqual(pages.map(page => page.done), [false, false, true]);
+});
+
+await t.test('out-of-order older responses cannot overwrite the latest started request pagination state', async () => {
+  const { browser, state } = discoveryFixture({
+    async onNavigate(api) {
+      api.request('older'); api.request('newer', 'next');
+      await api.reply('newer', postedPage([{ id: NOTE }], true));
+      await api.reply('older', postedPage([], false));
+    },
+    async snapshot(read, api) {
+      if (read === 3) { api.request('last', 'last'); await api.reply('last', postedPage([], false)); }
+      return { list: [{ id: NOTE }], done: true };
+    }
+  });
+  const pages = [];
+  for await (const page of browser.discover(PROFILE, { intervalSeconds: 3, jitterSeconds: 0 })) pages.push(page);
+  assert.ok(state.reads >= 3);
+  assert.deepEqual(pages.map(page => page.done), [false, false, true]);
+});
+
+await t.test('a rate-limit response received during snapshot evaluation prevents a completed page', async () => {
+  const { browser, win, debug } = discoveryFixture({
+    snapshot(_read, api) {
+      api.request('limited'); api.response('limited', 429);
+      return { list: [{ id: NOTE }], done: true };
+    }
+  });
+  const pages = [];
+  await assert.rejects(async () => {
+    for await (const page of browser.discover(PROFILE)) pages.push(page);
+  }, { code: 'RATE_LIMITED' });
+  assert.ok(pages.every(page => !page.done));
+  assert.equal(win.shown, true);
+  assert.equal(debug.listenerCount('message'), 0);
+});
+
+await t.test('auth gates observed during a yielded page cannot be downgraded by another request failure', async () => {
+  for (const [status, code] of [[429, 'RATE_LIMITED'], [403, 'AUTH_REQUIRED']]) {
+    const api = discoveryFixture({ snapshot: () => ({ list: [{ id: NOTE }] }) });
+    const iterator = api.browser.discover(PROFILE);
+    try {
+      await iterator.next();
+      api.request('limited'); api.request('interrupted');
+      api.response('limited', status);
+      assert.throws(() => api.browser.assertDiscoveryAccess(), { code });
+      api.debug.emit('message', {}, 'Network.loadingFailed', { requestId: 'interrupted' });
+      assert.throws(() => api.browser.assertDiscoveryAccess(), { code }, 'another interrupted request must not reopen access');
+      api.request('server-error'); api.response('server-error', 500);
+      assert.throws(() => api.browser.assertDiscoveryAccess(), { code }, 'a later server error must retain the auth gate');
+      api.request('malformed'); await api.reply('malformed', null);
+      assert.throws(() => api.browser.assertDiscoveryAccess(), { code }, 'an invalid response body must retain the auth gate');
+    } finally { await iterator.return(); }
+    assert.equal(api.debug.listenerCount('message'), 0);
+  }
+});
+
+await t.test('time spent saving a yielded page is not charged to a newer renderer pagination request', async () => {
+  const api = discoveryFixture({
+    onNavigate(api) { api.request('first'); },
+    async snapshot(read, api) {
+      if (read === 3) await api.reply('next', postedPage([], false));
+      return { list: [{ id: NOTE }], fetching: read < 3 };
+    }
+  });
+  const iterator = api.browser.discover(PROFILE, { intervalSeconds: 3, jitterSeconds: 0 });
+  try {
+    assert.equal((await iterator.next()).value.done, false);
+    // The first request finishes promptly while the consumer is saving media.
+    // A distinct page request starts near the end of that 60-second download.
+    api.state.elapsed += 1000;
+    await api.reply('first', postedPage([], true));
+    api.state.elapsed += 59000;
+    const nextStarted = api.state.elapsed;
+    api.request('next', 'next-page');
+    assert.equal((await iterator.next()).value.done, false);
+    assert.equal(api.state.elapsed - nextStarted, 3000, 'the current request has only been in flight for three seconds');
+    assert.equal((await iterator.next()).value.done, true);
+    assert.deepEqual(api.state.scrolls, []);
+  } finally { await iterator.return(); }
+});
+
+await t.test('renderer fetching state also prevents false stalls and extra scrolls', async () => {
+  const { browser, state } = discoveryFixture({
+    snapshot: read => ({ list: [{ id: NOTE }], fetching: read < 8, done: read >= 8 })
+  });
+  const pages = [];
+  for await (const page of browser.discover(PROFILE, { intervalSeconds: 3, jitterSeconds: 0 })) pages.push(page);
+  assert.ok(state.reads >= 8);
+  assert.deepEqual(state.scrolls, []);
+  assert.equal(pages.at(-1).done, true);
+});
+
+await t.test('DOM token enrichment preserves a nonempty API title across later empty snapshots', async () => {
+  const { browser } = discoveryFixture({
+    async onNavigate(api) {
+      api.request('first');
+      await api.reply('first', postedPage([{ id: NOTE, display_title: '列表中的原始标题' }], true));
+    },
+    async snapshot(read, api) {
+      if (read === 2) { api.request('last'); await api.reply('last', postedPage([], false)); }
+      return {
+        list: read === 1 ? [] : [{ id: NOTE }],
+        cards: [{ id: NOTE, url: `https://www.xiaohongshu.com/explore/${NOTE}?xsec_token=signed`, title: '' }],
+        done: read > 1
+      };
+    }
+  });
+  const pages = [];
+  for await (const page of browser.discover(PROFILE, { intervalSeconds: 3, jitterSeconds: 0 })) pages.push(page);
+  assert.equal(pages[0].notes[0].title, '列表中的原始标题');
+  assert.match(pages[0].notes[0].url, /xsec_token=signed/);
+  assert.ok(pages.flatMap(page => page.notes).every(note => note.title === '列表中的原始标题'));
+  assert.equal(pages.at(-1).done, true);
+});
+
+await t.test('a title hydrated after its signed URL is emitted without waiting for another token change', async () => {
+  const { browser } = discoveryFixture({
+    snapshot: read => ({
+      list: [{ id: NOTE, display_title: read === 1 ? '' : '后来补全的标题', xsec_token: 'unchanged' }],
+      done: read > 1
+    })
+  });
+  const pages = [];
+  for await (const page of browser.discover(PROFILE, { intervalSeconds: 3, jitterSeconds: 0 })) pages.push(page);
+  assert.equal(pages[0].notes[0].title, '');
+  assert.equal(pages[1].notes[0].title, '后来补全的标题');
+  assert.equal(pages[1].notes[0].url, pages[0].notes[0].url);
 });
 
 await t.test('stalled profile is incomplete, never silently successful, and pagination obeys configured delay', async () => {
@@ -337,6 +599,28 @@ await t.test('resolveNote accepts a complete original-only video and preserves i
     assert.equal(result.videos.length, 0);
     assert.equal(details.reads, 1);
     assert.deepEqual(details.waits, []);
+  }
+});
+
+await t.test('detail title provenance distinguishes a generated label from a real identical title', async () => {
+  for (const [title, expected] of [['', 'fallback'], ['小红书图片', 'note'], ['详情标题', 'note']]) {
+    const { browser } = detailFixture({ state: { note: { noteDetailMap: { [NOTE]: { note: detailNote({ title }) } } } } });
+    const result = await browser.resolveNote({ id: NOTE, url: detailUrl });
+    assert.equal(result.titleSource, expected);
+    assert.equal(result.title, title || '小红书图片');
+  }
+});
+
+await t.test('mobile fallback keeps real note and page titles distinct from the parser placeholder', async () => {
+  for (const [title, markup, expected] of [
+    ['', '', 'fallback'], ['小红书图片', '', 'note'], ['', '<title>小红书图片</title>', 'page'],
+    ['', '<meta content="小红书图片" property="og:title">', 'page'],
+  ]) {
+    const { browser } = detailFixture({ state: {}, fetchPage: async url => ({ finalUrl: url,
+      html: `${markup}<script>window.__INITIAL_STATE__=${JSON.stringify({ noteData: { data: detailNote({ title }) } })}</script>` }) });
+    const result = await browser.resolveNote({ id: NOTE, url: detailUrl });
+    assert.equal(result.titleSource, expected);
+    assert.equal(result.title, '小红书图片');
   }
 });
 

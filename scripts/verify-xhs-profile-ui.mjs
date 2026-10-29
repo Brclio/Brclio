@@ -242,6 +242,22 @@ try {
   await expect(page.locator('#xhs-message')).toBeHidden();
   report.checks.push('A held initial native state read remains valid after an early missing-directory submission, restores the saved directory, and clears the obsolete validation error.');
 
+  await emit(page, { status: 'waiting', discoveryComplete: false, discovered: 121, completed: 9, skipped: 0, failed: 0,
+    discoveryIssue: '', currentTitle: '正在保存本批笔记' });
+  await expect(page.locator('#xhs-profile-completeness')).toContainText('尚未确认主页末尾');
+  await expect(page.locator('#xhs-profile-completeness')).toContainText('121 篇，数量仍可能增加');
+  assert.equal(await page.locator('#xhs-profile-progress').getAttribute('value'), null);
+  await emit(page, { status: 'paused', discovered: 151, completed: 151,
+    discoveryIssue: '列表没有加载新帖子，未收到结束标记。' });
+  await expect(page.locator('#xhs-profile-completeness')).toContainText('未收到结束标记');
+  await expect(page.locator('#xhs-profile-completeness')).toContainText('151 篇，数量仍可能增加');
+  assert.equal(await page.locator('#xhs-profile-progress').getAttribute('value'), null);
+  await expect(page.locator('#xhs-profile-resume')).toBeEnabled();
+  await emit(page, { status: 'completed', discoveryComplete: true, discoveryIssue: '' });
+  await expect(page.locator('#xhs-profile-completeness')).toHaveText('已确认主页末尾，共发现 151 篇。');
+  await expect(page.locator('#xhs-profile-progress')).toHaveAttribute('value', '100');
+  report.checks.push('121/9 and 151/151 incomplete queues always show the unknown total and stop reason without a false full progress bar; only explicit discovery completion permits 100%.');
+
   await page.evaluate(() => scrollTo(0, 0));
   const screenshot = 'xhs-profile-ui.png';
   await page.screenshot({ path: path.join(output, screenshot), fullPage: true });

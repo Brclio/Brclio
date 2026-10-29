@@ -19,12 +19,13 @@ const MODULES = [
   'desktop/native-clipboard.js',
   'desktop/login-state.js',
   'desktop/note-state.js',
-  'desktop/profile-source.js',
   'desktop/xhs-login-reset.js',
   'api/image.js',
   'api/python_image.py',
 ];
 const FUNCTIONS = [
+  ...['parseProfileUrl', 'normalizeProfileNote']
+    .map(name => ['desktop/profile-source.js', 'desktop/xhs/desktop/profile-source.js', name]),
   ['desktop/update-manager.js', 'desktop/xhs/desktop/electron-fetch.js', 'createElectronUpdateFetch'],
   ...['inspectVideoHandle', 'safeFilename', 'abortError', 'throwIfAborted', 'sleep', 'assertSafeDirectory',
     'ensureNoteDirectory', 'noteDirectoryName', 'isSafeDirectoryName', 'renameNoteDirectory',
@@ -54,8 +55,9 @@ const ADAPTATIONS = [
   ['desktop/media-download.js', 'desktop/xhs/desktop/media-download.js', 'Source membership checks are outside this client; copied filesystem helpers are checked separately.'],
   ['desktop/native-video-download.js', 'desktop/xhs/desktop/native-video-download.js', 'Native save, error and progress integration uses Brclio IPC.'],
   ['desktop/image-clipboard.js', 'desktop/xhs/desktop/image-clipboard.js', 'Clipboard transfer lifetime and account integration differ.'],
-  ['desktop/profile-browser.js', 'desktop/xhs/desktop/profile-browser.js', 'Brclio session partition, cancellation and discovery recovery integration differ.'],
-  ['desktop/profile-manager.js', 'desktop/xhs/desktop/profile-manager.js', 'Brclio queue integration and account gates differ.'],
+  ['desktop/profile-source.js', 'desktop/xhs/desktop/profile-source.js', 'Pagination metadata and reactive loading state are retained; URL and author validation functions are checked separately.'],
+  ['desktop/profile-browser.js', 'desktop/xhs/desktop/profile-browser.js', 'Tracks in-flight pagination, current end evidence and title provenance; session partition, cancellation and scroll recovery differ.'],
+  ['desktop/profile-manager.js', 'desktop/xhs/desktop/profile-manager.js', 'Saves each discovered batch before advancing, persists incomplete discovery reasons and preserves real feed titles; account gates differ.'],
   ['desktop/main.js', 'desktop/xhs/index.mjs', 'Application service, IPC and filesystem host adapter; not a whole-file source copy.'],
   ['app.js', 'web/xhs.js', 'Renderer bindings and download orchestration; not a whole-file source copy.'],
   ['app.js', 'desktop/xhs/lib/source-download.js', 'Dependency-injected factory; its 21 source download functions and five archive constants are checked individually.'],

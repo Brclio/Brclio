@@ -36,6 +36,10 @@ await t.test('only explicit successful last-page evidence completes profile disc
   assert.throws(() => parsePostedResponse({ success: false, msg: '请先登录' }, PROFILE), { code: 'AUTH_REQUIRED' });
   assert.throws(() => parsePostedResponse({ code: -1, msg: '访问过于频繁' }, PROFILE), { code: 'RATE_LIMITED' });
   assert.throws(() => parsePostedResponse({ data: { notes: [{ id: 'unknown' }], has_more: false } }, PROFILE), { code: 'DISCOVERY_INCOMPLETE' });
+  const page = parsePostedResponse({ success: true, data: { notes: [{ id: NOTE }], has_more: true, cursor: 'next-page' } }, PROFILE);
+  assert.equal(page.hasMore, true);
+  assert.equal(page.cursor, 'next-page');
+  assert.equal(page.done, false);
 });
 
 await t.test('SSR empty defaults never mean all downloaded; target query may prove zero posts', () => {
@@ -49,6 +53,13 @@ await t.test('SSR empty defaults never mean all downloaded; target query may pro
     assert.equal(readProfileSnapshot(PROFILE).done, true);
     window.__INITIAL_STATE__.user.isFetchingNotes = [true];
     assert.equal(readProfileSnapshot(PROFILE).done, false);
+    window.__INITIAL_STATE__.user.notes = [{ _value: [{ id: NOTE }] }];
+    window.__INITIAL_STATE__.user.isFetchingNotes = [{ _value: false }];
+    window.__INITIAL_STATE__.user.noteQueries = [{ _value: { user_id: PROFILE, has_more: false } }];
+    const hydrated = readProfileSnapshot(PROFILE);
+    assert.equal(hydrated.list[0].id, NOTE);
+    assert.equal(hydrated.fetching, false);
+    assert.equal(hydrated.done, true);
   } finally {
     for (const [key, value] of Object.entries(old)) if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
   }

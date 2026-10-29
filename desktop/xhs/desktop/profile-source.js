@@ -54,7 +54,10 @@ export function parsePostedResponse(payload, profileId) {
   if (normalized.length !== data.notes.length) {
     throw profileError('DISCOVERY_INCOMPLETE', '主页列表包含无法确认归属的帖子，已暂停，未标记全部完成。');
   }
-  return { notes: normalized, done: data.has_more === false || data.hasMore === false };
+  const hasMore = typeof data.has_more === 'boolean' ? data.has_more
+    : typeof data.hasMore === 'boolean' ? data.hasMore : null;
+  return { notes: normalized, done: hasMore === false, hasMore,
+    cursor: typeof data.cursor === 'string' ? data.cursor : '' };
 }
 
 // Executed only in the isolated, unprivileged Xiaohongshu browser. No Node API.
@@ -69,7 +72,8 @@ export function readProfileSnapshot(profileId) {
   const active = unwrap(user.activeTab);
   const wrongTab = active && active.query && active.query !== 'note';
   const notes = unwrap(user.notes);
-  const list = Array.isArray(notes?.[0]) ? notes[0] : [];
+  const first = unwrap(notes?.[0]);
+  const list = Array.isArray(first) ? first : [];
   const cards = [];
   if (location.pathname.replace(/\/$/, '') === `/user/profile/${profileId}` && !wrongTab) {
     for (const a of document.querySelectorAll('.note-item a[href], .feeds-tab-container a[href]')) {
@@ -83,9 +87,13 @@ export function readProfileSnapshot(profileId) {
   const page = unwrap(user.userPageData) || {};
   const basic = unwrap(page.basicInfo) || {};
   // Query must explicitly identify the requested author, avoiding initial defaults.
-  const done = query?.userId === profileId && query?.hasMore === false && !unwrap(user.isFetchingNotes)?.[0];
+  const fetching = unwrap(unwrap(user.isFetchingNotes)?.[0]) === true;
+  const queryMatches = (query?.userId || query?.user_id) === profileId;
+  const hasMore = queryMatches ? (typeof query.hasMore === 'boolean' ? query.hasMore
+    : typeof query.has_more === 'boolean' ? query.has_more : null) : null;
+  const done = hasMore === false && !fetching;
   return {
-    list: JSON.parse(JSON.stringify(list)), cards, done, challenge, login, wrongTab,
+    list: JSON.parse(JSON.stringify(list)), cards, done, fetching, challenge, login, wrongTab,
     profileName: basic.nickname || '',
     pageText: cards.length || list.length ? '' : (document.body?.innerText || '').slice(0, 2500)
   };
