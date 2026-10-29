@@ -297,14 +297,17 @@ try {
   await dismiss(page);
 
   await page.locator('#xhs-tab-profile').click();
-  await emit(page, 'profile', '', { status: 'discovering', discovered: 2, completed: 0, items: [] });
+  await emit(page, 'profile', '', { status: 'discovering', discoveryComplete: false, discovered: 2, completed: 0, items: [] });
   assert.equal(await page.locator('#xhs-profile-progress').isVisible(), true);
   assert.equal(await page.locator('#xhs-profile-progress').getAttribute('value'), null);
-  await emit(page, 'profile', '', { status: 'downloading', discovered: 2, completed: 1, items: [] });
+  await emit(page, 'profile', '', { status: 'downloading', discoveryComplete: false, discovered: 2, completed: 1, items: [] });
+  assert.equal(await page.locator('#xhs-profile-progress').getAttribute('value'), null, 'Saving the current batch does not establish the profile total');
+  assert.match(await page.locator('#xhs-profile-completeness').innerText(), /尚未确认主页末尾/);
+  await emit(page, 'profile', '', { status: 'downloading', discoveryComplete: true, discovered: 2, completed: 1, items: [] });
   assert.equal(await page.locator('#xhs-profile-progress').evaluate(progress => progress.value), 50);
-  await emit(page, 'profile', '', { status: 'completed', discovered: 2, completed: 2, items: [] });
+  await emit(page, 'profile', '', { status: 'completed', discoveryComplete: true, discovered: 2, completed: 2, items: [] });
   assert.equal(await page.locator('#xhs-profile-progress').evaluate(progress => progress.value), 100);
-  report.checks.push('Profile discovery has indeterminate progress; downloading shows handled/discovered note counts and completed queues reach 100%.');
+  report.checks.push('Profile progress remains indeterminate during batch saving until the last page is confirmed; a known total then shows handled/discovered counts and a complete queue reaches 100%.');
   await page.locator('#xhs-tab-note').click();
 
   // Browser/system Blob downloads have no observable destination write. They
