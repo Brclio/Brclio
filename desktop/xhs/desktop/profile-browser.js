@@ -38,12 +38,13 @@ function allowedNavigation(value) {
 }
 
 export class XhsBrowser {
-  constructor({ onStatus = () => {}, onLoginState = () => {}, onDiagnostic = () => {}, BrowserWindow, session, wait = delay, fetchPage = fetchNotePage } = {}) {
+  constructor({ onStatus = () => {}, onLoginState = () => {}, onDiagnostic = () => {}, BrowserWindow, session, wait = delay, now = Date.now, fetchPage = fetchNotePage } = {}) {
     this.onStatus = onStatus;
     this.electron = BrowserWindow ? { BrowserWindow, session } : null;
     this.profileWindow = null;
     this.detailWindow = null;
     this.wait = wait;
+    this.now = now;
     this.onLoginState = onLoginState;
     this.onDiagnostic = onDiagnostic;
     this.fetchPage = fetchPage;
@@ -254,49 +255,88 @@ export class XhsBrowser {
     throw profileError(code, message);
   }
 
+  assertDiscoveryAccess() {
+    this.discoveryAccessCheck?.();
+  }
+
   async *discover(value, { signal, intervalSeconds = 10, jitterSeconds = 3 } = {}) {
     const profile = parseProfileUrl(value);
     const win = await this.window();
     const debuggerApi = win.webContents.debugger;
     const pending = new Map();
-    let readingResponses = 0;
+    const readingResponses = new Map();
     const batches = [];
     let networkError;
+    const recordNetworkError = error => {
+      // Once a request observes a login/challenge gate, a different page failing
+      // later cannot downgrade it and reopen downloads during a yielded batch.
+      if (!['AUTH_REQUIRED', 'RATE_LIMITED'].includes(networkError?.code)) networkError = error;
+    };
     let active = true;
     const seen = new Map();
     let stale = 0;
-    let endReported = false;
+    let requestSequence = 0;
+    let latestResponseSequence = 0;
+    let apiHasMore = null;
+    const seenCursors = new Set();
+    let fetchingSince = null;
+    const matchesProfile = value => {
+      const url = new URL(value);
+      return allowedNavigation(url.href) && POSTED.test(url.pathname) && url.searchParams.get('user_id') === profile.id;
+    };
+    const trackRequest = id => {
+      if (!pending.has(id)) pending.set(id, { sequence: ++requestSequence, startedAt: this.now() });
+    };
+    const checkNetwork = () => {
+      if (networkError) this.block(win, networkError.code, networkError.message);
+      if ([...pending.values(), ...readingResponses.values()].some(request => this.now() - request.startedAt >= 45000)) {
+        throw profileError('DISCOVERY_INCOMPLETE', '主页翻页请求超过 45 秒仍未完成，已保留当前笔记，可稍后继续补全。');
+      }
+    };
+    const accessCheck = () => {
+      if (networkError && ['AUTH_REQUIRED', 'RATE_LIMITED'].includes(networkError.code)) {
+        this.block(win, networkError.code, networkError.message);
+      }
+    };
+    this.discoveryAccessCheck = accessCheck;
     const listener = async (_event, method, params) => {
       try {
-        if (method === 'Network.responseReceived') {
+        if (!active) return;
+        if (method === 'Network.requestWillBeSent') {
+          if (params.type !== 'Preflight' && params.request.method !== 'OPTIONS' && matchesProfile(params.request.url)) trackRequest(params.requestId);
+        } else if (method === 'Network.responseReceived') {
           // CORS preflights share the API URL but have no JSON body. Their CDP
           // response cannot be read as the actual authored-note response.
           if (params.type === 'Preflight' || params.response.status === 204) return;
-          const url = new URL(params.response.url);
-          if (!allowedNavigation(url.href) || !POSTED.test(url.pathname) || url.searchParams.get('user_id') !== profile.id) return;
+          if (!matchesProfile(params.response.url)) return;
           if ([401, 403, 429, 461, 471].includes(params.response.status)) {
-            networkError = profileError(params.response.status === 429 ? 'RATE_LIMITED' : 'AUTH_REQUIRED', '小红书限制了当前访问，请在内置浏览器完成登录或验证，稍后继续。');
+            pending.delete(params.requestId);
+            recordNetworkError(profileError(params.response.status === 429 ? 'RATE_LIMITED' : 'AUTH_REQUIRED', '小红书限制了当前访问，请在内置浏览器完成登录或验证，稍后继续。'));
           } else if (params.response.status >= 400) {
-            networkError = profileError('DISCOVERY_INCOMPLETE', `主页列表请求失败（HTTP ${params.response.status}），尚未抓取完毕。`);
-          } else pending.set(params.requestId, true);
-        } else if (method === 'Network.loadingFinished' && pending.delete(params.requestId)) {
+            pending.delete(params.requestId);
+            recordNetworkError(profileError('DISCOVERY_INCOMPLETE', `主页列表请求失败（HTTP ${params.response.status}），尚未抓取完毕。`));
+          } else trackRequest(params.requestId);
+        } else if (method === 'Network.loadingFinished' && pending.has(params.requestId)) {
+          const request = pending.get(params.requestId);
+          pending.delete(params.requestId);
           if (params.encodedDataLength > 16 * 1024 * 1024) throw profileError('DISCOVERY_INCOMPLETE', '主页列表响应过大，已暂停。');
-          readingResponses++;
+          readingResponses.set(params.requestId, request);
           try {
             const body = await debuggerApi.sendCommand('Network.getResponseBody', { requestId: params.requestId });
             if (!active) return;
             const text = body.base64Encoded ? Buffer.from(body.body, 'base64').toString('utf8') : body.body;
             const batch = parsePostedResponse(JSON.parse(text), profile.id);
-            if (batch) batches.push(batch);
-          } finally { readingResponses--; }
+            if (!batch) throw profileError('DISCOVERY_INCOMPLETE', '主页列表响应缺少笔记数据，尚未确认全部抓取。');
+            batches.push({ ...batch, sequence: request.sequence });
+          } finally { readingResponses.delete(params.requestId); }
         } else if (method === 'Network.loadingFailed' && pending.delete(params.requestId)) {
-          networkError = profileError('DISCOVERY_INCOMPLETE', '主页列表请求中断，请稍后继续。');
+          recordNetworkError(profileError('DISCOVERY_INCOMPLETE', '主页列表请求中断，请稍后继续。'));
         }
       } catch (error) {
         // Keep the protocol error (not request URLs/bodies/cookies) available for
         // diagnosing platform changes without falsely completing a partial list.
         if (process.env.XHS_PROFILE_DIAGNOSTICS === '1') console.warn('profile-list-capture', error.name, String(error.message).slice(0, 160));
-        if (active) networkError = error.code ? error : profileError('DISCOVERY_INCOMPLETE', '无法读取完整主页列表，请重新继续任务。');
+        if (active) recordNetworkError(error.code ? error : profileError('DISCOVERY_INCOMPLETE', '无法读取完整主页列表，请重新继续任务。'));
       }
     };
     try {
@@ -308,9 +348,11 @@ export class XhsBrowser {
       await this.wait(1200, undefined, { signal });
       while (true) {
         signal?.throwIfAborted();
-        if (networkError) this.block(win, networkError.code, networkError.message);
+        checkNetwork();
         if (win.isDestroyed()) throw profileError('DISCOVERY_INCOMPLETE', '内置浏览器已关闭，请继续任务。');
         const snap = await this.execute(win, `(${readProfileSnapshot.toString()})(${JSON.stringify(profile.id)})`, signal);
+        // CDP responses can arrive while executeJavaScript is awaiting the page.
+        checkNetwork();
         if (snap.challenge) this.block(win, 'RATE_LIMITED', '需要安全验证，任务已暂停。请在内置浏览器完成验证后继续。');
         if (snap.login) this.block(win, 'AUTH_REQUIRED', '需要登录小红书，任务已暂停。登录后点击“继续任务”。');
         if (snap.wrongTab || new URL(win.webContents.getURL()).pathname.replace(/\/$/, '') !== `/user/profile/${profile.id}`) {
@@ -320,8 +362,27 @@ export class XhsBrowser {
         if (snap.list.some(raw => !normalizeProfileNote(raw, profile.id))) {
           throw profileError('DISCOVERY_INCOMPLETE', '主页列表中有无法完整识别的帖子，任务已暂停，尚未确认全部抓取。');
         }
-        endReported ||= snap.done || incoming.some(batch => batch.done);
-        const done = endReported && pending.size === 0 && readingResponses === 0;
+        let cursorAdvanced = false;
+        for (const batch of incoming.sort((a, b) => a.sequence - b.sequence)) {
+          if (batch.sequence < latestResponseSequence) continue;
+          latestResponseSequence = batch.sequence;
+          apiHasMore = batch.hasMore;
+          if (batch.cursor && !seenCursors.has(batch.cursor)) { cursorAdvanced = true; seenCursors.add(batch.cursor); }
+          this.diagnostic('discovery.page', { count: batch.notes.length, hasMore: batch.hasMore,
+            sequence: batch.sequence, cursorAdvanced });
+        }
+        // An earlier end flag must not survive a newer page that says has_more.
+        // Explicit API pagination wins over a possibly stale reactive snapshot.
+        const busy = pending.size > 0 || readingResponses.size > 0 || snap.fetching === true;
+        if (snap.fetching) {
+          // The consumer may spend minutes saving a yielded batch. A response
+          // or a new in-flight request starts a new loading observation, so that
+          // consumer time is never charged to an unrelated later page.
+          if (pending.size || readingResponses.size || incoming.length) fetchingSince = this.now();
+          else fetchingSince ??= this.now();
+          if (this.now() - fetchingSince >= 45000) throw profileError('DISCOVERY_INCOMPLETE', '主页仍在加载且超过 45 秒没有完成，已保留当前笔记，可稍后继续补全。');
+        } else fetchingSince = null;
+        const done = (apiHasMore === null ? snap.done : apiHasMore === false) && !busy;
         const authoredNotes = [...snap.list, ...incoming.flatMap(batch => batch.notes)];
         const authoredIds = new Set([...seen.keys(), ...authoredNotes.map(raw => normalizeProfileNote(raw, profile.id)?.id)]);
         // DOM cards may include hidden tabs or recommendations. They can enrich an
@@ -332,21 +393,26 @@ export class XhsBrowser {
         for (const raw of rawNotes) {
           const note = normalizeProfileNote(raw, profile.id);
           if (!note) continue;
-          if (!candidates.has(note.id) || new URL(note.url).searchParams.has('xsec_token')) candidates.set(note.id, note);
+          const previous = candidates.get(note.id) || seen.get(note.id);
+          candidates.set(note.id, { ...note,
+            url: new URL(note.url).searchParams.has('xsec_token') ? note.url : previous?.url || note.url,
+            title: previous?.title || note.title });
         }
         let newCount = 0;
         const notes = [];
         for (const note of candidates.values()) {
           const prior = seen.get(note.id);
           if (!prior) newCount++;
-          if (!prior || (note.url !== prior && new URL(note.url).searchParams.has('xsec_token'))) {
+          if (!prior || note.url !== prior.url || note.title !== prior.title) {
             notes.push(note);
-            seen.set(note.id, note.url);
+            seen.set(note.id, note);
           }
         }
+        this.diagnostic('discovery.snapshot', { discovered: seen.size, newCount, pending: pending.size,
+          reading: readingResponses.size, fetching: Boolean(snap.fetching), done, stale });
         yield { notes, done, profileName: snap.profileName };
         if (done) return;
-        stale = newCount ? 0 : stale + 1;
+        stale = newCount || cursorAdvanced ? 0 : busy ? stale : stale + 1;
         if (stale >= 5) {
           if (!seen.size && /登录|扫码/.test(snap.pageText)) this.block(win, 'AUTH_REQUIRED', '主页需要登录才能加载帖子，请登录后继续。');
           throw profileError('DISCOVERY_INCOMPLETE', '列表连续多次没有加载新帖子，且未收到结束标记。任务已暂停，可稍后继续。');
@@ -354,6 +420,9 @@ export class XhsBrowser {
         const wait = Math.max(3, Number(intervalSeconds) || 10) + Math.random() * Math.max(0, Number(jitterSeconds) || 0);
         this.onStatus(`已发现 ${seen.size} 篇，${Math.ceil(wait)} 秒后加载下一页。`);
         await this.wait(wait * 1000, undefined, { signal });
+        // An in-flight page is still progress. Do not issue repeated bottom
+        // scrolls while it is loading; the bounded timeout above handles hangs.
+        if (busy) continue;
         if (stale > 0) {
           await this.execute(win, `(${scrollProfileList.toString()})(true)`, signal);
           // Keep the recovery delay in the host so pausing cancels it before
@@ -365,6 +434,7 @@ export class XhsBrowser {
       }
     } finally {
       active = false;
+      if (this.discoveryAccessCheck === accessCheck) this.discoveryAccessCheck = null;
       debuggerApi.removeListener('message', listener);
       if (debuggerApi.isAttached()) debuggerApi.detach();
       if (!win.isDestroyed()) win.webContents.stop();
@@ -387,7 +457,12 @@ export class XhsBrowser {
       if (result.error) throw profileError(result.error.code, result.error.message);
       const html = `<script>window.__INITIAL_STATE__=${result.serialized.replace(/</g, '\\u003c')}</script>`;
       const parsed = parseNoteHtml(html, { noteId: note.id });
-      noteType = JSON.parse(result.serialized || '{}').note?.noteDetailMap?.[note.id]?.note?.type;
+      const exactNote = JSON.parse(result.serialized || '{}').note?.noteDetailMap?.[note.id]?.note;
+      noteType = exactNote?.type;
+      const sourceTitle = exactNote?.title ?? exactNote?.displayTitle ?? exactNote?.display_title;
+      // The shared parser supplies a generic display label when there is no
+      // title. Keep its provenance so that label cannot erase a feed title.
+      parsed.titleSource = typeof sourceTitle === 'string' && sourceTitle.trim() ? 'note' : 'fallback';
       // Images can hydrate before their live-photo streams, and video covers can
       // precede the video payload. Wait for complete media instead of saving early.
       const pendingLiveVideo = parsed.images.some(image => image.livePhoto && !image.liveVideo?.url);
@@ -414,6 +489,17 @@ export class XhsBrowser {
         signal?.throwIfAborted();
         if (page && extractNoteId(page.finalUrl) === note.id) {
           const parsed = parseNoteHtml(page.html, { noteId: note.id });
+          // A prepended page title only wins when the parser did not find a
+          // title in the exact note. This preserves a real generic-looking
+          // title without modifying the shared source parser.
+          const marker = '__brclio_missing_note_title__';
+          const titleProbe = parseNoteHtml(`<meta property="og:title" content="${marker}">${page.html}`, { noteId: note.id });
+          const hasPageTitle = [
+            /<meta\b[^>]*(?:property|name)=["']og:title["'][^>]*content=["'](.*?)["'][^>]*>/i,
+            /<meta\b[^>]*content=["'](.*?)["'][^>]*(?:property|name)=["']og:title["'][^>]*>/i,
+            /<title[^>]*>(.*?)<\/title>/is,
+          ].some(pattern => Boolean(page.html.match(pattern)?.[1]));
+          parsed.titleSource = titleProbe.title !== marker ? 'note' : hasPageTitle ? 'page' : 'fallback';
           this.diagnostic('note.extraction', { noteId: note.id, source: 'mobile-page', images: parsed.images.length, videos: parsed.videos.length,
             originalVideos: parsed.originalVideos?.length || 0 });
           if (complete(parsed)) return parsed;

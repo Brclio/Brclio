@@ -172,6 +172,8 @@ await t.test("incomplete discovery saves confirmed notes before pausing; resume 
   assert.equal(result.discovered, 1);
   assert.equal(result.completed, 1);
   assert.equal(result.pauseReason, "DISCOVERY_INCOMPLETE");
+  assert.equal(result.phase, "discovery");
+  assert.match(result.discoveryIssue, /尚未确认加载到底/);
   assert.match(result.message, /已处理当前发现的 1 篇帖子.*补全列表/);
   const restored = new ProfileManager(f.config);
   assert.equal((await restored.initialize()).status, "paused");
@@ -184,6 +186,7 @@ await t.test("incomplete discovery saves confirmed notes before pausing; resume 
   assert.equal(result.discovered, 1);
   assert.equal(result.skipped, 1);
   assert.equal(result.pauseReason, "");
+  assert.equal(result.discoveryIssue, "");
 });
 
 await t.test("a stalled list still downloads every confirmed queued note and keeps discovery resumable", async (t) => {
@@ -202,13 +205,15 @@ await t.test("a stalled list still downloads every confirmed queued note and kee
   assert.equal(result.status, "paused");
   assert.equal(result.discoveryComplete, false);
   assert.equal(result.pauseReason, "DISCOVERY_INCOMPLETE");
-  assert.ok(updates.some(state => /先保存已发现的 2 篇帖子/.test(state.message)));
+  assert.ok(updates.some(state => state.completed === 2 && state.status === "discovering"));
+  assert.equal(result.discoveryIssue, "列表连续多次没有加载新帖子。");
   const saved = JSON.parse(await fs.readFile(path.join(f.stateDirectory, "profile-job.json"), "utf8"));
   assert.equal(saved.discoveryComplete, false);
+  assert.equal(saved.discoveryIssue, result.discoveryIssue);
   assert.ok(saved.items.every(item => item.complete && item.status === "completed"));
 });
 
-await t.test("incomplete-list fallback cannot bypass login, verification, cancellation, or invalid note data", async (t) => {
+await t.test("a later discovery gate preserves saved pages but never downloads remaining old queue entries", async (t) => {
   for (const code of ["AUTH_REQUIRED", "RATE_LIMITED", "INVALID_NOTE", "AbortError"]) {
     let resolved = 0;
     const f = await fixture(t, { browser: {
@@ -218,13 +223,134 @@ await t.test("incomplete-list fallback cannot bypass login, verification, cancel
       },
       async resolveNote() { resolved++; return parsed(); }
     } });
-    await f.start();
+    f.manager.state.profileUrl = PROFILE;
+    f.manager.state.directory = f.directory;
+    f.manager.state.items = [{ ...note(B), sequence: 1, directoryName: "", titleResolved: false, status: "pending", error: "", complete: false, files: [] }];
+    await f.manager.resume();
     const result = await f.settle();
-    assert.equal(resolved, 0, code);
-    assert.equal(result.completed, 0, code);
-    assert.equal(result.items[0].status, "pending", code);
+    assert.equal(resolved, 1, code);
+    assert.equal(result.completed, 1, code);
+    assert.equal(result.items.find(item => item.id === B).status, "pending", code);
     assert.equal(result.discoveryComplete, false, code);
   }
+});
+
+await t.test("each confirmed page is saved before requesting the next page, including a later 151st note", async (t) => {
+  const ids = Array.from({ length: 151 }, (_, index) => (index + 1).toString(16).padStart(24, "0"));
+  const resolved = [], updates = [];
+  const f = await fixture(t, { onUpdate: state => updates.push(state), browser: {
+    async *discover() {
+      yield { notes: ids.slice(0, 3).map(id => note(id)), done: false };
+      assert.deepEqual(resolved, ids.slice(0, 3), "the first page saves before a terminal marker exists");
+      assert.equal(f.manager.snapshot().discoveryComplete, false);
+      assert.equal(f.manager.snapshot().phase, "discovery");
+      yield { notes: ids.slice(0, 121).map(id => note(id)), done: false };
+      assert.deepEqual(resolved, ids.slice(0, 121));
+      yield { notes: ids.slice(120).map(id => note(id)), done: true };
+    },
+    async resolveNote(item) { resolved.push(item.id); return parsed({ title: `已解析-${item.id}` }); }
+  } });
+  await f.start();
+  const result = await f.settle();
+  assert.deepEqual(resolved, ids, "duplicates on later pages are neither re-downloaded nor recounted as skipped");
+  assert.equal(result.discovered, 151);
+  assert.equal(result.completed, 151);
+  assert.equal(result.skipped, 0);
+  assert.equal(result.status, "completed");
+  assert.equal(result.discoveryComplete, true);
+  assert.deepEqual(result.items.map(item => item.sequence), ids.map((_, index) => index + 1));
+  assert.ok(updates.some(state => state.completed === 3 && !state.discoveryComplete));
+  assert.ok(updates.every(state => state.status !== "completed" || state.discoveryComplete));
+});
+
+await t.test("a detail login or verification gate stops the page and prevents later pagination", async (t) => {
+  for (const code of ["AUTH_REQUIRED", "RATE_LIMITED", "DISCOVERY_INCOMPLETE"]) {
+    const resolved = []; let nextPage = false;
+    const f = await fixture(t, { browser: {
+      async *discover() {
+        yield { notes: [note(A), note(B)], done: false };
+        nextPage = true;
+        yield { notes: [], done: true };
+      },
+      async resolveNote(item) {
+        resolved.push(item.id);
+        throw Object.assign(new Error("详情访问需要验证"), { code });
+      }
+    } });
+    await f.start();
+    const result = await f.settle();
+    assert.deepEqual(resolved, [A], code);
+    assert.equal(nextPage, false, code);
+    assert.equal(result.status, "paused", code);
+    assert.equal(result.pauseReason, code);
+    assert.equal(result.completed, 0);
+    assert.ok(result.items.every(item => item.status === "pending"));
+  }
+});
+
+await t.test("profile access gates observed during a streamed page prevent the next detail or media request", async (t) => {
+  for (const code of ["AUTH_REQUIRED", "RATE_LIMITED"]) {
+    for (const stage of ["before-wait", "during-wait"]) {
+      let blocked = false, waits = 0, resolved = 0, media = 0, nextPage = false;
+      const f = await fixture(t, { browser: {
+        async *discover() {
+          yield { notes: [note(A), note(B)], done: false };
+          nextPage = true;
+          yield { notes: [], done: true };
+        },
+        assertDiscoveryAccess() {
+          if (blocked) throw Object.assign(new Error("主页当前需要登录或验证"), { code });
+        },
+        async resolveNote() {
+          resolved++;
+          if (stage === "before-wait") blocked = true;
+          return parsed();
+        }
+      },
+      sleep: async (_ms, signal) => {
+        signal?.throwIfAborted();
+        if (++waits === 2 && stage === "during-wait") blocked = true;
+      },
+      fetchImpl: async url => { media++; return mediaResponse(url); }
+      });
+      await f.start(); const result = await f.settle();
+      assert.equal(resolved, 1, `${code}/${stage}`);
+      assert.equal(media, 0, `${code}/${stage}: no media fetch after access gate`);
+      assert.equal(nextPage, false);
+      assert.equal(result.status, "paused");
+      assert.equal(result.pauseReason, code);
+      assert.ok(result.items.every(item => item.status === "pending"));
+    }
+  }
+});
+
+await t.test("resuming an incomplete paged scan verifies saved notes, keeps sequence and merges new pages", async (t) => {
+  const C = "333333333333333333333333";
+  let round = 0; const resolved = [];
+  const f = await fixture(t, { browser: {
+    async *discover() {
+      round++;
+      yield { notes: [note(A)], done: false };
+      if (round === 1) throw Object.assign(new Error("主页分页暂时中断"), { code: "DISCOVERY_INCOMPLETE" });
+      yield { notes: [note(B), note(A)], done: false };
+      yield { notes: [note(A), note(C)], done: true };
+    },
+    async resolveNote(item) { resolved.push(item.id); return parsed({ title: `完整-${item.id}` }); }
+  } });
+  await f.start(); await f.settle();
+  const directoryName = f.manager.snapshot().items[0].directoryName;
+  const restored = new ProfileManager(f.config);
+  await restored.initialize();
+  assert.equal(restored.snapshot().discoveryIssue, "主页分页暂时中断");
+  await restored.resume(); await restored._runTask;
+  const result = restored.snapshot();
+  assert.deepEqual(resolved, [A, B, C]);
+  assert.equal(result.skipped, 1);
+  assert.equal(result.completed, 2);
+  assert.equal(result.discoveryIssue, "");
+  assert.deepEqual(result.items.map(item => item.id), [A, B, C]);
+  assert.deepEqual(result.items.map(item => item.sequence), [1, 2, 3]);
+  assert.equal(result.items[0].directoryName, directoryName);
 });
 
 await t.test("an incomplete empty list remains paused instead of reporting a completed empty profile", async (t) => {
@@ -242,9 +368,15 @@ await t.test("an incomplete empty list remains paused instead of reporting a com
 await t.test("pause aborts detail parsing, flushes pending state, and resumes successfully", async (t) => {
   let began;
   const started = new Promise((resolve) => { began = resolve; });
-  let block = true;
+  let block = true, nextPages = 0, closedScans = 0;
   const f = await fixture(t, { browser: {
-    async *discover() { yield { notes: [note()], done: true }; },
+    async *discover() {
+      try {
+        yield { notes: [note()], done: false };
+        nextPages++;
+        yield { notes: [], done: true };
+      } finally { closedScans++; }
+    },
     async resolveNote(_note, { signal }) {
       if (!block) return parsed();
       began();
@@ -258,9 +390,14 @@ await t.test("pause aborts detail parsing, flushes pending state, and resumes su
   const state = JSON.parse(await fs.readFile(path.join(f.stateDirectory, "profile-job.json"), "utf8"));
   assert.equal(state.items[0].status, "pending");
   assert.equal(state.status, "paused");
+  assert.equal(state.discoveryComplete, false);
+  assert.equal(nextPages, 0, "pausing a streamed page must not trigger its next page");
+  assert.equal(closedScans, 1, "the suspended discovery generator is closed on pause");
   block = false;
   await f.manager.resume();
   assert.equal((await f.settle()).completed, 1);
+  assert.equal(nextPages, 1);
+  assert.equal(closedScans, 2);
 });
 
 await t.test("cancel interrupts scheduled requests and preserves the resumable queue", async (t) => {
@@ -531,6 +668,23 @@ await t.test("an existing media symlink cannot overwrite a file outside the down
   }), /不是普通文件/);
   assert.equal(await fs.readFile(target, "utf8"), "keep this file");
   assert.deepEqual(await fs.readdir(f.directory), ["stream.jpg"]);
+});
+
+await t.test("detail placeholder titles preserve homepage titles while real titles may equal the placeholder", async (t) => {
+  for (const [titleSource, expected] of [["fallback", "真实主页标题"], ["note", "小红书图片"], ["page", "小红书图片"], [undefined, "小红书图片"]]) {
+    const f = await fixture(t, { browser: {
+      async *discover() { yield { notes: [{ ...note(A), title: "真实主页标题" }], done: true }; },
+      async resolveNote() { return parsed({ title: "小红书图片", titleSource }); }
+    } });
+    await f.start(); const result = await f.settle();
+    assert.equal(result.items[0].title, expected, titleSource);
+    assert.equal(result.items[0].directoryName, `001-${expected}`, titleSource);
+    const directory = noteFolder(f);
+    const manifest = JSON.parse(await fs.readFile(path.join(directory, ".xhs-download.json"), "utf8"));
+    const metadata = JSON.parse(await fs.readFile(path.join(directory, "笔记.json"), "utf8"));
+    assert.equal(manifest.title, expected);
+    assert.equal(metadata.title, expected);
+  }
 });
 
 await t.test("note directories use stable discovery order and the resolved, cross-platform safe title", async (t) => {
