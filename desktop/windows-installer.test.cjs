@@ -43,7 +43,13 @@ async function fixture(t, { readyError, spawnError, readyTimeout } = {}) {
       setImmediate(async () => {
         if (spawnError) { child.emit('error', new Error(spawnError)); return; }
         configuration = JSON.parse(await fs.readFile(args.at(-1), 'utf8'));
-        if (!readyTimeout) await fs.writeFile(configuration.readyPath, JSON.stringify(readyError ? { status: 'error', error: readyError } : { status: 'ready' }));
+        if (!readyTimeout) {
+          // Match Write-Report: publish only a complete receipt so the parent
+          // cannot observe the empty file between open and write.
+          const temporaryReady = `${configuration.readyPath}.tmp`;
+          await fs.writeFile(temporaryReady, JSON.stringify(readyError ? { status: 'error', error: readyError } : { status: 'ready' }));
+          await fs.rename(temporaryReady, configuration.readyPath);
+        }
       });
       return child;
     } });
