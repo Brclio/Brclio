@@ -76,6 +76,11 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify the Python interpreter used by parser contract tests
+        run: python -c "import sys; print(sys.executable); print(sys.version)"
       - run: npm test
 
   browser:
