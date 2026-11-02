@@ -3,7 +3,7 @@ import http from 'node:http';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from '@playwright/test';
+import { chromium, expect } from '@playwright/test';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const web = path.join(root, 'web');
@@ -169,20 +169,58 @@ try {
     return drawn;
   },imageFixtures);
   for(const [index,value]of [110.68,-2.64,98.64,197.28].entries())assert.ok(Math.abs(geometry[index]-value)<.0001,`Shared frame geometry ${index}: ${geometry[index]}`);
+  // Record actual sound locally so audio-choice checks do not use the silent
+  // movie generated from images above. This needs no ffmpeg or remote fixture.
   const encodedSource=await liveAudit.evaluate(async()=>{
-    const bytes=new Uint8Array(await(await fetch(document.getElementById('xhs-live-preview-video').src)).arrayBuffer());let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);return btoa(binary);
+    const canvas=document.createElement('canvas');canvas.width=320;canvas.height=192;
+    const context=canvas.getContext('2d'),videoStream=canvas.captureStream(30),audio=new AudioContext();
+    await audio.resume();
+    const oscillator=audio.createOscillator(),destination=audio.createMediaStreamDestination();
+    oscillator.frequency.value=440;oscillator.connect(destination);oscillator.start();
+    const stream=new MediaStream([...videoStream.getVideoTracks(),...destination.stream.getAudioTracks()]);
+    const recorder=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp8,opus'}),chunks=[];
+    const result=new Promise((resolve,reject)=>{recorder.ondataavailable=event=>chunks.push(event.data);recorder.onstop=()=>resolve(new Blob(chunks,{type:recorder.mimeType}));recorder.onerror=event=>reject(event.error)});
+    let frame=0;const draw=()=>{context.fillStyle=frame++%2?'#1e50dc':'#d94435';context.fillRect(0,0,320,192)};draw();
+    recorder.start();const timer=setInterval(draw,33);
+    try {
+      await new Promise(resolve=>setTimeout(resolve,1200));recorder.stop();
+      const bytes=new Uint8Array(await(await result).arrayBuffer());let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);return btoa(binary);
+    } finally {clearInterval(timer);stream.getTracks().forEach(track=>track.stop());oscillator.stop();await audio.close()}
   });
-  await liveAudit.locator('#xhs-live-files').setInputFiles({name:'real-preview-source.mov',mimeType:'video/quicktime',buffer:Buffer.from(encodedSource,'base64')});
+  await liveAudit.locator('#xhs-live-files').setInputFiles({name:'real-preview-with-audio.webm',mimeType:'video/webm',buffer:Buffer.from(encodedSource,'base64')});
   await liveAudit.locator('#xhs-live-source-info').filter({hasText:'视频'}).waitFor();
   await liveAudit.locator('#xhs-live-duration').fill('.5');await liveAudit.locator('#xhs-live-duration').dispatchEvent('change');
   await liveAudit.locator('#xhs-live-cover').fill('.2');await liveAudit.locator('#xhs-live-cover').dispatchEvent('change');
-  await liveAudit.locator('#xhs-live-speed').selectOption('2');await liveAudit.locator('#xhs-live-preview').click();
+  await liveAudit.locator('#xhs-live-speed').selectOption('2');
+  await expect(liveAudit.locator('#xhs-live-audio-choice')).toBeVisible();
+  await expect(liveAudit.locator('#xhs-live-audio-reason')).toContainText('倍速');
+  await expect(liveAudit.locator('#xhs-live-audio')).toBeChecked();
+  await expect(liveAudit.locator('#xhs-live-audio')).toBeEnabled();
+  await expect(liveAudit.locator('#xhs-live-generate')).toBeDisabled();
+  await liveAudit.locator('#xhs-live-preview').click();
   await liveAudit.waitForFunction(()=>{const video=document.getElementById('xhs-live-preview-video');return video.readyState>=2&&video.currentTime>.1});
   assert.equal(await liveAudit.locator('#xhs-live-preview-video').evaluate(video=>video.playbackRate),2,'Real decoded video must retain 2x after loading its Blob source.');
+  if(await liveAudit.locator('#xhs-live-keep-audio').isVisible()) {
+    await liveAudit.locator('#xhs-live-keep-audio').click();
+    await expect(liveAudit.locator('#xhs-live-speed')).toHaveValue('1');
+    await expect(liveAudit.locator('#xhs-live-audio')).toBeChecked();
+    await expect(liveAudit.locator('#xhs-live-audio-choice')).toBeHidden();
+    await expect(liveAudit.locator('#xhs-live-generate')).toBeEnabled();
+    report.browser.push('With AAC available, explicitly returning to 1x preserves the requested sound and enables generation.');
+    await liveAudit.locator('#xhs-live-speed').selectOption('2');
+    await expect(liveAudit.locator('#xhs-live-audio-choice')).toBeVisible();
+    await expect(liveAudit.locator('#xhs-live-audio')).toBeChecked();
+    await expect(liveAudit.locator('#xhs-live-generate')).toBeDisabled();
+  }
+  await liveAudit.locator('#xhs-live-allow-silent').click();
+  await expect(liveAudit.locator('#xhs-live-audio')).not.toBeChecked();
+  await expect(liveAudit.locator('#xhs-live-audio-choice')).toBeHidden();
+  await expect(liveAudit.locator('#xhs-live-generate')).toBeEnabled();
   await liveAudit.locator('#xhs-live-generate').click();await liveAudit.locator('#xhs-live-result').waitFor({timeout:60000});
   await liveAudit.waitForFunction(()=>document.getElementById('xhs-live-preview-video').readyState>=1);
   assert.equal(await liveAudit.locator('#xhs-live-preview-video').evaluate(video=>video.playbackRate),1,'An already-speed-adjusted encoded result must play at its native 1x rate.');
-  report.browser.push('A real H.264/MOV source retains the selected 2x preview rate after metadata loading; its newly encoded result resets to 1x instead of applying the speed twice.');
+  await expect(liveAudit.locator('#xhs-live-result-info')).toContainText('无声');
+  report.browser.push('A real WebM/Opus source retains 2x preview playback; requested sound blocks generation until explicit silent approval, then the encoded silent result resets playback to 1x.');
   await liveAudit.evaluate(value=>{
     const binary=atob(value),bytes=Uint8Array.from(binary,char=>char.charCodeAt(0)),files=new DataTransfer();files.items.add(new File([bytes],'dropped.png',{type:'image/png'}));
     document.querySelector('[for="xhs-live-files"]').dispatchEvent(new DragEvent('drop',{dataTransfer:files,bubbles:true,cancelable:true}));
@@ -206,20 +244,34 @@ try {
   await noAudioPage.goto(url);await noAudioPage.waitForFunction(()=>document.body.dataset.ready==='true');
   await noAudioPage.locator('[data-view="xhs"]').first().click();await noAudioPage.locator('#xhs-tab-live').click();
   await noAudioPage.locator('#xhs-live-support').filter({hasText:'支持本地制作'}).waitFor();
-  await noAudioPage.locator('#xhs-live-files').setInputFiles({name:'no-aac-source.mov',mimeType:'video/quicktime',buffer:Buffer.from(encodedSource,'base64')});
+  await noAudioPage.locator('#xhs-live-files').setInputFiles({name:'no-aac-source.webm',mimeType:'video/webm',buffer:Buffer.from(encodedSource,'base64')});
   await noAudioPage.locator('#xhs-live-source-info').filter({hasText:'视频'}).waitFor();
-  assert.equal(await noAudioPage.locator('#xhs-live-audio').isDisabled(),true,'Loading a video must preserve the unavailable AAC capability.');
+  await expect(noAudioPage.locator('#xhs-live-audio-choice')).toBeVisible();
+  await expect(noAudioPage.locator('#xhs-live-audio-reason')).toContainText('AAC');
+  await expect(noAudioPage.locator('#xhs-live-audio')).toBeChecked();
+  await expect(noAudioPage.locator('#xhs-live-audio')).toBeEnabled();
+  await expect(noAudioPage.locator('#xhs-live-generate')).toBeDisabled();
   await noAudioPage.locator('#xhs-live-speed').selectOption('2');await noAudioPage.locator('#xhs-live-speed').selectOption('1');
-  assert.equal(await noAudioPage.locator('#xhs-live-audio').isDisabled(),true,'Returning to 1x must not enable an unavailable AAC encoder.');
-  await noAudioPage.evaluate(()=>{document.getElementById('xhs-live-audio').checked=true});
+  await expect(noAudioPage.locator('#xhs-live-audio-reason')).toContainText('AAC');
+  await expect(noAudioPage.locator('#xhs-live-audio')).toBeChecked();
+  await expect(noAudioPage.locator('#xhs-live-generate')).toBeDisabled();
+  assert.equal(await noAudioPage.evaluate(()=>window.__noAudioInclude),undefined,'An unavailable encoder must not silently start generating.');
   await noAudioPage.locator('#xhs-live-duration').fill('.5');await noAudioPage.locator('#xhs-live-duration').dispatchEvent('change');
   await noAudioPage.locator('#xhs-live-cover').fill('.2');await noAudioPage.locator('#xhs-live-cover').dispatchEvent('change');
-  await noAudioPage.locator('#xhs-live-format').selectOption('jpeg');await noAudioPage.locator('#xhs-live-generate').click();
+  await noAudioPage.locator('#xhs-live-format').selectOption('jpeg');
+  await expect(noAudioPage.locator('#xhs-live-audio-choice')).toBeVisible();
+  await expect(noAudioPage.locator('#xhs-live-audio')).toBeChecked();
+  await expect(noAudioPage.locator('#xhs-live-generate')).toBeDisabled();
+  await noAudioPage.locator('#xhs-live-allow-silent').click();
+  await expect(noAudioPage.locator('#xhs-live-audio')).not.toBeChecked();
+  await expect(noAudioPage.locator('#xhs-live-audio-choice')).toBeHidden();
+  await expect(noAudioPage.locator('#xhs-live-generate')).toBeEnabled();
+  await noAudioPage.locator('#xhs-live-generate').click();
   await noAudioPage.locator('#xhs-live-result').waitFor({timeout:60000});
-  assert.equal(await noAudioPage.evaluate(()=>window.__noAudioInclude),false,'Stale checkbox state must never request unavailable AAC.');
-  assert.doesNotMatch(await noAudioPage.locator('#xhs-live-result-info').textContent(),/保留声音/);
-  assert.equal(await noAudioPage.locator('#xhs-live-audio').isDisabled(),true);
-  report.browser.push('Unavailable AAC stays disabled after video loading, speed changes and real silent generation; stale checked state cannot request an unsupported audio encoder.');
+  assert.equal(await noAudioPage.evaluate(()=>window.__noAudioInclude),false,'Silent generation must follow the explicit user choice.');
+  await expect(noAudioPage.locator('#xhs-live-result-info')).toContainText('无声');
+  await expect(noAudioPage.locator('#xhs-live-audio')).toBeEnabled();
+  report.browser.push('Unavailable AAC preserves the requested audio across speed changes and blocks generation; explicit silent approval then produces a real silent result.');
   await noAudioContext.close();
 
   const nativeContext = await browser.newContext({ viewport: { width: 1440, height: 1060 } });

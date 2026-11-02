@@ -159,22 +159,25 @@ await t.test("restart performs no network and skips only files whose size and SH
   assert.equal(f.requests.filter((item) => item.type === "media").length, 1);
 });
 
-await t.test("incomplete discovery saves confirmed notes before pausing; resume merges and verifies saved files", async (t) => {
-  let run = 0;
+await t.test("incomplete discovery pauses without downloading; resume merges before saving the full list", async (t) => {
+  let run = 0, resolved = 0;
   const f = await fixture(t, { browser: {
     async *discover() { run++; yield { notes: [note(A)], done: run > 1 }; },
-    async resolveNote() { return parsed(); }
+    async resolveNote() { resolved++; return parsed(); }
   } });
   await f.start();
   let result = await f.settle();
   assert.equal(result.status, "paused");
   assert.equal(result.discoveryComplete, false);
   assert.equal(result.discovered, 1);
-  assert.equal(result.completed, 1);
+  assert.equal(result.completed, 0);
+  assert.equal(resolved, 0);
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(await fs.readdir(f.directory), []);
   assert.equal(result.pauseReason, "DISCOVERY_INCOMPLETE");
   assert.equal(result.phase, "discovery");
   assert.match(result.discoveryIssue, /尚未确认加载到底/);
-  assert.match(result.message, /已处理当前发现的 1 篇帖子.*补全列表/);
+  assert.match(result.message, /确认完整列表后再开始下载.*补全列表/);
   const restored = new ProfileManager(f.config);
   assert.equal((await restored.initialize()).status, "paused");
   assert.equal(run, 1);
@@ -184,12 +187,14 @@ await t.test("incomplete discovery saves confirmed notes before pausing; resume 
   assert.equal(result.status, "completed");
   assert.equal(result.discoveryComplete, true);
   assert.equal(result.discovered, 1);
-  assert.equal(result.skipped, 1);
+  assert.equal(result.completed, 1);
+  assert.equal(result.skipped, 0);
+  assert.equal(resolved, 1);
   assert.equal(result.pauseReason, "");
   assert.equal(result.discoveryIssue, "");
 });
 
-await t.test("a stalled list still downloads every confirmed queued note and keeps discovery resumable", async (t) => {
+await t.test("a stalled list preserves pending notes without any detail or media download", async (t) => {
   const resolved = [], updates = [];
   const f = await fixture(t, { onUpdate: state => updates.push(state), browser: {
     async *discover() {
@@ -200,20 +205,22 @@ await t.test("a stalled list still downloads every confirmed queued note and kee
   } });
   await f.start();
   const result = await f.settle();
-  assert.deepEqual(resolved, [A, B]);
-  assert.equal(result.completed, 2);
+  assert.deepEqual(resolved, []);
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(await fs.readdir(f.directory), []);
+  assert.equal(result.completed, 0);
   assert.equal(result.status, "paused");
   assert.equal(result.discoveryComplete, false);
   assert.equal(result.pauseReason, "DISCOVERY_INCOMPLETE");
-  assert.ok(updates.some(state => state.completed === 2 && state.status === "discovering"));
+  assert.ok(updates.every(state => state.completed === 0));
   assert.equal(result.discoveryIssue, "列表连续多次没有加载新帖子。");
   const saved = JSON.parse(await fs.readFile(path.join(f.stateDirectory, "profile-job.json"), "utf8"));
   assert.equal(saved.discoveryComplete, false);
   assert.equal(saved.discoveryIssue, result.discoveryIssue);
-  assert.ok(saved.items.every(item => item.complete && item.status === "completed"));
+  assert.ok(saved.items.every(item => !item.complete && item.status === "pending"));
 });
 
-await t.test("a later discovery gate preserves saved pages but never downloads remaining old queue entries", async (t) => {
+await t.test("a later discovery gate never downloads discovered or restored queue entries", async (t) => {
   for (const code of ["AUTH_REQUIRED", "RATE_LIMITED", "INVALID_NOTE", "AbortError"]) {
     let resolved = 0;
     const f = await fixture(t, { browser: {
@@ -228,27 +235,36 @@ await t.test("a later discovery gate preserves saved pages but never downloads r
     f.manager.state.items = [{ ...note(B), sequence: 1, directoryName: "", titleResolved: false, status: "pending", error: "", complete: false, files: [] }];
     await f.manager.resume();
     const result = await f.settle();
-    assert.equal(resolved, 1, code);
-    assert.equal(result.completed, 1, code);
+    assert.equal(resolved, 0, code);
+    assert.equal(result.completed, 0, code);
+    assert.deepEqual(f.requests, [], code);
+    assert.deepEqual(await fs.readdir(f.directory), [], code);
     assert.equal(result.items.find(item => item.id === B).status, "pending", code);
     assert.equal(result.discoveryComplete, false, code);
   }
 });
 
-await t.test("each confirmed page is saved before requesting the next page, including a later 151st note", async (t) => {
+await t.test("all 151 notes are discovered before any detail or media download and duplicates keep their sequence", async (t) => {
   const ids = Array.from({ length: 151 }, (_, index) => (index + 1).toString(16).padStart(24, "0"));
   const resolved = [], updates = [];
   const f = await fixture(t, { onUpdate: state => updates.push(state), browser: {
     async *discover() {
       yield { notes: ids.slice(0, 3).map(id => note(id)), done: false };
-      assert.deepEqual(resolved, ids.slice(0, 3), "the first page saves before a terminal marker exists");
+      assert.deepEqual(resolved, [], "the first page must wait for the complete list");
+      assert.deepEqual(f.requests, []);
+      assert.deepEqual(await fs.readdir(f.directory), []);
       assert.equal(f.manager.snapshot().discoveryComplete, false);
       assert.equal(f.manager.snapshot().phase, "discovery");
       yield { notes: ids.slice(0, 121).map(id => note(id)), done: false };
-      assert.deepEqual(resolved, ids.slice(0, 121));
+      assert.deepEqual(resolved, []);
+      assert.deepEqual(f.requests, []);
       yield { notes: ids.slice(120).map(id => note(id)), done: true };
     },
-    async resolveNote(item) { resolved.push(item.id); return parsed({ title: `已解析-${item.id}` }); }
+    async resolveNote(item) {
+      assert.equal(f.manager.snapshot().discoveryComplete, true);
+      assert.equal(f.manager.snapshot().discovered, 151);
+      resolved.push(item.id); return parsed({ title: `已解析-${item.id}` });
+    }
   } });
   await f.start();
   const result = await f.settle();
@@ -259,11 +275,12 @@ await t.test("each confirmed page is saved before requesting the next page, incl
   assert.equal(result.status, "completed");
   assert.equal(result.discoveryComplete, true);
   assert.deepEqual(result.items.map(item => item.sequence), ids.map((_, index) => index + 1));
-  assert.ok(updates.some(state => state.completed === 3 && !state.discoveryComplete));
+  assert.ok(updates.some(state => state.discovered === 121 && !state.discoveryComplete));
+  assert.ok(updates.every(state => state.discoveryComplete || state.completed === 0));
   assert.ok(updates.every(state => state.status !== "completed" || state.discoveryComplete));
 });
 
-await t.test("a detail login or verification gate stops the page and prevents later pagination", async (t) => {
+await t.test("a detail login or verification gate after full discovery prevents later downloads", async (t) => {
   for (const code of ["AUTH_REQUIRED", "RATE_LIMITED", "DISCOVERY_INCOMPLETE"]) {
     const resolved = []; let nextPage = false;
     const f = await fixture(t, { browser: {
@@ -280,7 +297,8 @@ await t.test("a detail login or verification gate stops the page and prevents la
     await f.start();
     const result = await f.settle();
     assert.deepEqual(resolved, [A], code);
-    assert.equal(nextPage, false, code);
+    assert.equal(nextPage, true, code);
+    assert.equal(result.discoveryComplete, true, code);
     assert.equal(result.status, "paused", code);
     assert.equal(result.pauseReason, code);
     assert.equal(result.completed, 0);
@@ -288,7 +306,7 @@ await t.test("a detail login or verification gate stops the page and prevents la
   }
 });
 
-await t.test("profile access gates observed during a streamed page prevent the next detail or media request", async (t) => {
+await t.test("profile access gates observed after discovery prevent the next detail or media request", async (t) => {
   for (const code of ["AUTH_REQUIRED", "RATE_LIMITED"]) {
     for (const stage of ["before-wait", "during-wait"]) {
       let blocked = false, waits = 0, resolved = 0, media = 0, nextPage = false;
@@ -316,7 +334,7 @@ await t.test("profile access gates observed during a streamed page prevent the n
       await f.start(); const result = await f.settle();
       assert.equal(resolved, 1, `${code}/${stage}`);
       assert.equal(media, 0, `${code}/${stage}: no media fetch after access gate`);
-      assert.equal(nextPage, false);
+      assert.equal(nextPage, true);
       assert.equal(result.status, "paused");
       assert.equal(result.pauseReason, code);
       assert.ok(result.items.every(item => item.status === "pending"));
@@ -324,7 +342,7 @@ await t.test("profile access gates observed during a streamed page prevent the n
   }
 });
 
-await t.test("resuming an incomplete paged scan verifies saved notes, keeps sequence and merges new pages", async (t) => {
+await t.test("resuming an incomplete paged scan keeps sequence and merges all pages before saving", async (t) => {
   const C = "333333333333333333333333";
   let round = 0; const resolved = [];
   const f = await fixture(t, { browser: {
@@ -338,19 +356,20 @@ await t.test("resuming an incomplete paged scan verifies saved notes, keeps sequ
     async resolveNote(item) { resolved.push(item.id); return parsed({ title: `完整-${item.id}` }); }
   } });
   await f.start(); await f.settle();
-  const directoryName = f.manager.snapshot().items[0].directoryName;
+  assert.deepEqual(resolved, []);
+  assert.deepEqual(await fs.readdir(f.directory), []);
   const restored = new ProfileManager(f.config);
   await restored.initialize();
   assert.equal(restored.snapshot().discoveryIssue, "主页分页暂时中断");
   await restored.resume(); await restored._runTask;
   const result = restored.snapshot();
   assert.deepEqual(resolved, [A, B, C]);
-  assert.equal(result.skipped, 1);
-  assert.equal(result.completed, 2);
+  assert.equal(result.skipped, 0);
+  assert.equal(result.completed, 3);
   assert.equal(result.discoveryIssue, "");
   assert.deepEqual(result.items.map(item => item.id), [A, B, C]);
   assert.deepEqual(result.items.map(item => item.sequence), [1, 2, 3]);
-  assert.equal(result.items[0].directoryName, directoryName);
+  assert.match(result.items[0].directoryName, /^001-/);
 });
 
 await t.test("an incomplete empty list remains paused instead of reporting a completed empty profile", async (t) => {
@@ -390,14 +409,14 @@ await t.test("pause aborts detail parsing, flushes pending state, and resumes su
   const state = JSON.parse(await fs.readFile(path.join(f.stateDirectory, "profile-job.json"), "utf8"));
   assert.equal(state.items[0].status, "pending");
   assert.equal(state.status, "paused");
-  assert.equal(state.discoveryComplete, false);
-  assert.equal(nextPages, 0, "pausing a streamed page must not trigger its next page");
-  assert.equal(closedScans, 1, "the suspended discovery generator is closed on pause");
+  assert.equal(state.discoveryComplete, true);
+  assert.equal(nextPages, 1, "all pages have finished before detail parsing starts");
+  assert.equal(closedScans, 1, "discovery is already closed when downloads start");
   block = false;
   await f.manager.resume();
   assert.equal((await f.settle()).completed, 1);
   assert.equal(nextPages, 1);
-  assert.equal(closedScans, 2);
+  assert.equal(closedScans, 1, "resuming a fully discovered queue does not scan again");
 });
 
 await t.test("cancel interrupts scheduled requests and preserves the resumable queue", async (t) => {
@@ -803,23 +822,108 @@ await t.test("single-item and retry-all preserve sequence and never re-request s
   await assert.rejects(f.manager.retryItem("../outside"), /ID 无效/);
 });
 
-await t.test("retrying one failed item leaves pending discovery and other queue items paused", async (t) => {
+await t.test("retrying one failed item first completes discovery and leaves other queue items paused", async (t) => {
   const f = await fixture(t);
   const saved = { ...f.manager.state, profileUrl: PROFILE, directory: f.directory, status: "paused", discoveryComplete: false,
     items: [{ ...note(A), status: "failed", error: "old error", files: [], complete: false }, { ...note(B), status: "pending", files: [], complete: false }] };
   await fs.writeFile(path.join(f.stateDirectory, "profile-job.json"), JSON.stringify(saved));
   const calls = [];
   const restored = new ProfileManager({ ...f.config, browser: {
-    async *discover() { throw new Error("single retry must not discover"); },
+    async *discover() {
+      yield { notes: [note(A)], done: false };
+      assert.deepEqual(calls, [], "retry must not bypass incomplete discovery");
+      assert.deepEqual(await fs.readdir(f.directory), []);
+      yield { notes: [note(B)], done: true };
+    },
     async resolveNote(item) { calls.push(item.id); return parsed(); }
   } });
   await restored.initialize(); await restored.retryItem(A); await restored._runTask;
   assert.deepEqual(calls, [A]);
   const result = restored.snapshot();
   assert.equal(result.status, "paused");
-  assert.equal(result.discoveryComplete, false);
+  assert.equal(result.discoveryComplete, true);
   assert.equal(result.items[1].status, "pending");
   assert.deepEqual(result.items.map(item => item.sequence), [1, 2]);
+});
+
+await t.test("single and all-item retries cannot download from a still incomplete legacy queue", async (t) => {
+  for (const retry of ["retryItem", "retryFailed"]) {
+    const f = await fixture(t);
+    const saved = { ...f.manager.state, profileUrl: PROFILE, directory: f.directory, status: "paused", discoveryComplete: false,
+      items: [{ ...note(A), status: "failed", error: "old error", files: [], complete: false }] };
+    await fs.writeFile(path.join(f.stateDirectory, "profile-job.json"), JSON.stringify(saved));
+    let resolved = 0;
+    const restored = new ProfileManager({ ...f.config, browser: {
+      async *discover() {
+        yield { notes: [note(A)], done: false };
+        throw Object.assign(new Error("主页尚未确认加载到底"), { code: "DISCOVERY_INCOMPLETE" });
+      },
+      async resolveNote() { resolved++; return parsed(); }
+    } });
+    await restored.initialize(); await restored[retry](A); await restored._runTask;
+    assert.equal(resolved, 0, retry);
+    assert.deepEqual(f.requests, [], retry);
+    assert.deepEqual(await fs.readdir(f.directory), [], retry);
+    assert.equal(restored.snapshot().status, "paused");
+    assert.equal(restored.snapshot().pauseReason, "DISCOVERY_INCOMPLETE");
+  }
+});
+
+await t.test("legacy partial downloads remain unchanged while rediscovery finishes before new downloads", async (t) => {
+  const f = await fixture(t);
+  await f.start(); await f.settle();
+  const imagePath = path.join(noteFolder(f), "image-001.jpg");
+  const original = await fs.readFile(imagePath);
+  const directoryName = f.manager.snapshot().items[0].directoryName;
+  await fs.writeFile(path.join(f.stateDirectory, "profile-job.json"), JSON.stringify({
+    ...f.manager.state, status: "paused", phase: "discovery", discoveryComplete: false
+  }));
+  f.requests.length = 0;
+  const resolved = [];
+  const restored = new ProfileManager({ ...f.config, browser: {
+    async *discover() {
+      yield { notes: [note(A)], done: false };
+      assert.deepEqual(resolved, []);
+      assert.deepEqual(f.requests, []);
+      assert.deepEqual(await fs.readFile(imagePath), original);
+      yield { notes: [note(B), note(A)], done: true };
+    },
+    async resolveNote(item) { resolved.push(item.id); return parsed(); }
+  } });
+  await restored.initialize(); await restored.resume(); await restored._runTask;
+  assert.deepEqual(resolved, [B]);
+  assert.equal(restored.snapshot().skipped, 1);
+  assert.equal(restored.snapshot().completed, 1);
+  assert.equal(restored.snapshot().items[0].directoryName, directoryName);
+  assert.deepEqual(await fs.readFile(imagePath), original);
+});
+
+await t.test("pausing or cancelling discovery persists the list without starting any downloads", async (t) => {
+  for (const command of ["pause", "cancel"]) {
+    let began, closed = 0, resolved = 0;
+    const waiting = new Promise(resolve => { began = resolve; });
+    const f = await fixture(t, { browser: {
+      async *discover(_url, { signal }) {
+        try {
+          yield { notes: [note(A)], done: false };
+          began();
+          await new Promise((_resolve, reject) => signal.addEventListener("abort", () =>
+            reject(Object.assign(new Error("stop"), { name: "AbortError" })), { once: true }));
+        } finally { closed++; }
+      },
+      async resolveNote() { resolved++; return parsed(); }
+    } });
+    await f.start(); await waiting; await f.manager[command]();
+    assert.equal(closed, 1);
+    assert.equal(resolved, 0);
+    assert.deepEqual(f.requests, []);
+    assert.deepEqual(await fs.readdir(f.directory), []);
+    const saved = JSON.parse(await fs.readFile(path.join(f.stateDirectory, "profile-job.json"), "utf8"));
+    assert.equal(saved.status, command === "pause" ? "paused" : "cancelled");
+    assert.equal(saved.discoveryComplete, false);
+    assert.equal(saved.items.length, 1);
+    assert.equal(saved.items[0].status, "pending");
+  }
 });
 
 await t.test("active tasks clearly reject item retries without altering failed queue entries", async (t) => {

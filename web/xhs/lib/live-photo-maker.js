@@ -2,7 +2,8 @@ import { muxLivePhotoMov, pairLivePhotoJpeg, LIVE_PHOTO_MIN_DURATION, LIVE_PHOTO
 import { normalizeLivePhotoImageEdit, livePhotoImageDimensions, drawEditedLivePhotoImage } from './live-photo-image-edit.js';
 
 export const LIVE_PHOTO_LIMITS = Object.freeze({ minDuration: LIVE_PHOTO_MIN_DURATION, maxDuration: LIVE_PHOTO_MAX_DURATION, maxFiles: 12,
-  maxBytes: 150 * 1024 * 1024, maxDecodedPixels: 64_000_000, maxDimension: 8192, importMaxDimension: 4096, fps: 30 });
+  maxBytes: 150 * 1024 * 1024, maxDecodedPixels: 64_000_000, maxDimension: 32767,
+  maxVideoDimension: 8192, maxHeicDimension: 8192, compactDimension: 1440, importMaxDimension: 4096, fps: 30 });
 const VIDEO_SPEEDS = [1, 1.5, 2, 3];
 const IMAGE_EXT = /\.(?:jpe?g|png|webp|gif|avif|bmp)$/i;
 const VIDEO_EXT = /\.(?:mp4|mov|m4v|webm)$/i;
@@ -10,6 +11,23 @@ const AUDIO_CONFIG = { codec: 'mp4a.40.2', sampleRate: 48000, numberOfChannels: 
 
 function abort(signal) { signal?.throwIfAborted(); }
 function abortedError() { return new DOMException('制作已取消。', 'AbortError'); }
+// WebCodecs capability promises cannot themselves be cancelled. Stop waiting
+// immediately, detach our listener, and consume any later result or rejection.
+function abortableProbe(operation, signal) {
+  abort(signal);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true; signal?.removeEventListener('abort', cancel); callback(value);
+    };
+    const cancel = () => finish(reject, signal.reason || abortedError());
+    signal?.addEventListener('abort', cancel, { once: true });
+    if (signal?.aborted) { cancel(); return; }
+    Promise.resolve().then(() => { abort(signal); return operation(); })
+      .then(value => finish(resolve, value), error => finish(reject, error));
+  });
+}
 export function validateLivePhotoFiles(files, { allowOversizedImages = false } = {}) {
   if (!Array.isArray(files) || !files.length) throw new Error('请选择图片或视频。');
   if (files.length > LIVE_PHOTO_LIMITS.maxFiles) throw new Error('一次最多选择 12 张图片。');
@@ -91,17 +109,18 @@ export async function inspectLivePhotoFiles(files, { signal, allowOversizedImage
       height: source.video.videoHeight, hasAudio: hasVideoAudio(source.video) }; }
     finally { source.dispose(); }
   }
-  let first, pixels = 0;
+  let first, pixels = 0; const images = [];
   for (const file of files) {
     const image = await loadImage(file, signal);
     pixels += image.naturalWidth * image.naturalHeight;
     first ??= { width: image.naturalWidth, height: image.naturalHeight };
+    images.push({ width: image.naturalWidth, height: image.naturalHeight });
     image.src = '';
     if (pixels > LIVE_PHOTO_LIMITS.maxDecodedPixels && !allowOversizedImages) throw new Error('图片总像素超过 6400 万，请缩小图片或减少张数后制作。');
   }
   abort(signal);
   const bytes = files.reduce((total, file) => total + file.size, 0);
-  return { kind, duration: null, ...first, hasAudio: false, pixels, bytes,
+  return { kind, duration: null, ...first, images, hasAudio: false, pixels, bytes,
     requiresCompression: pixels > LIVE_PHOTO_LIMITS.maxDecodedPixels || bytes > LIVE_PHOTO_LIMITS.maxBytes };
 }
 
@@ -164,12 +183,30 @@ export function livePhotoVideoConfig(width, height) {
     latencyMode: 'realtime', avc: { format: 'avc' }, hardwareAcceleration: 'no-preference' };
 }
 
-export async function selectLivePhotoVideoConfig(size, { signal } = {}) {
+function compatibleVideoConfig(width, height) {
+  return { codec: 'avc1.420033', width, height, bitrate: 6000000, framerate: LIVE_PHOTO_LIMITS.fps,
+    latencyMode: 'realtime', avc: { format: 'avc' }, hardwareAcceleration: 'no-preference' };
+}
+
+function sizeError(message) {
+  return Object.assign(new Error(`${message}。请选择自动适配或兼容尺寸后重试；原素材和编辑设置会保留。`), { code: 'SIZE_UNSUPPORTED' });
+}
+
+function fitDimensions(size, edge, pixels = LIVE_PHOTO_LIMITS.maxDecodedPixels, even = false) {
+  const scale = Math.min(1, edge / Math.max(size.width, size.height), Math.sqrt(pixels / (size.width * size.height)));
+  const dimensions = { width: Math.max(1, Math.floor(size.width * scale)), height: Math.max(1, Math.floor(size.height * scale)) };
+  return even ? evenDimensions(dimensions.width, dimensions.height) : dimensions;
+}
+
+export async function selectLivePhotoVideoConfig(size, { signal, originalOnly = false, compatibility = false } = {}) {
+  abort(signal);
   // The still image keeps all its native pixels even when the device's AVC
   // encoder cannot make a movie at that resolution (e.g. a 24MP photograph).
   // Probe the native frame first, then the largest practical AVC frame budgets.
-  const candidates = [size];
-  for (const [maxEdge, maxPixels, maxMacroblocks] of [[4096, 36864 * 256, 36864], [4096, 3840 * 2160, 32768],
+  const nativeAllowed = Math.max(size.width, size.height) <= LIVE_PHOTO_LIMITS.maxVideoDimension;
+  if (originalOnly && (!nativeAllowed || size.width % 2 || size.height % 2)) throw sizeError('原始动态尺寸超出编码范围或包含奇数边长');
+  const candidates = nativeAllowed ? [evenDimensions(size.width, size.height)] : [];
+  for (const [maxEdge, maxPixels, maxMacroblocks] of originalOnly ? [] : [[4096, 36864 * 256, 36864], [4096, 3840 * 2160, 32768],
     [2560, 2560 * 1440, 32768], [1920, 1920 * 1080, 32768], [1280, 1280 * 720, 32768]]) {
     let lower = 0, upper = Math.min(1, maxEdge / Math.max(size.width, size.height), Math.sqrt(maxPixels / (size.width * size.height)));
     let candidate = evenDimensions(size.width * upper, size.height * upper);
@@ -192,29 +229,35 @@ export async function selectLivePhotoVideoConfig(size, { signal } = {}) {
   }
   for (const dimensions of candidates) {
     abort(signal);
-    const config = livePhotoVideoConfig(dimensions.width, dimensions.height);
-    try {
-      if ((await VideoEncoder.isConfigSupported(config)).supported) { abort(signal); return config; }
+    const configurations = compatibility
+      ? [compatibleVideoConfig(dimensions.width, dimensions.height), livePhotoVideoConfig(dimensions.width, dimensions.height)]
+      : [livePhotoVideoConfig(dimensions.width, dimensions.height), compatibleVideoConfig(dimensions.width, dimensions.height)];
+    for (const config of configurations) try {
+      if ((await abortableProbe(() => VideoEncoder.isConfigSupported(config), signal)).supported) { abort(signal); return config; }
     } catch (error) { if (signal?.aborted) throw error; }
   }
-  throw new Error('当前设备无法编码此画幅的实况动态画面，请更换设备或裁切素材后重试。');
+  throw sizeError(originalOnly ? '当前设备不支持原始动态尺寸' : '当前设备无法编码此画幅的实况动态画面');
 }
 function recorderType() {
   if (typeof MediaRecorder === 'undefined') return null;
   return ['audio/webm;codecs=opus', 'audio/mp4'].find(type => MediaRecorder.isTypeSupported(type)) || null;
 }
 
-export async function checkLivePhotoSupport() {
+export async function checkLivePhotoSupport({ signal } = {}) {
+  abort(signal);
   let supported = false, audioSupported = false;
-  try {
-    supported = typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined'
-      && (await VideoEncoder.isConfigSupported(livePhotoVideoConfig(640, 480))).supported;
-  } catch { /* Video and audio capability failures must remain independent. */ }
+  if (typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined') {
+    for (const config of [livePhotoVideoConfig(640, 480), compatibleVideoConfig(640, 480)]) {
+      try { if ((await abortableProbe(() => VideoEncoder.isConfigSupported(config), signal)).supported) { supported = true; break; } }
+      catch (error) { if (signal?.aborted) throw error; /* A rejected High-profile probe must still allow Baseline. */ }
+    }
+  }
   try {
     audioSupported = typeof AudioEncoder !== 'undefined' && typeof AudioData !== 'undefined'
       && typeof AudioContext !== 'undefined' && Boolean(recorderType())
-      && (await AudioEncoder.isConfigSupported(AUDIO_CONFIG)).supported;
-  } catch { /* Capability failures are displayed before starting work. */ }
+      && (await abortableProbe(() => AudioEncoder.isConfigSupported(AUDIO_CONFIG), signal)).supported;
+  } catch (error) { if (signal?.aborted) throw error; /* Capability failures are displayed before starting work. */ }
+  abort(signal);
   const heicSupported = typeof Worker !== 'undefined' && typeof WebAssembly !== 'undefined';
   return { supported, audioSupported, heicSupported,
     message: supported ? (audioSupported ? '本地制作已就绪。' : '当前浏览器可制作无声实况；保留声音请使用桌面客户端或新版 Chrome。')
@@ -259,10 +302,83 @@ export function normalizeLivePhotoOptions({ kind, sourceDuration, start = 0, dur
   return { start, duration: normalizedDuration, keyPhotoTime: coverTime, motion, speed, sourceSpan };
 }
 
+function validDimensions(value) {
+  return value && [value.width, value.height].every(dimension => Number.isSafeInteger(dimension) && dimension > 0);
+}
+
+function photoCanvasSupported(size) {
+  let canvas;
+  try {
+    canvas = document.createElement('canvas'); Object.assign(canvas, size);
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) return false;
+    // A small read at the far corner detects canvas allocation/dimension
+    // failures without copying the full-resolution bitmap into JavaScript.
+    context.fillStyle = '#ffffff'; context.fillRect(size.width - 1, size.height - 1, 1, 1);
+    return context.getImageData(size.width - 1, size.height - 1, 1, 1).data[0] === 255;
+  } catch { return false; }
+  finally { if (canvas) canvas.width = canvas.height = 0; }
+}
+
+/** Plan against the actual selected dimensions before creating media. `info`
+ * is the metadata returned by inspectLivePhotoFiles; no source bytes or decoded
+ * images are retained. Generation calls this same planner with decoded sizes. */
+export async function planLivePhoto(files, options = {}, { signal, info } = {}) {
+  signal ||= options.signal;
+  const kind = validateLivePhotoFiles(files); abort(signal);
+  const { sizePolicy = 'auto', compatibility = false, photoFormat = 'jpeg', imageEdits = [], includeAudio = true } = options;
+  if (!['auto', 'original', 'compact'].includes(sizePolicy)) throw new Error('请选择自动适配、原始尺寸或兼容尺寸。');
+  if (!['jpeg', 'heic'].includes(photoFormat)) throw new Error('请选择 HEIC 或 JPG 照片格式。');
+  if (!Array.isArray(imageEdits) || imageEdits.length > files.length) throw new Error('图片调整参数与素材不匹配。');
+  if (!info || info.kind !== kind || !validDimensions(info)
+    || (kind === 'images' && (!Array.isArray(info.images) || info.images.length !== files.length || !info.images.every(validDimensions)))) {
+    info = await inspectLivePhotoFiles(files, { signal });
+  }
+  abort(signal);
+  if (kind === 'images' && info.images.reduce((pixels, image) => pixels + image.width * image.height, 0) > LIVE_PHOTO_LIMITS.maxDecodedPixels)
+    throw new Error('图片总像素超过 6400 万，请确认压缩导入或减少张数后制作。');
+  const normalizedOptions = normalizeLivePhotoOptions({ ...options, kind, sourceDuration: info.duration });
+  const support = await checkLivePhotoSupport({ signal }); abort(signal);
+  if (!support.supported) throw sizeError(support.message);
+  if (photoFormat === 'heic' && !support.heicSupported)
+    throw Object.assign(new Error('当前设备不支持 HEIC，请明确选择 JPG 格式后重试。'), { code: 'FORMAT_UNSUPPORTED' });
+  const edits = files.map((_, index) => normalizeLivePhotoImageEdit(imageEdits[index]));
+  const source = kind === 'video' ? { width: info.width, height: info.height } : livePhotoImageDimensions(info.images[0], edits[0]);
+  const coverIndex = kind === 'images' ? Math.min(files.length - 1, Math.floor(normalizedOptions.keyPhotoTime / normalizedOptions.duration * files.length)) : 0;
+  const coverSource = kind === 'video' ? source : livePhotoImageDimensions(info.images[coverIndex], edits[coverIndex]);
+  const compact = compatibility || sizePolicy === 'compact', originalOnly = sizePolicy === 'original' && !compatibility;
+  const photoEdge = compact ? LIVE_PHOTO_LIMITS.compactDimension
+    : photoFormat === 'heic' ? LIVE_PHOTO_LIMITS.maxHeicDimension : LIVE_PHOTO_LIMITS.maxDimension;
+  let photo = fitDimensions(coverSource, photoEdge);
+  if (originalOnly && (photo.width !== coverSource.width || photo.height !== coverSource.height))
+    throw sizeError(`原始照片超过 ${photoFormat === 'heic' ? 'HEIC' : '画布'} 的尺寸范围`);
+  while (!photoCanvasSupported(photo)) {
+    abort(signal);
+    if (originalOnly || Math.max(photo.width, photo.height) <= 1280) throw sizeError('当前设备无法分配照片画布');
+    photo = fitDimensions(photo, Math.floor(Math.max(photo.width, photo.height) / 2));
+  }
+  abort(signal);
+  const requestedVideo = compact ? fitDimensions(source, LIVE_PHOTO_LIMITS.compactDimension, 1440 * 1440, true) : source;
+  const config = await selectLivePhotoVideoConfig(requestedVideo, { signal, originalOnly, compatibility: compact });
+  const photoResized = photo.width !== coverSource.width || photo.height !== coverSource.height;
+  const videoResized = config.width !== source.width || config.height !== source.height;
+  const requested = kind === 'video' && includeAudio === true;
+  const reason = requested && normalizedOptions.speed !== 1 ? '倍速制作不能保留原声，请选择 1 倍速，或明确关闭保留声音后重试。'
+    : requested && !support.audioSupported ? '当前设备不能编码 AAC 声音，请更换支持声音的设备，或明确关闭保留声音后重试。' : '';
+  const warnings = [];
+  if (photoResized) warnings.push(`照片将等比缩小至 ${photo.width} × ${photo.height}，保留完整画面。`);
+  if (videoResized) warnings.push(`动态画面将适配为 ${config.width} × ${config.height}，保留完整画面。`);
+  if (reason) warnings.push(reason);
+  return { kind, source, coverSource, photo: { ...photo, resized: photoResized },
+    video: { width: config.width, height: config.height, resized: videoResized, config },
+    sizePolicy, compatibility: Boolean(compatibility), photoFormat, warnings, normalizedOptions, support,
+    audio: { requested, supported: support.audioSupported, sourceHasAudio: info.hasAudio, requiresChoice: Boolean(reason), reason } };
+}
+
 export function livePhotoDimensions(width, height) {
-  if (![width, height].every(value => Number.isSafeInteger(value) && value >= 2)) throw new Error('素材尺寸无效。');
+  if (![width, height].every(value => Number.isSafeInteger(value) && value >= 1)) throw new Error('素材尺寸无效。');
   if (Math.max(width, height) > LIVE_PHOTO_LIMITS.maxDimension || width * height > LIVE_PHOTO_LIMITS.maxDecodedPixels)
-    throw new Error('原始画面超过本地编码上限（长边 8192 像素、6400 万像素），请先裁剪素材。');
+    throw sizeError('原始画面超过画布范围（长边 32767 像素、6400 万像素）');
   // H.264 4:2:0 needs even dimensions. Do not rescale a high-resolution source.
   return evenDimensions(width, height);
 }
@@ -384,11 +500,10 @@ async function encodeAudio({ buffer, offset }, duration, signal) {
 }
 
 export async function createLivePhoto({ files, start = 0, duration = 3, keyPhotoTime = duration / 2,
-  motion = 'zoom', speed = 1, includeAudio = true, photoFormat = 'jpeg', imageEdits = [], signal, onProgress = () => {} }) {
+  motion = 'zoom', speed = 1, includeAudio = true, photoFormat = 'jpeg', imageEdits = [], sizePolicy = 'auto', compatibility = false,
+  signal, onProgress = () => {} }) {
   if (!['jpeg', 'heic'].includes(photoFormat)) throw new Error('请选择 HEIC 或 JPG 照片格式。');
-  const kind = validateLivePhotoFiles(files), support = await checkLivePhotoSupport(); abort(signal);
-  if (!support.supported) throw new Error(support.message);
-  if (photoFormat === 'heic' && !support.heicSupported) throw new Error('当前设备不支持本地 HEIC 编码，请使用新版浏览器或桌面客户端。');
+  const kind = validateLivePhotoFiles(files); abort(signal);
   if (!Array.isArray(imageEdits) || imageEdits.length > files.length) throw new Error('图片调整参数与素材不匹配。');
   const edits = files.map((_, index) => normalizeLivePhotoImageEdit(imageEdits[index]));
   let source, encoder, canvas, coverCanvas;
@@ -404,18 +519,20 @@ export async function createLivePhoto({ files, start = 0, duration = 3, keyPhoto
         if (pixels > LIVE_PHOTO_LIMITS.maxDecodedPixels) throw new Error('图片总像素超过 6400 万，请缩小图片或减少张数后制作。');
       }
     }
-    const options = normalizeLivePhotoOptions({ kind, sourceDuration: source?.video.duration, start, duration, keyPhotoTime, motion, speed });
-    const firstImageSize = kind === 'images' ? livePhotoImageDimensions(images[0], edits[0]) : null;
-    const nativeSize = kind === 'video' ? livePhotoDimensions(source.video.videoWidth, source.video.videoHeight)
-      : livePhotoDimensions(firstImageSize.width, firstImageSize.height);
-    const config = await selectLivePhotoVideoConfig(nativeSize, { signal });
+    const info = kind === 'video' ? { kind, duration: source.video.duration, width: source.video.videoWidth,
+      height: source.video.videoHeight, hasAudio: hasVideoAudio(source.video) }
+      : { kind, duration: null, width: images[0].naturalWidth, height: images[0].naturalHeight, hasAudio: false,
+        images: images.map(image => ({ width: image.naturalWidth, height: image.naturalHeight })) };
+    const plan = await planLivePhoto(files, { start, duration, keyPhotoTime, motion, speed, includeAudio, photoFormat,
+      imageEdits: edits, sizePolicy, compatibility }, { signal, info });
+    if (plan.audio.requiresChoice) throw Object.assign(new Error(plan.audio.reason), { code: 'AUDIO_CHOICE_REQUIRED' });
+    const options = plan.normalizedOptions, config = plan.video.config;
     const size = { width: config.width, height: config.height };
-    const videoResized = size.width !== nativeSize.width || size.height !== nativeSize.height;
-    if (videoResized) onProgress({ progress: 0.04, message: `照片保留原始像素，动态画面按设备支持的 ${size.width} × ${size.height} 制作。` });
+    const videoResized = plan.video.resized;
+    if (plan.warnings.length) onProgress({ progress: 0.04, message: plan.warnings.join(' ') });
     abort(signal);
     let audio;
-    if (kind === 'video' && options.speed === 1 && includeAudio && hasVideoAudio(source.video) !== false) {
-      if (!support.audioSupported) throw new Error('当前浏览器不支持保留声音，请关闭“保留声音”或使用桌面客户端。');
+    if (plan.audio.requested && info.hasAudio !== false) {
       onProgress({ progress: 0.06, message: '正在截取所选片段的声音…' });
       audio = await encodeAudio(await selectedAudio(source.video, options.start, options.duration, signal), options.duration, signal);
     }
@@ -456,9 +573,7 @@ export async function createLivePhoto({ files, start = 0, duration = 3, keyPhoto
     if (!decoderConfig || samples.length !== frameCount) throw new Error('视频编码不完整，请重试。');
     // Cover and metadata refer to the same encoded frame, including image cuts.
     const coverTime = options.keyPhotoTime;
-    const coverIndex = kind === 'images' ? Math.min(images.length - 1, Math.floor(coverTime / options.duration * images.length)) : 0;
-    const photoSize = kind === 'video' ? { width: source.video.videoWidth, height: source.video.videoHeight }
-      : livePhotoImageDimensions(images[coverIndex], edits[coverIndex]);
+    const photoSize = { width: plan.photo.width, height: plan.photo.height };
     coverCanvas = document.createElement('canvas'); Object.assign(coverCanvas, photoSize);
     const coverContext = coverCanvas.getContext('2d', { alpha: false });
     if (!coverContext) throw new Error('当前设备无法分配原始分辨率封面，请减少素材后重试。');
@@ -486,6 +601,7 @@ export async function createLivePhoto({ files, start = 0, duration = 3, keyPhoto
       ...(photoFormat === 'heic' ? { heic: photo } : { jpeg: photo }), mov,
       previewBlob: new Blob([mov], { type: 'video/quicktime' }), photoPreviewBlob, ...size,
       photoWidth: photoSize.width, photoHeight: photoSize.height, videoBitrate: config.bitrate, videoResized,
+      photoResized: plan.photo.resized, sizePolicy, compatibility: Boolean(compatibility), plan,
       duration: options.duration, keyPhotoTime: coverTime, speed: options.speed,
       sourceSpan: options.sourceSpan, hasAudio: Boolean(audio), assetIdentifier: identifier };
   } finally {

@@ -101,11 +101,11 @@ try {
             return true;
           }
           if (action === 'startProfile') {
-            window.__profile = { ...input, status: 'downloading', items: [{ id: 'a'.repeat(24), title: '等待下载的笔记', status: 'pending' }] };
+            window.__profile = { ...input, status: 'discovering', discoveryComplete: false, completed: 0, items: [{ id: 'a'.repeat(24), title: '等待发现完成的笔记', status: 'pending' }] };
             return structuredClone(window.__profile);
           }
           if (action === 'pauseProfile') window.__profile.status = 'paused';
-          if (['resumeProfile', 'retryFailed', 'retryItem'].includes(action)) window.__profile.status = 'downloading';
+          if (['resumeProfile', 'retryFailed', 'retryItem'].includes(action)) window.__profile.status = window.__profile.discoveryComplete ? 'downloading' : 'discovering';
           if (['pauseProfile', 'resumeProfile', 'retryFailed', 'retryItem'].includes(action)) return structuredClone(window.__profile);
           return { ok: true };
         }
@@ -129,7 +129,8 @@ try {
   await expect(page.locator('#xhs-message')).not.toContainText('请先选择保存目录');
   await oldError(page);
   await page.locator('#xhs-profile-start').click();
-  await expect(page.locator('#xhs-profile-status')).toHaveText('正在下载');
+  await expect(page.locator('#xhs-profile-status')).toHaveText('正在发现笔记');
+  await expect(page.locator('#xhs-profile-completeness')).toContainText('确认主页末尾后再开始下载');
   await expect(page.locator('#xhs-choose-directory')).toBeDisabled();
   await expect(page.locator('#xhs-message')).toBeHidden();
   assert.equal(await page.evaluate(() => window.__profileCalls.filter(call => call.action === 'startProfile').at(-1).input.directory), directoryA);
@@ -149,7 +150,7 @@ try {
   await choose(page, null);
   await expect(page.locator('#xhs-directory')).toHaveText(directoryB);
   await page.locator('#xhs-profile-start').click();
-  await expect(page.locator('#xhs-profile-status')).toHaveText('正在下载');
+  await expect(page.locator('#xhs-profile-status')).toHaveText('正在发现笔记');
   assert.equal(await page.evaluate(() => window.__profileCalls.filter(call => call.action === 'startProfile').at(-1).input.directory), directoryB);
   report.checks.push('A late native state read and idle/paused queue events cannot overwrite a newly chosen directory; cancelling the picker preserves it and the next start uses it.');
 
@@ -157,24 +158,24 @@ try {
   await holdProfileRead(page);
   await choose(page, directoryB);
   await page.locator('#xhs-profile-start').click();
-  await expect(page.locator('#xhs-profile-status')).toHaveText('正在下载');
+  await expect(page.locator('#xhs-profile-status')).toHaveText('正在发现笔记');
   await releaseProfileRead(page);
   await expect(page.locator('#xhs-directory')).toHaveText(directoryB);
-  await expect(page.locator('#xhs-profile-status')).toHaveText('正在下载');
+  await expect(page.locator('#xhs-profile-status')).toHaveText('正在发现笔记');
   await expect(page.locator('#xhs-profile-start')).toBeDisabled();
 
   await emit(page, { status: 'paused', directory: directoryA });
   await holdProfileRead(page);
   await page.locator('#xhs-profile-resume').click();
-  await expect(page.locator('#xhs-profile-status')).toHaveText('正在下载');
+  await expect(page.locator('#xhs-profile-status')).toHaveText('正在发现笔记');
   await releaseProfileRead(page);
   await expect(page.locator('#xhs-directory')).toHaveText(directoryA);
-  await expect(page.locator('#xhs-profile-status')).toHaveText('正在下载');
+  await expect(page.locator('#xhs-profile-status')).toHaveText('正在发现笔记');
   await expect(page.locator('#xhs-profile-resume')).toBeDisabled();
 
   await emit(page, { status: 'paused', directory: directoryA });
   await holdProfileRead(page);
-  await emit(page, { status: 'downloading', directory: directoryB });
+  await emit(page, { status: 'downloading', discoveryComplete: true, directory: directoryB });
   await releaseProfileRead(page);
   await expect(page.locator('#xhs-directory')).toHaveText(directoryB);
   await expect(page.locator('#xhs-profile-status')).toHaveText('正在下载');
@@ -242,8 +243,17 @@ try {
   await expect(page.locator('#xhs-message')).toBeHidden();
   report.checks.push('A held initial native state read remains valid after an early missing-directory submission, restores the saved directory, and clears the obsolete validation error.');
 
-  await emit(page, { status: 'waiting', discoveryComplete: false, discovered: 121, completed: 9, skipped: 0, failed: 0,
-    discoveryIssue: '', currentTitle: '正在保存本批笔记' });
+  await emit(page, { status: 'discovering', discoveryComplete: false, discovered: 121, completed: 0, skipped: 0, failed: 0,
+    discoveryIssue: '', currentTitle: '' });
+  await expect(page.locator('#xhs-profile-completeness')).toContainText('确认主页末尾后再开始下载');
+  await expect(page.locator('#xhs-profile-completeness')).not.toContainText('每发现一批');
+  assert.equal(await page.locator('#xhs-profile-progress').getAttribute('value'), null);
+  // Older versions may have saved media before discovering the full list.
+  // Restoring that progress must not imply new downloads during rediscovery.
+  await emit(page, { status: 'paused', completed: 9, discoveryIssue: '旧任务尚未完成主页发现，请继续补全列表。' });
+  await expect(page.locator('#xhs-profile-resume')).toBeEnabled();
+  await emit(page, { status: 'discovering', discoveryIssue: '' });
+  await expect(page.locator('#xhs-profile-completeness')).toContainText('确认主页末尾后再开始下载');
   await expect(page.locator('#xhs-profile-completeness')).toContainText('尚未确认主页末尾');
   await expect(page.locator('#xhs-profile-completeness')).toContainText('121 篇，数量仍可能增加');
   assert.equal(await page.locator('#xhs-profile-progress').getAttribute('value'), null);
@@ -256,7 +266,25 @@ try {
   await emit(page, { status: 'completed', discoveryComplete: true, discoveryIssue: '' });
   await expect(page.locator('#xhs-profile-completeness')).toHaveText('已确认主页末尾，共发现 151 篇。');
   await expect(page.locator('#xhs-profile-progress')).toHaveAttribute('value', '100');
-  report.checks.push('121/9 and 151/151 incomplete queues always show the unknown total and stop reason without a false full progress bar; only explicit discovery completion permits 100%.');
+  report.checks.push('Fresh discovery explains that downloads wait for the confirmed last page. Legacy 121/9 and 151/151 saved queues remain indeterminate while paused or rediscovering; only explicit discovery completion permits 100%.');
+
+  for (const status of ['paused', 'cancelled', 'canceled', 'error']) {
+    await emit(page, { status, profileUrl, directory: directoryA, discoveryComplete: true });
+    await expect(page.locator('#xhs-profile-resume')).toBeEnabled();
+    await choose(page, directoryB);
+    await expect(page.locator('#xhs-message')).toContainText('继续原任务仍使用原目录');
+    const before = await page.evaluate(() => window.__profileCalls.filter(call => call.action === 'resumeProfile').length);
+    await page.locator('#xhs-profile-resume').click();
+    await expect(page.locator('#xhs-profile-status')).toHaveText('正在下载');
+    await expect(page.locator('#xhs-directory')).toHaveText(directoryA);
+    assert.equal(await page.evaluate(() => window.__profileCalls.filter(call => call.action === 'resumeProfile').length), before + 1);
+  }
+  for (const fields of [{ profileUrl: '', directory: directoryA }, { profileUrl, directory: '' }, { profileUrl, directory: directoryA, status: 'completed' }]) {
+    await emit(page, { status: 'paused', ...fields });
+    await expect(page.locator('#xhs-profile-resume')).toBeDisabled();
+  }
+  await emit(page, { status: 'completed', profileUrl, directory: directoryA });
+  report.checks.push('Paused, cancelled and failed saved jobs can resume their authoritative directory; missing profile/directory and completed jobs cannot resume.');
 
   await page.evaluate(() => scrollTo(0, 0));
   const screenshot = 'xhs-profile-ui.png';

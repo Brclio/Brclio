@@ -167,6 +167,12 @@ function selection(input) {
   });
 }
 
+function downloadEngine(input, note) {
+  const engine = input.engine ?? note?.engine ?? 'node';
+  if (!['node', 'python'].includes(engine)) throw new Error('下载引擎无效。');
+  return engine;
+}
+
 export async function createXhsService({ app, BrowserWindow, session, dialog, clipboard, net, shell, getWindow = () => undefined,
   onEvent = () => {}, fetchImpl, clipboardWriters } = {}) {
   const directory = path.join(app.getPath('userData'), 'xhs');
@@ -216,9 +222,57 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
   } });
   const python = new PythonBackend({ appDirectory: app.getAppPath(), sourceDirectory, resourcesDirectory: process.resourcesPath,
     packaged: app.isPackaged });
-  // Python is an optional alternate parser. Initialize it on demand, without delaying the existing app or the native parser.
+  // Python is optional. Initialize it only when a parse or media request selects it.
   let pythonReady;
   const ensurePython = () => pythonReady ||= python.initialize();
+  async function requestPythonMedia(route, signal) {
+    if (!await abortableOperation(ensurePython, signal)) throw new Error('Python 备用引擎不可用，请使用完整安装包。');
+    throwIfAborted(signal);
+    return abortableOperation(() => python.request({ path: route, method: 'GET', headers: {}, body: '' }, signal), signal,
+      response => { void response?.body?.cancel().catch(() => {}); });
+  }
+  // The source single-image action uses the currently selected image proxy,
+  // then direct CDN bytes only after HTTP 413. Keep native video and clipboard
+  // transports independent of this choice, as in the source desktop client.
+  async function fetchImageForEngine(engine, source, { signal, token: assetToken, onProgress = () => {} } = {}) {
+    const token = assetToken || extractOriginalAssetToken(source);
+    if (!token) throw new Error('图片资源标识无效。');
+    let response;
+    if (engine === 'python') {
+      response = await requestPythonMedia(`/api/python_image?${new URLSearchParams({ token })}`, signal);
+    } else {
+      const handler = createImageHandler({ onError: () => {}, fetchImpl: async (url, options = {}) => {
+        const upstream = await fetchMedia(url, { fetchImpl: network, kind: 'image',
+          signal: options.signal ? AbortSignal.any([signal, options.signal].filter(Boolean)) : signal });
+        if (Number(upstream.headers.get('content-length')) > 4_200_000) {
+          await upstream.body?.cancel().catch(() => {});
+          return new Response(null, { status: upstream.status, headers: upstream.headers });
+        }
+        if (!upstream.body) return upstream;
+        let loadedBytes = 0;
+        const declaredBytes = Number(upstream.headers.get('content-length') || 0);
+        const totalBytes = Number.isSafeInteger(declaredBytes) && declaredBytes > 0 ? declaredBytes : 0;
+        return new Response(upstream.body.pipeThrough(new TransformStream({
+          transform(chunk, controller) {
+            loadedBytes += chunk.byteLength;
+            onProgress({ phase: 'downloading', loadedBytes, totalBytes });
+            controller.enqueue(chunk);
+          },
+        })), { status: upstream.status, headers: upstream.headers });
+      } });
+      response = await invokeHandler(handler, { query: { token } });
+    }
+    throwIfAborted(signal);
+    if (response.status === 413) {
+      await response.body?.cancel().catch(() => {});
+      return fetchMedia(source, { fetchImpl: nativeNetwork, kind: 'image', signal });
+    }
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.message || `原图下载失败（HTTP ${response.status}）。`);
+    }
+    return response;
+  }
   const video = new NativeVideoDownload({ fetchImpl: nativeNetwork,
     showSaveDialog: options => dialog.showSaveDialog(getWindow(), options), onProgress: state => emit('video', state) });
   let imageClipboard;
@@ -268,6 +322,7 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
     const note = imagesOnly ? { title: input.title, images: input.images } : input.note;
     if (!note || typeof note !== 'object' || JSON.stringify(note).length > 4 * 1024 * 1024) throw new Error('笔记信息无效或过大。');
     const images = selection(input.images ?? note.images ?? []);
+    const engine = downloadEngine(input, note);
     const format = imagesOnly ? 'images' : input.format || 'all';
     if (!['images', 'text', 'all', 'live'].includes(format)) throw new Error('保存格式无效。');
     if ((format === 'images' || format === 'live') && !images.length) throw new Error('请先选择图片。');
@@ -291,8 +346,11 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
         const urls = [...new Set([asset.url, ...(asset.backupUrls || [])])]; let lastError;
         for (const url of urls) {
           try {
-            const result = await downloadMedia({ root, directory: target, asset: { ...asset, url }, signal: controller.signal, fetchImpl: nativeNetwork,
-              onProgress: state => progress({ ...state, completed: files.length, receivedBytes: completedBytes + (state.loadedBytes || 0), message: `正在保存第 ${files.length + 1} 个素材` }) });
+            const assetProgress = state => progress({ ...state, completed: files.length,
+              receivedBytes: completedBytes + (state.loadedBytes || 0), message: `正在保存第 ${files.length + 1} 个素材` });
+            const result = await downloadMedia({ root, directory: target, asset: { ...asset, url }, signal: controller.signal,
+              fetchImpl: asset.kind === 'image' ? (source, options) => fetchImageForEngine(engine, source, { ...options, token: asset.token, onProgress: assetProgress }) : nativeNetwork,
+              onProgress: assetProgress });
             files.push(result); completedBytes += result.bytes;
             progress({ completed: files.length, receivedBytes: completedBytes, message: `已保存 ${files.length} / ${total} 个素材` }); return;
           } catch (error) { lastError = error; if (controller.signal.aborted) throw error; }
@@ -302,7 +360,7 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
       if (format !== 'text') for (const image of images) {
         throwIfAborted(controller.signal);
         if (format !== 'live' || image.liveVideo?.url) {
-          await saveAsset({ key: `image-${String(image.index).padStart(3, '0')}`, kind: 'image', url: image.url });
+          await saveAsset({ key: `image-${String(image.index).padStart(3, '0')}`, kind: 'image', url: image.url, token: image.token });
           if ((format === 'all' || format === 'live') && image.liveVideo?.url) await saveAsset({ key: `live-${String(image.index).padStart(3, '0')}`, kind: 'video',
             url: image.liveVideo.url, backupUrls: image.liveVideo.backupUrls, requireAudio: false });
           else if ((format === 'all' || format === 'live') && image.livePhoto) throw new Error('实况缺少配对视频，未标记为完整下载。');
@@ -345,6 +403,7 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
     const note = input.note;
     if (!note || typeof note !== 'object' || JSON.stringify(note).length > 4 * 1024 * 1024) throw new Error('笔记信息无效或过大。');
     const images = selection(input.images ?? note.images ?? []);
+    const engine = downloadEngine(input, note);
     if (!images.length) throw new Error('请先选择图片。');
     if (!['images', 'live', 'selected'].includes(input.format)) throw new Error('压缩包格式无效。');
     if (input.format === 'live' && images.some(image => !image.liveVideo?.url)) throw new Error('所选图片缺少配对实况视频，请只选择完整实况。');
@@ -395,10 +454,9 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
         if (parsed.protocol === 'brclio-xhs:' && parsed.hostname === 'local') {
           const handler = parsed.pathname === '/source-image' ? imageHandler : parsed.pathname === '/source-video' ? videoHandler : null;
           if (!handler) throw new Error('素材下载接口无效。');
-          if (note.engine === 'python') {
-            if (!await ensurePython()) throw new Error('Python 备用引擎不可用，请使用完整安装包。');
+          if (engine === 'python') {
             const route = parsed.pathname === '/source-image' ? '/api/python_image' : '/api/python_video';
-            return python.request({ path: `${route}${parsed.search}`, method: 'GET', headers: {}, body: '' }, signal);
+            return requestPythonMedia(`${route}${parsed.search}`, signal);
           }
           return invokeHandler(handler, { query: Object.fromEntries(parsed.searchParams) });
         }

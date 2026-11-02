@@ -3,7 +3,7 @@ import http from 'node:http';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from '@playwright/test';
+import { chromium, expect } from '@playwright/test';
 
 // Exercise the shared download UI with delayed host operations, and decode real
 // portrait/landscape clips so intrinsic media sizes can expose layout changes.
@@ -76,7 +76,7 @@ try {
   await page.route('**/bridge.js', async route => {
     const response = await route.fetch();
     await route.fulfill({ response, body: await response.text() + `
-      window.__downloadCalls=[];window.__downloadPending=new Map();
+      window.__downloadCalls=[];window.__downloadPending=new Map();window.__holdParse=false;window.__pendingParse=null;
       window.BrclioHost={...window.BrclioHost,
         getPlatform:async()=>({platform:'darwin',capabilities:{}}),
         onXhsEvent(callback){window.__downloadEmit=callback},
@@ -84,9 +84,12 @@ try {
           window.__downloadCalls.push({action,input});
           if(action==='loginState')return {loggedIn:false};
           if(action==='profileState')return {status:'idle',items:[]};
-          if(action==='parse')return {title:'下载界面回归',content:'验证视频、原图、实况与文案下载。',
+          if(action==='parse') {
+            if(window.__holdParse)return await new Promise((resolve,reject)=>window.__pendingParse={resolve,reject});
+            return {engine:input.engine,title:'下载界面回归',content:'验证视频、原图、实况与文案下载。',
             images:[{index:1,url:'https://fixture/image.jpg'},{index:2,url:'https://fixture/live.jpg',liveVideo:{url:'https://fixture/live.mp4'}}],
             videos:[{label:'高清',url:'https://fixture/video.mp4',width:1920,height:1080}],originalVideos:[]};
+          }
           if(['saveVideo','exportArchive','saveImages','saveNote','copyImages'].includes(action))return await new Promise(resolve=>window.__downloadPending.set(input.requestId,resolve));
           if(['cancelVideo','cancelArchive','cancelTransfer'].includes(action)){window.__downloadPending.get(input.requestId)?.({ok:true,cancelled:true});return {ok:true}}
           return {ok:true};
@@ -102,6 +105,69 @@ try {
   assert.equal(await page.locator('#xhs-video-preview').getAttribute('preload'), 'metadata');
   assert.equal(await page.locator('#xhs-video-preview').getAttribute('playsinline'), '');
   assert.match(await page.locator('#xhs-video-preview').getAttribute('poster'), /api\/image/);
+
+  await page.evaluate(() => { window.__holdParse = true; });
+  await page.locator('#xhs-share').fill('https://www.xiaohongshu.com/explore/' + 'b'.repeat(24));
+  await page.locator('#xhs-parse').click();
+  await page.waitForFunction(() => Boolean(window.__pendingParse));
+  await expect(page.locator('#xhs-parse-form')).toHaveAttribute('aria-busy', 'true');
+  for (const selector of ['#xhs-share', '#xhs-paste', '#xhs-engine', '#xhs-video-select', '#xhs-copy-content', '#xhs-export-content', '#xhs-save-note', '#xhs-save-images', '#xhs-save-video', '#xhs-copy-video-link', '#xhs-open-video-link', '#xhs-copy-image-links', '#xhs-invert-selection', '#xhs-select-all']) {
+    await expect(page.locator(selector)).toBeDisabled();
+  }
+  assert.equal(await page.locator('#xhs-image-grid button:enabled').count(), 0);
+  assert.equal(await page.locator('#xhs-image-grid input:enabled').count(), 0);
+  const callsWhileParsing = await page.evaluate(() => window.__downloadCalls.length);
+  await page.evaluate(() => {
+    document.querySelector('#xhs-save-note').click();
+    document.querySelector('#xhs-parse-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
+  assert.equal(await page.evaluate(() => window.__downloadCalls.length), callsWhileParsing, 'Pending parsing must not dispatch old saves or a second parse');
+  await page.evaluate(() => window.__pendingParse.resolve({ engine: 'node', title: '实况标记回归', content: '配对缺失应有明确提示', videos: [], originalVideos: [], images: [
+    { index: 1, url: 'https://fixture/missing.jpg', livePhoto: true, liveVideo: null },
+    { index: 2, url: 'https://fixture/live.jpg', liveVideo: { url: 'https://fixture/live.mp4' } },
+    { index: 3, url: 'https://fixture/still.jpg' },
+  ] }));
+  await expect(page.locator('#xhs-parse-form')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('#xhs-note-title')).toHaveText('实况标记回归');
+  await expect(page.locator('#xhs-note-summary')).toContainText('2 张实况');
+  const missingLive = page.locator('#xhs-image-grid article').nth(0);
+  await expect(missingLive.locator('label')).toContainText('实况');
+  await expect(missingLive).toContainText('实况源暂不可用');
+  assert.equal(await missingLive.getByRole('button', { name: '实况 MP4', exact: true }).count(), 0);
+  await expect(missingLive.getByRole('button', { name: '保存原图', exact: true })).toBeEnabled();
+  await expect(page.locator('#xhs-image-grid article').nth(1).getByRole('button', { name: '实况 MP4', exact: true })).toBeEnabled();
+  await expect(page.locator('#xhs-image-grid article').nth(2).locator('label')).not.toContainText('实况');
+  await expect(page.locator('#xhs-share')).toBeEnabled();
+  await expect(page.locator('#xhs-engine')).toBeEnabled();
+  await expect(page.locator('#xhs-save-video')).toBeDisabled();
+  report.checks.push('Pending parse locks prior result actions, inputs, quality and engine; success restores controls and retains Live markers/counts with a specific unavailable-pair warning.');
+
+  await page.locator('#xhs-parse').click();
+  await expect(page.locator('#xhs-parse-form')).toHaveAttribute('aria-busy', 'true');
+  await page.evaluate(() => window.__pendingParse.reject(new Error('解析失败回归')));
+  await expect(page.locator('#xhs-message')).toHaveText('解析失败回归');
+  await expect(page.locator('#xhs-parse-form')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('#xhs-note-title')).toHaveText('实况标记回归');
+  await expect(page.locator('#xhs-share')).toBeEnabled();
+  await expect(page.locator('#xhs-engine')).toBeEnabled();
+  await expect(page.locator('#xhs-copy-content')).toBeEnabled();
+  await expect(page.locator('#xhs-save-images')).toBeEnabled();
+  report.checks.push('Failed parsing restores the previous note and enabled actions without leaving the form busy.');
+  await page.evaluate(() => { window.__holdParse = false; window.__pendingParse = null; });
+  await page.locator('#xhs-parse').click();
+  await expect(page.locator('#xhs-note-title')).toHaveText('下载界面回归');
+
+  const parseCount = await page.evaluate(() => window.__downloadCalls.filter(call => call.action === 'parse').length);
+  for (const engine of ['python', 'node']) {
+    await page.locator('#xhs-engine').selectOption(engine);
+    for (const [selector, action] of [['#xhs-save-images', 'saveImages'], ['#xhs-save-note', 'saveNote'], ['#xhs-export-selected', 'exportArchive']]) {
+      await page.locator(selector).click();
+      assert.equal(await page.evaluate(action => window.__downloadCalls.filter(call => call.action === action).at(-1).input.engine, action), engine);
+      await settle(page, await activeRequest(page, action)); await dismiss(page);
+    }
+  }
+  assert.equal(await page.evaluate(() => window.__downloadCalls.filter(call => call.action === 'parse').length), parseCount, 'Changing download engine must not require parsing the note again');
+  report.checks.push('Changing the current engine after parsing explicitly routes selected images, whole-note saves and ZIPs through that engine in both directions without reparsing.');
 
   // Real WebM files are generated locally; no external CDN or logged-in state
   // is needed, and both intrinsic aspect ratios must retain the same frame.
@@ -300,14 +366,19 @@ try {
   await emit(page, 'profile', '', { status: 'discovering', discoveryComplete: false, discovered: 2, completed: 0, items: [] });
   assert.equal(await page.locator('#xhs-profile-progress').isVisible(), true);
   assert.equal(await page.locator('#xhs-profile-progress').getAttribute('value'), null);
-  await emit(page, 'profile', '', { status: 'downloading', discoveryComplete: false, discovered: 2, completed: 1, items: [] });
-  assert.equal(await page.locator('#xhs-profile-progress').getAttribute('value'), null, 'Saving the current batch does not establish the profile total');
+  assert.match(await page.locator('#xhs-profile-completeness').innerText(), /确认主页末尾后再开始下载/);
+  // Legacy queues can contain saved files while discovery is still incomplete.
+  await emit(page, 'profile', '', { status: 'paused', discoveryComplete: false, discovered: 2, completed: 1, items: [] });
+  assert.equal(await page.locator('#xhs-profile-progress').getAttribute('value'), null, 'Saved legacy files do not establish the profile total');
   assert.match(await page.locator('#xhs-profile-completeness').innerText(), /尚未确认主页末尾/);
+  await emit(page, 'profile', '', { status: 'discovering', discoveryComplete: false, discovered: 2, completed: 1, items: [] });
+  assert.equal(await page.locator('#xhs-profile-progress').getAttribute('value'), null);
+  assert.match(await page.locator('#xhs-profile-completeness').innerText(), /确认主页末尾后再开始下载/);
   await emit(page, 'profile', '', { status: 'downloading', discoveryComplete: true, discovered: 2, completed: 1, items: [] });
   assert.equal(await page.locator('#xhs-profile-progress').evaluate(progress => progress.value), 50);
   await emit(page, 'profile', '', { status: 'completed', discoveryComplete: true, discovered: 2, completed: 2, items: [] });
   assert.equal(await page.locator('#xhs-profile-progress').evaluate(progress => progress.value), 100);
-  report.checks.push('Profile progress remains indeterminate during batch saving until the last page is confirmed; a known total then shows handled/discovered counts and a complete queue reaches 100%.');
+  report.checks.push('Profile progress remains indeterminate during full-list discovery and for paused or rediscovering legacy queues with saved files; downloads begin with a confirmed total, and a complete queue reaches 100%.');
   await page.locator('#xhs-tab-note').click();
 
   // Browser/system Blob downloads have no observable destination write. They
@@ -332,7 +403,17 @@ try {
   await page.locator('#xhs-live-duration').fill('.5');
   await page.locator('#xhs-live-duration').dispatchEvent('change');
   await page.locator('#xhs-live-generate').click();
-  await page.locator('#xhs-live-result').waitFor({ timeout: 60000 });
+  try { await page.locator('#xhs-live-result').waitFor({ timeout: 60000 }); }
+  catch (error) {
+    report.liveFailure = await page.evaluate(() => ({
+      status: document.querySelector('#xhs-live-status')?.textContent,
+      message: document.querySelector('#xhs-message')?.textContent,
+      plan: document.querySelector('#xhs-live-plan-detail')?.textContent,
+      generateDisabled: document.querySelector('#xhs-live-generate')?.disabled,
+      retryHidden: document.querySelector('#xhs-live-retry')?.hidden,
+    }));
+    throw error;
+  }
   for (const [kind, suffix] of [['package', /\.zip$/], ['pair', /配对文件\.zip$/], ['photo', /\.JPG$/], ['mov', /\.MOV$/]]) {
     await checkGeneratedExport('#xhs-live-export-' + kind, suffix);
   }
