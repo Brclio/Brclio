@@ -142,6 +142,7 @@ jobs:
           xvfb-run -a node scripts/verify-xhs-live.cjs
           xvfb-run -a node scripts/verify-xhs-live-import.mjs --electron
           node scripts/verify-xhs-live-editor.mjs
+          node scripts/verify-xhs-live-preflight.mjs
           xvfb-run -a node --test test/xhs-live-maker-edit.test.cjs
       - run: node scripts/verify-host-contracts.mjs
       - run: node scripts/verify-update-proxy-ui.mjs
@@ -154,6 +155,8 @@ jobs:
           path: |
             artifacts/*.png
             artifacts/xhs-*verification.json
+            artifacts/xhs-live-preflight/**
+            artifacts/xhs-live-editor/**
           if-no-files-found: ignore
           retention-days: 7
 

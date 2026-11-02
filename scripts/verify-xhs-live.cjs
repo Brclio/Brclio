@@ -95,7 +95,7 @@ require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
   assert.equal(support.heicSupported, true, 'The local HEIC Worker/WASM must load.');
   // Linux is the CI host, not a distributed desktop target. Its Electron
   // build can encode H.264 while lacking the OS AAC encoder. Still exercise
-  // all video/HEIC paths and the disabled-audio UI; keep strict audio coverage
+  // all video/HEIC paths and the explicit silent-choice UI; keep strict audio coverage
   // on the macOS/Windows targets rather than claiming that AAC was tested.
   if (process.platform !== 'linux') assert.equal(support.audioSupported, true, 'The target runtime must encode AAC.');
   const retainAudio = support.audioSupported === true;
@@ -162,25 +162,40 @@ print(String(data:try! JSONSerialization.data(withJSONObject:output),encoding:.u
   await page.locator('#xhs-live-source-info').filter({hasText:'视频 · 6.00 秒'}).waitFor();
   await field('start',1);await field('duration',.6);await field('cover',.2);
   if (retainAudio) await page.locator('#xhs-live-audio').check();
-  else assert.equal(await page.locator('#xhs-live-audio').isDisabled(),true,'Unavailable AAC must disable audio retention.');
+  else {
+    await expect(page.locator('#xhs-live-audio-choice')).toBeVisible();
+    await expect(page.locator('#xhs-live-generate')).toBeDisabled();
+    await page.locator('#xhs-live-allow-silent').click();
+  }
   await generate();
   const clipInfo = await page.locator('#xhs-live-result-info').textContent();
   if (retainAudio) assert.match(clipInfo,/保留声音/);
   else assert.doesNotMatch(clipInfo,/保留声音/);
   const audioMovie=await exportFile('export-mov','audio movie');
-  report.checks.push({name:retainAudio?'trimmed video + HEIC + retained AAC audio':'trimmed video + HEIC + unavailable AAC disabled',...await inspectMovie(audioMovie,{duration:.6,audio:retainAudio,cover:.2})});
+  report.checks.push({name:retainAudio?'trimmed video + HEIC + retained AAC audio':'trimmed video + HEIC + unavailable AAC requires explicit silent choice',...await inspectMovie(audioMovie,{duration:.6,audio:retainAudio,cover:.2})});
   if (retainAudio) {
     const pcm=execFileSync('ffmpeg',['-v','error','-i',audioMovie,'-map','0:a','-f','f32le','-acodec','pcm_f32le','-'],{timeout:30000,stdio:['ignore','pipe','pipe']});
     let sum=0;for(let at=0;at+4<=pcm.length;at+=4)sum+=pcm.readFloatLE(at)**2;const rms=Math.sqrt(sum/(pcm.length/4));assert.ok(rms>.01,'retained audio is audible');report.audioRms=rms;
   }
   await page.locator('#xhs-live-speed').selectOption('2');
-  assert.equal(await page.locator('#xhs-live-audio').isDisabled(),true);
+  await page.locator('#xhs-live-audio').check();
+  await expect(page.locator('#xhs-live-audio-choice')).toBeVisible();
+  await expect(page.locator('#xhs-live-generate')).toBeDisabled();
+  if (retainAudio) {
+    await page.locator('#xhs-live-keep-audio').click();
+    await expect(page.locator('#xhs-live-speed')).toHaveValue('1');
+    await expect(page.locator('#xhs-live-generate')).toBeEnabled();
+    await page.locator('#xhs-live-speed').selectOption('2');
+    await expect(page.locator('#xhs-live-audio-choice')).toBeVisible();
+  }
+  await page.locator('#xhs-live-allow-silent').click();
+  await expect(page.locator('#xhs-live-audio')).not.toBeChecked();
   await page.locator('#xhs-live-preview').click();
   await expect.poll(() => page.locator('#xhs-live-preview-video').evaluate(video=>video.playbackRate)).toBe(2);
   await generate();
   assert.doesNotMatch(await page.locator('#xhs-live-result-info').textContent(),/保留声音/);
   const fastMovie=await exportFile('export-mov','2x movie');
-  report.checks.push({name:'2x video preview + silent encoded output',...await inspectMovie(fastMovie,{duration:.6,audio:false,cover:.2})});
+  report.checks.push({name:'2x video requires explicit audio choice; restores 1x or makes silent encoded output',...await inspectMovie(fastMovie,{duration:.6,audio:false,cover:.2})});
   // A real sparse MP4 on disk exceeds 2 GiB while only the short selected clip
   // is decoded. An ISO-BMFF free box pads the fixture without invalidating it.
   const largeVideoPath=path.join(temporary,'large-native-video.mp4'),source=await fs.readFile(videoPath),sourceBytes=2*1024**3+1,free=Buffer.alloc(8);
@@ -193,6 +208,7 @@ print(String(data:try! JSONSerialization.data(withJSONObject:output),encoding:.u
   await page.locator('#xhs-live-files').setInputFiles(largeVideoPath);
   await page.locator('#xhs-live-source-info').filter({hasText:'视频 · 6.00 秒'}).waitFor();
   await field('start',.25);await field('duration',.6);await field('cover',.2);
+  if (!retainAudio) await page.locator('#xhs-live-allow-silent').click();
   await generate();
   const largeMovie=await exportFile('export-mov','large source movie');
   assert.equal(await page.evaluate(()=>window.__xhsLargeInputSize),sourceBytes);
@@ -204,7 +220,7 @@ print(String(data:try! JSONSerialization.data(withJSONObject:output),encoding:.u
   await page.locator('#xhs-live-cancel').click();
   await page.locator('#xhs-live-status').filter({hasText:'制作已取消'}).waitFor();
   assert.equal(await page.locator('#xhs-live-result').isVisible(),false);
-  assert.equal(await page.locator('#xhs-live-generate').isEnabled(),true);
+  await expect(page.locator('#xhs-live-generate')).toBeEnabled();
   report.checks.push({name:'UI cancellation leaves no stale export and permits retry'});
   await page.evaluate(()=>window.scrollTo(0,0));
   await page.screenshot({path:path.join(artifacts,'xhs-live-cancel.png'),fullPage:true});

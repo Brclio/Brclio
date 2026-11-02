@@ -66,7 +66,8 @@ async function main() {
   const output = path.join(temporary, 'downloads');
   await fs.mkdir(output);
   let application, server;
-  const sockets = new Set(), requests = [], secondPageProof = [];
+  const sockets = new Set(), requests = [];
+  let secondPageProof, explicitEndResponded = false;
   try {
     const keyPath = path.join(temporary, 'fixture.key'), certPath = path.join(temporary, 'fixture.pem');
     execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
@@ -74,7 +75,7 @@ async function main() {
       '-addext', `subjectAltName=${hosts.map(host => `DNS:${host}`).join(',')}`], { stdio: 'pipe', timeout: 30000 });
     const respond = async (request, response) => {
       const url = new URL(request.url, `https://${request.headers.host}`);
-      requests.push({ host: url.hostname, path: url.pathname, cursor: url.searchParams.get('cursor') });
+      requests.push({ host: url.hostname, path: url.pathname, cursor: url.searchParams.get('cursor'), afterExplicitEnd: explicitEndResponded });
       response.setHeader('cache-control', 'no-store');
       if (url.hostname === 'www.xiaohongshu.com' && url.pathname === `/user/profile/${profileId}`) {
         response.writeHead(200, { 'content-type': 'text/html;charset=utf-8' }); response.end(profileHTML()); return;
@@ -82,14 +83,19 @@ async function main() {
       if (url.hostname === 'www.xiaohongshu.com' && url.pathname === '/api/sns/web/v1/user_posted') {
         const second = url.searchParams.get('cursor') === 'page-two';
         if (second) {
-          for (const name of await fs.readdir(output)) {
-            const manifest = await fs.readFile(path.join(output, name, '.xhs-download.json'), 'utf8').then(JSON.parse).catch(() => null);
-            if (manifest?.complete) secondPageProof.push({ id: manifest.id, imagePresent: (await fs.readFile(path.join(output, name, 'image-001.png')).catch(() => null))?.equals(png) === true });
-          }
+          // Discovery may persist its queue, but must not visit details or create
+          // any note archives until every page and the explicit end are known.
+          secondPageProof = {
+            outputEntries: await fs.readdir(output),
+            detailRequests: requests.filter(entry => /^\/explore\//.test(entry.path)).length,
+            mediaRequests: requests.filter(entry => entry.host === 'ci.xiaohongshu.com').length,
+          };
         }
         const selected = second ? [1, 2] : [0, 1];
         response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ success: true, code: 0, data: { notes: selected.map(index => ({ note_id: ids[index], display_title: titles[index], user: { user_id: profileId } })), has_more: !second, cursor: second ? 'final-page' : 'page-two' } })); return;
+        response.end(JSON.stringify({ success: true, code: 0, data: { notes: selected.map(index => ({ note_id: ids[index], display_title: titles[index], user: { user_id: profileId } })), has_more: !second, cursor: second ? 'final-page' : 'page-two' } }));
+        if (second) explicitEndResponded = true;
+        return;
       }
       const noteId = url.pathname.match(/^\/explore\/([a-f0-9]{24})$/)?.[1];
       if (url.hostname === 'www.xiaohongshu.com' && ids.includes(noteId)) {
@@ -171,10 +177,16 @@ app.on('window-all-closed',()=>{});`);
     assert.equal(pages.length, 2, 'real CDP must capture both JSON responses');
     assert.deepEqual(pages.map(page => ({ count: page.count, hasMore: page.hasMore })), [{ count: 2, hasMore: true }, { count: 2, hasMore: false }]);
     report.checks.push('actual CDP captures both API pages and an explicit final has_more=false despite stale SSR state');
-    assert.deepEqual(secondPageProof.map(proof => proof.id).sort(), ids.slice(0, 2));
-    assert.ok(secondPageProof.every(proof => proof.imagePresent));
-    assert.ok(actual.updates.some(state => state.discovered === 2 && state.completed === 2 && state.discoveryComplete === false));
-    report.checks.push('both first-page notes and image files are committed before the DOM scroll requests page two');
+    assert.deepEqual(secondPageProof, { outputEntries: [], detailRequests: 0, mediaRequests: 0 });
+    assert.ok(actual.updates.some(state => state.discovered === 2 && state.completed === 0 && state.discoveryComplete === false));
+    assert.ok(actual.updates.some(state => state.discovered === 3 && state.completed === 0 && state.discoveryComplete === true));
+    assert.ok(actual.updates.filter(state => !state.discoveryComplete).every(state => state.completed === 0));
+    const finalPageIndex = actual.diagnostics.findIndex(event => event.event === 'discovery.page' && event.hasMore === false);
+    const firstNoteIndex = actual.diagnostics.findIndex(event => event.event === 'note.start');
+    assert.ok(finalPageIndex >= 0 && firstNoteIndex > finalPageIndex, 'the first note must start after CDP confirms the final page');
+    const downloadRequests = requests.filter(entry => /^\/explore\//.test(entry.path) || entry.host === 'ci.xiaohongshu.com');
+    assert.ok(downloadRequests.length > 0 && downloadRequests.every(entry => entry.afterExplicitEnd), 'all detail and media requests must follow the explicit final response');
+    report.checks.push('the complete list and explicit end are confirmed before the first detail request, media download or note archive');
     assert.deepEqual(actual.snapshot.items.map(item => item.title), titles);
     assert.deepEqual(actual.snapshot.items.map(item => item.sequence), [1, 2, 3]);
     assert.equal(actual.diagnostics.filter(event => event.event === 'note.start').length, 3);

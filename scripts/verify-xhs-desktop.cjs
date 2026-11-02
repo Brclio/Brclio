@@ -35,7 +35,14 @@ async function main() {
   const metadata = require('../package.json');
   await fs.writeFile(path.join(temporary, 'package.json'), JSON.stringify({ name: metadata.name, version: metadata.version, main: 'bootstrap.cjs' }));
   await fs.writeFile(bootstrap, `
-const {app,session,dialog,net}=require('electron');
+const {app,session,dialog,net,clipboard}=require('electron');
+// Observe this application's writes without reading or changing the user's
+// clipboard. Copies made in another app during the test are unrelated.
+global.__xhsClipboardWrites=[];
+clipboard.readText=()=>'isolated verification clipboard';
+for(const method of ['writeText','writeImage','writeBuffer','writeHTML','writeRTF','writeBookmark','write','clear']) {
+ clipboard[method]=()=>{global.__xhsClipboardWrites.push(method);};
+}
 // UI fixture transports are explicit; verify-xhs-redirects.cjs covers real TLS/network.
 const {mockElectronRequest}=require(${JSON.stringify(path.join(root, 'test/electron-update-request-fixture.cjs'))});
 globalThis.fetch=(url,options)=>fixtureResponse({url:String(url),headers:new Headers(options?.headers)});
@@ -78,7 +85,6 @@ require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
     await page.waitForFunction(() => document.body.dataset.ready === 'true');
     assert.equal(await page.locator('#view-copy').isVisible(), true);
     const settingsBefore = await page.evaluate(() => window.brclio.getSettings());
-    const originalClipboard = await app.evaluate(({ clipboard }) => clipboard.readText());
     assert.ok(!(await app.evaluate(() => global.__xhsNetwork)).some(url => new URL(url).hostname.includes('xiaohongshu')),
       'the copy-path launch must not initiate XHS browsing');
     await page.locator('[data-view="xhs"]').first().click();
@@ -150,7 +156,7 @@ require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
     report.checks.push('native folder approval + persisted queue IPC + private-host and unapproved-directory rejection');
     await page.locator('[data-view="copy"]').first().click();
     assert.deepEqual(await page.evaluate(() => window.brclio.getSettings()), settingsBefore);
-    assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), originalClipboard);
+    assert.deepEqual(await app.evaluate(() => global.__xhsClipboardWrites), []);
     await page.locator('#account-button').click();
     await expect(page.locator('#account-login-form')).toBeVisible();
     report.checks.push('existing copy preferences, clipboard and Brclio login remain intact');

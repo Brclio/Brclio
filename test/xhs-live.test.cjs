@@ -122,7 +122,8 @@ await test('encoding retains native 4K and photo resolution without silently dow
   assert.deepEqual(livePhotoDimensions(10, 10), { width: 10, height: 10 });
   assert.throws(() => livePhotoDimensions(0, 1080), /尺寸/);
   assert.throws(() => livePhotoDimensions(100, Infinity), /尺寸/);
-  assert.throws(() => livePhotoDimensions(9000, 6000), /8192/);
+  assert.deepEqual(livePhotoDimensions(10000, 1000), { width: 10000, height: 1000 });
+  assert.throws(() => livePhotoDimensions(32768, 10), /32767/);
   assert.throws(() => livePhotoDimensions(8192, 8192), /6400 万/);
 });
 

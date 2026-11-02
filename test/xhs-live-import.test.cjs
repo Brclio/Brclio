@@ -97,6 +97,7 @@ test('live-photo image import limits and compression', async t => {
     const info = await inspectLivePhotoFiles(files, { allowOversizedImages: true });
     assert.deepEqual(info, {
       kind: 'images', duration: null, width: 6000, height: 6000, hasAudio: false,
+      images: [{ width: 6000, height: 6000 }, { width: 6000, height: 6000 }],
       pixels: 72_000_000, bytes: 200, requiresCompression: true
     });
     const boundary = await inspectLivePhotoFiles([source('boundary.png', { width: 8000, height: 8000 })]);

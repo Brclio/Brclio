@@ -57,7 +57,7 @@ const ADAPTATIONS = [
   ['desktop/image-clipboard.js', 'desktop/xhs/desktop/image-clipboard.js', 'Clipboard transfer lifetime and account integration differ.'],
   ['desktop/profile-source.js', 'desktop/xhs/desktop/profile-source.js', 'Pagination metadata and reactive loading state are retained; URL and author validation functions are checked separately.'],
   ['desktop/profile-browser.js', 'desktop/xhs/desktop/profile-browser.js', 'Tracks in-flight pagination, current end evidence and title provenance; session partition, cancellation and scroll recovery differ.'],
-  ['desktop/profile-manager.js', 'desktop/xhs/desktop/profile-manager.js', 'Saves each discovered batch before advancing, persists incomplete discovery reasons and preserves real feed titles; account gates differ.'],
+  ['desktop/profile-manager.js', 'desktop/xhs/desktop/profile-manager.js', 'Waits for complete discovery before downloading; incomplete discovery pauses without new media, preserving queue records, reasons and real feed titles; account gates differ.'],
   ['desktop/main.js', 'desktop/xhs/index.mjs', 'Application service, IPC and filesystem host adapter; not a whole-file source copy.'],
   ['app.js', 'web/xhs.js', 'Renderer bindings and download orchestration; not a whole-file source copy.'],
   ['app.js', 'desktop/xhs/lib/source-download.js', 'Dependency-injected factory; its 21 source download functions and five archive constants are checked individually.'],

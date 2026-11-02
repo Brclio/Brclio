@@ -127,4 +127,85 @@ app.whenReady().then(async () => {
     assert.equal(result.filter, 'blur(3px)'); assert.ok(Math.abs(result.alpha - 0.3) < 1e-6);
     assert.equal(result.fillStyle, '#112233'); assert.deepEqual(result.transform, [1, 0, 0, 1, 2, 3]);
   });
+
+  await t.test('panorama preflight and real auto export preserve the whole photo while adapting motion; strict and compact are explicit', async () => {
+    const result = await page.evaluate(async () => {
+      const source = await canvasFile(10000, 1000, (context, width, height) => {
+        context.fillStyle = '#00aa00'; context.fillRect(0, 0, width, height);
+        context.fillStyle = '#ff0000'; context.fillRect(0, 0, 1000, height);
+        context.fillStyle = '#0000ff'; context.fillRect(width - 1000, 0, 1000, height);
+      }, 'panorama.png');
+      const files = [source.file], options = { duration: 0.5, keyPhotoTime: 0.2, motion: 'still', includeAudio: false, photoFormat: 'jpeg' };
+      const info = await maker.inspectLivePhotoFiles(files);
+      const plan = await maker.planLivePhoto(files, options, { info });
+      let originalError;
+      try { await maker.planLivePhoto(files, { ...options, sizePolicy: 'original' }, { info }); }
+      catch (error) { originalError = { code: error.code, message: error.message }; }
+      const compact = await maker.planLivePhoto(files, { ...options, sizePolicy: 'compact' }, { info });
+      const compatible = await maker.planLivePhoto(files, { ...options, sizePolicy: 'original', compatibility: true }, { info });
+      const generated = await maker.createLivePhoto({ files, ...options });
+      const compactOutput = await maker.createLivePhoto({ files, ...options, compatibility: true });
+      const decoded = await decodePhoto(generated.photo), context = decoded.getContext('2d');
+      const left = [...context.getImageData(10, 500, 1, 1).data], right = [...context.getImageData(9990, 500, 1, 1).data];
+      source.canvas.width = source.canvas.height = decoded.width = decoded.height = 0;
+      return { info, plan, originalError, compact, compatible, left, right,
+        compactOutput: { photoWidth: compactOutput.photoWidth, photoHeight: compactOutput.photoHeight,
+          width: compactOutput.width, height: compactOutput.height, movBytes: compactOutput.mov.length },
+        generated: { photoWidth: generated.photoWidth, photoHeight: generated.photoHeight, width: generated.width, height: generated.height,
+          videoResized: generated.videoResized, photoResized: generated.photoResized, movBytes: generated.mov.length } };
+    });
+    assert.equal(result.info.requiresCompression, false);
+    assert.deepEqual(result.info.images, [{ width: 10000, height: 1000 }]);
+    assert.deepEqual(result.plan.photo, { width: 10000, height: 1000, resized: false });
+    assert.ok(result.plan.video.width < 10000 && result.plan.video.resized);
+    assert.equal(result.originalError.code, 'SIZE_UNSUPPORTED');
+    assert.match(result.originalError.message, /自动适配|兼容尺寸/);
+    for (const plan of [result.compact, result.compatible]) {
+      assert.ok(Math.max(plan.photo.width, plan.photo.height, plan.video.width, plan.video.height) <= 1440);
+      assert.equal(plan.audio.requiresChoice, false);
+    }
+    assert.equal(result.generated.photoWidth, 10000); assert.equal(result.generated.photoHeight, 1000);
+    assert.equal(result.generated.width, result.plan.video.width); assert.equal(result.generated.height, result.plan.video.height);
+    assert.equal(result.generated.photoResized, false); assert.equal(result.generated.videoResized, true);
+    assert.ok(result.generated.movBytes > 0);
+    assert.ok(Math.max(result.compactOutput.photoWidth, result.compactOutput.photoHeight, result.compactOutput.width, result.compactOutput.height) <= 1440);
+    assert.ok(result.compactOutput.movBytes > 0);
+    assert.ok(result.left[0] > 245 && result.left[2] < 10, JSON.stringify(result.left));
+    assert.ok(result.right[2] > 245 && result.right[0] < 10, JSON.stringify(result.right));
+  });
+
+  await t.test('audio preflight requires an explicit choice and generation never silently changes requested audio', async () => {
+    const result = await page.evaluate(async () => {
+      const source = await canvasFile(64, 64, context => { context.fillStyle = 'orange'; context.fillRect(0, 0, 64, 64); }, 'source.png');
+      const movie = await maker.createLivePhoto({ files: [source.file], duration: 1, photoFormat: 'jpeg', includeAudio: false });
+      const files = [new File([movie.mov], 'source.mov', { type: 'video/quicktime' })];
+      const info = { kind: 'video', width: 64, height: 64, duration: 1, hasAudio: true };
+      const options = { duration: 0.5, keyPhotoTime: 0.2, includeAudio: true, photoFormat: 'jpeg' };
+      const speedPlan = await maker.planLivePhoto(files, { ...options, speed: 2 }, { info });
+      const originalAudio = AudioEncoder.isConfigSupported;
+      const originalFlag = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'mozHasAudio');
+      const failures = [];
+      try {
+        AudioEncoder.isConfigSupported = async config => ({ supported: false, config });
+        Object.defineProperty(HTMLMediaElement.prototype, 'mozHasAudio', { configurable: true, get() { return true; } });
+        const unavailable = await maker.planLivePhoto(files, options, { info });
+        const silent = await maker.planLivePhoto(files, { ...options, includeAudio: false, speed: 2 }, { info });
+        for (const speed of [1, 2]) {
+          try { await maker.createLivePhoto({ files, ...options, speed }); }
+          catch (error) { failures.push({ code: error.code, message: error.message }); }
+        }
+        return { speedPlan, unavailable, silent, failures };
+      } finally {
+        AudioEncoder.isConfigSupported = originalAudio;
+        if (originalFlag) Object.defineProperty(HTMLMediaElement.prototype, 'mozHasAudio', originalFlag);
+        else delete HTMLMediaElement.prototype.mozHasAudio;
+        source.canvas.width = source.canvas.height = 0;
+      }
+    });
+    assert.equal(result.speedPlan.audio.requiresChoice, true); assert.match(result.speedPlan.audio.reason, /1 倍速/);
+    assert.equal(result.unavailable.audio.requiresChoice, true); assert.match(result.unavailable.audio.reason, /AAC/);
+    assert.equal(result.silent.audio.requiresChoice, false); assert.equal(result.silent.audio.requested, false);
+    assert.equal(result.failures.length, 2);
+    assert.ok(result.failures.every(error => error.code === 'AUDIO_CHOICE_REQUIRED'));
+  });
 });
