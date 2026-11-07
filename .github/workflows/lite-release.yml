@@ -45,6 +45,7 @@ jobs:
           bundle="$mount/Brclio Downloader Lite.app"
           codesign --verify --deep --strict "$bundle"
           "$bundle/Contents/MacOS/Brclio Downloader Lite" --version | grep -F -- "$version"
+          python3 lite/tools/verify-mac-launch.py "$bundle"
       - name: Install the official Brclio DMG in an isolated Applications directory
         if: runner.os == 'macOS'
         shell: bash

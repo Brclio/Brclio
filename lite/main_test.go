@@ -30,7 +30,7 @@ func TestLocalLauncherActionsAndIsolation(t *testing.T) {
 				case <-ctx.Done():
 				}
 				return false, nil
-			})
+			}, nil)
 	}()
 	var entry string
 	select {
@@ -108,7 +108,7 @@ func TestLocalLauncherActionsAndIsolation(t *testing.T) {
 			t.Fatal("second launch changed instance")
 		}
 		return nil
-	}, nil); err != nil {
+	}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	resume <- struct{}{}
