@@ -138,18 +138,68 @@ func moveMacBundle(ctx context.Context, from, to string, swap bool) error {
 
 // Launch Services and Electron can reuse a running copy with the same bundle
 // ID. Check every matching process before opening or terminating any of them.
-const runningBrclioScript = `ObjC.import("AppKit"); function run(argv) {
-	const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(argv[0]).js;
-	const target = $.NSURL.fileURLWithPath(argv[1]).URLByResolvingSymlinksInPath.path.js;
+const macProcessSnapshotScript = `ObjC.import("AppKit");
+function present(value) {
+	return value && !(typeof value.isNil === "function" && value.isNil());
+}
+function bundlePath(url) {
+	const resolved = present(url) && url.URLByResolvingSymlinksInPath;
+	const path = present(resolved) && resolved.path;
+	return present(path) ? path.js : "";
+}
+function snapshot(apps, target, quit, initialPids) {
+	const matched = [];
+	const pids = [], unknown = [];
 	for (const app of apps) {
-		const location = app.bundleURL.URLByResolvingSymlinksInPath.path.js;
-		if (location !== target) throw Error("请先退出从 " + location + " 运行的 Brclio，再重试");
+		if (app.terminated) continue;
+		let pid = 0, location = "";
+		try {
+			pid = Number(app.processIdentifier) || 0;
+			location = bundlePath(app.bundleURL);
+		} catch (_) { /* The Cocoa object may disappear between property reads. */ }
+		if (app.terminated) continue;
+		pids.push(pid);
+		if (location && location !== target) throw Error("请先退出从 " + location + " 运行的 Brclio，再重试");
+		else if (!location || pid <= 0) unknown.push(pid);
+		else if (quit && initialPids && !initialPids.includes(pid)) throw Error("另一份 Brclio 刚刚启动，请先退出后重试");
+		else matched.push(app);
 	}
-	if (argv[2] === "quit") apps.forEach(app => app.terminate);
-	return apps.length ? "running" : "";
+	// A disappearing application may briefly have no URL. Only a fresh
+	// snapshot can tell whether it exited or a different copy is starting.
+	if (!unknown.length && quit) matched.forEach(app => { if (!app.terminated) app.terminate; });
+	return {pids, unknown, matched: matched.length};
 }`
 
+const runningBrclioScript = macProcessSnapshotScript + `
+function run(argv) {
+	const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(argv[0]).js;
+	const target = bundlePath($.NSURL.fileURLWithPath(argv[1]));
+	if (!target) throw Error("无法识别目标应用路径");
+	return JSON.stringify(snapshot(apps, target, argv[2] === "quit", JSON.parse(argv[3])));
+}`
+
+type macProcessSnapshot struct {
+	Pids    []int `json:"pids"`
+	Unknown []int `json:"unknown"`
+	Matched int   `json:"matched"`
+}
+
 func checkMacProcesses(ctx context.Context, id, target string, quit bool) error {
+	return waitMacProcesses(ctx, target, quit, func(ctx context.Context, action string, initial []int) (macProcessSnapshot, error) {
+		var snapshot macProcessSnapshot
+		pids, err := json.Marshal(initial)
+		if err != nil {
+			return snapshot, err
+		}
+		out, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", runningBrclioScript, id, target, action, string(pids))
+		if err == nil {
+			err = json.Unmarshal([]byte(out), &snapshot)
+		}
+		return snapshot, err
+	})
+}
+
+func waitMacProcesses(ctx context.Context, target string, quit bool, snapshot func(context.Context, string, []int) (macProcessSnapshot, error)) error {
 	action := "check"
 	if quit {
 		action = "quit"
@@ -157,17 +207,43 @@ func checkMacProcesses(ctx context.Context, id, target string, quit bool) error 
 		ctx, cancel = context.WithTimeoutCause(ctx, 30*time.Second, fmt.Errorf("请退出 %s 后重试：%w", target, context.DeadlineExceeded))
 		defer cancel()
 	}
+	unknown := 0
+	var initial []int
 	for {
-		active, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", runningBrclioScript, id, target, action)
+		state, err := snapshot(ctx, action, initial)
 		if ctx.Err() != nil {
 			return context.Cause(ctx)
 		}
-		if err != nil || !quit || active == "" {
+		if err != nil {
 			return err
 		}
-		// Notify the original snapshot only once. Each later invocation reads
-		// current Launch Services state and checks every path again.
-		action = "check"
+		if len(state.Unknown) != 0 {
+			// ESRCH is positive evidence of exit. EPERM and an unreadable PID
+			// are both inconclusive and must never authorize a termination.
+			gone := true
+			for _, pid := range state.Unknown {
+				if pid <= 0 || !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+					gone = false
+					break
+				}
+			}
+			if gone && (!quit || state.Matched == 0) {
+				return nil
+			}
+			if action == "quit" && initial == nil {
+				initial = state.Pids
+			}
+			unknown++
+			if unknown >= 5 {
+				return fmt.Errorf("无法确定正在运行的 Brclio 的位置，请先退出 Brclio 后重试（目标 %s）", target)
+			}
+		} else if quit && state.Matched != 0 {
+			unknown = 0
+			// A validated snapshot was notified. All later snapshots are read-only.
+			action = "check"
+		} else {
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			return context.Cause(ctx)

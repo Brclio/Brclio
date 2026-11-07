@@ -12,32 +12,75 @@ const { installAndOpen } = require('./install.cjs');
 const { checkMacBrclioProcesses } = require('./mac-client-helper.cjs');
 const { APP_ID, EXTENSION_ID, atomicJSON } = require('../desktop/mac-installer-helper.cjs');
 
-test('quit requests only reach the canonical instance and recheck once it exits', async () => {
-  const target = '/Applications/Brclio.app', other = '/Users/test/Applications/Brclio.app';
+function processSnapshots(snapshots) {
   const url = filename => ({ path: { js: filename }, URLByResolvingSymlinksInPath: { path: { js: filename } } });
-  const stopped = [];
-  let nextPid = 20;
-  function app(filename) {
-    return { processIdentifier: ++nextPid, bundleURL: url(filename), terminated: false, get terminate() { this.terminated = true; stopped.push(filename); } };
-  }
-  let snapshot;
-  const run = async (_program, args) => {
+  return async (_program, args) => {
     const context = { ObjC: { import() {} }, $: { NSURL: { fileURLWithPath: url },
       NSRunningApplication: { runningApplicationsWithBundleIdentifier(id) {
         assert.equal(id, APP_ID);
-        return { js: snapshot.shift() };
-      } } }, argv: args.slice(-3) };
+        assert.ok(snapshots.length, 'unexpected process probe');
+        return { js: snapshots.shift() };
+      } } }, argv: args.slice(4) };
     return { stdout: vm.runInNewContext(args[3] + '\nrun(argv)', context) };
   };
-  snapshot = [[app(target), app(other)]];
-  await assert.rejects(checkMacBrclioProcesses(target, run, true), error => error.message.includes(other));
+}
+
+const target = '/Applications/Brclio.app', other = '/Users/test/Applications/Brclio.app';
+function runningApp(pid, filename, stopped) {
+  return { processIdentifier: pid, bundleURL: { path: { js: filename }, URLByResolvingSymlinksInPath: { path: { js: filename } } },
+    terminated: false, get terminate() { this.terminated = true; stopped.push(pid); } };
+}
+
+test('quit requests only reach the canonical instance and recheck once it exits', async () => {
+  const stopped = [];
+  const canonical = () => runningApp(20, target, stopped), foreign = () => runningApp(21, other, stopped);
+  await assert.rejects(checkMacBrclioProcesses(target, processSnapshots([[canonical(), foreign()]]), true), error => error.message.includes(other));
   assert.deepEqual(stopped, []);
-  snapshot = [[app(target)], [app(other)]];
-  await assert.rejects(checkMacBrclioProcesses(target, run, true), error => error.message.includes(other));
-  assert.deepEqual(stopped, [target]);
-  snapshot = [[app(target)], [app(target)]];
-  await assert.rejects(checkMacBrclioProcesses(target, run, true), /退出正在运行的 Brclio/);
-  assert.deepEqual(stopped, [target, target]);
+  await assert.rejects(checkMacBrclioProcesses(target, processSnapshots([[canonical()], [foreign()]]), true), error => error.message.includes(other));
+  assert.deepEqual(stopped, [20]);
+  await assert.rejects(checkMacBrclioProcesses(target, processSnapshots([[canonical()], [runningApp(22, target, stopped)]]), true), /退出正在运行的 Brclio/);
+  assert.deepEqual(stopped, [20, 20]);
+});
+
+test('explicitly terminated records and nil paths of exited PIDs are ignored during exit', async t => {
+  const stopped = [];
+  t.mock.method(process, 'kill', (pid, signal) => {
+    assert.equal(pid, 20); assert.equal(signal, 0);
+    throw Object.assign(new Error('exited'), { code: 'ESRCH' });
+  });
+  const gone = { processIdentifier: 20, bundleURL: undefined, terminated: false };
+  const stale = { terminated: true, get bundleURL() { assert.fail('terminated record was inspected'); } };
+  let reads = 0;
+  const exiting = { processIdentifier: 31, bundleURL: null, get terminated() { return ++reads === 2; } };
+  await checkMacBrclioProcesses(target, processSnapshots([[runningApp(20, target, stopped)], [gone, stale, exiting]]), true);
+  assert.deepEqual(stopped, [20]);
+});
+
+test('live nil paths block the whole quit snapshot until all identities are known', async t => {
+  const stopped = [];
+  t.mock.method(process, 'kill', (pid, signal) => { assert.equal(pid, 21); assert.equal(signal, 0); });
+  const canonical = () => runningApp(20, target, stopped);
+  const hidden = { processIdentifier: 21, terminated: false, bundleURL: { URLByResolvingSymlinksInPath: null } };
+  await assert.rejects(checkMacBrclioProcesses(target, processSnapshots([[canonical(), hidden], [canonical(), runningApp(21, other, stopped)]]), true),
+    error => error.message.includes(other));
+  assert.deepEqual(stopped, []);
+  await assert.rejects(checkMacBrclioProcesses(target, processSnapshots([[hidden], [runningApp(22, target, stopped)]]), true), /退出正在运行的 Brclio/);
+  assert.deepEqual(stopped, []);
+  await checkMacBrclioProcesses(target, processSnapshots([[canonical(), hidden], [canonical(), runningApp(21, target, stopped)], []]), true);
+  assert.deepEqual(stopped, [20, 21]);
+});
+
+test('persistent unavailable paths are bounded, include their PID, and never terminate a process', async t => {
+  t.mock.method(process, 'kill', (_pid, signal) => {
+    assert.equal(signal, 0);
+    throw Object.assign(new Error('alive, permission denied'), { code: 'EPERM' });
+  });
+  const stopped = [];
+  const live = { processIdentifier: 23, get bundleURL() { throw Error('stale bridge'); } };
+  const snapshots = Array.from({ length: 5 }, () => [runningApp(20, target, stopped), live]);
+  await assert.rejects(checkMacBrclioProcesses(target, processSnapshots(snapshots), true), /PID 23.*应用路径/);
+  assert.equal(snapshots.length, 0);
+  assert.deepEqual(stopped, []);
 });
 
 async function writeBundle(bundle, version) {
@@ -82,7 +125,7 @@ async function transaction(t, conflict) {
       const action = args.at(-1);
       if (cfg) checks.push(action);
       const blocked = cfg && (conflict === 'swap' || (conflict === 'launch' && action === 'check'));
-      return { stdout: JSON.stringify(blocked ? {other:legacy} : {pids:[]}) };
+      return { stdout: JSON.stringify(blocked ? {other:legacy} : {pids:[], unknown:[]}) };
     }
     if (command === '/usr/bin/hdiutil') {
       if (args[0] !== 'attach') return { stdout: '' };

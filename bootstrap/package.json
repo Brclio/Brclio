@@ -1,7 +1,7 @@
 {
   "name": "brclio-downloader",
   "productName": "Brclio Downloader",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Brclio 下载与安装",
   "author": "Brclio",
   "private": true,
