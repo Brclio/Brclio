@@ -72,7 +72,7 @@ func (l *launcher) progress(n, total int64) {
 
 func (l *launcher) start(ctx context.Context, action string) bool {
 	l.mu.Lock()
-	if l.view.Busy {
+	if l.view.Busy || ctx.Err() != nil {
 		l.mu.Unlock()
 		return false
 	}
@@ -100,6 +100,18 @@ func (l *launcher) start(ctx context.Context, action string) bool {
 	}()
 	return true
 }
+
+// Both the web page and the Dock must finish an in-progress installation before quitting.
+func (l *launcher) quitIfIdle() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.view.Busy {
+		return false
+	}
+	l.stop()
+	return true
+}
+
 func openBrowser(addr string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -126,10 +138,10 @@ func desktopApp() error {
 	if err != nil {
 		return err
 	}
-	return serveLauncher(dir, openBrowser, runLite)
+	return runDesktopLauncher(dir)
 }
 
-func serveLauncher(dir string, open func(string) error, run operation) error {
+func serveLauncher(dir string, open func(string) error, run operation, ready func(string, *launcher)) error {
 	portFile := filepath.Join(dir, "active.json")
 	lock, err := takeLock(filepath.Join(dir, "instance.lock"))
 	if err != nil {
@@ -242,15 +254,11 @@ func serveLauncher(dir string, open func(string) error, run operation) error {
 			l.view.AutoSelf = v == "true"
 			w.WriteHeader(204)
 		case r.URL.Path == "/close" && r.Method == "POST":
-			l.mu.Lock()
-			busy := l.view.Busy
-			l.mu.Unlock()
-			if busy {
+			if !l.quitIfIdle() {
 				http.Error(w, "操作完成后可以退出", 409)
 				return
 			}
 			w.WriteHeader(204)
-			stop()
 		default:
 			http.NotFound(w, r)
 		}
@@ -269,6 +277,9 @@ func serveLauncher(dir string, open func(string) error, run operation) error {
 		return err
 	}
 	l.start(ctx, "startup")
+	if ready != nil {
+		ready(entry, &l)
+	}
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
