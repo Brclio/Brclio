@@ -101,3 +101,61 @@ func TestStableFeedAndSelfIsolation(t *testing.T) {
 		}
 	}
 }
+
+func TestInstalledVersionDecidesBeforeInstallerRequests(t *testing.T) {
+	const latest = "1.10.0"
+	const name = "Brclio-" + latest + "-windows-x64.exe"
+	const base = downloadBase + "v" + latest + "/"
+	const bytes = "fixture installer bytes"
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(bytes)))
+	for _, tc := range []struct {
+		current, status string
+		shouldOpen      bool
+	}{
+		{"", "未安装", false},
+		{"1.9.9", "升级", false},
+		{latest, "已是最新版", true},
+		{"2.0.0", "高于正式版", true},
+	} {
+		t.Run("installed-"+tc.current, func(t *testing.T) {
+			ctx := context.Background()
+			var calls []string
+			client := &http.Client{Transport: fixtureRoundTrip(func(r *http.Request) (*http.Response, error) {
+				target := r.URL.String()
+				calls = append(calls, target)
+				var body string
+				switch target {
+				case releaseAPI:
+					body = fmt.Sprintf(`{"tag_name":"v%s","html_url":"https://github.com/Brclio/Brclio/releases/tag/v%s","draft":false,"prerelease":false,"assets":[{"name":"%s","size":%d,"digest":"sha256:%s","browser_download_url":"%s%s"},{"name":"SHA256SUMS.txt","browser_download_url":"%sSHA256SUMS.txt"}]}`, latest, latest, name, len(bytes), hash, base, name, base)
+				case base + "SHA256SUMS.txt":
+					body = hash + "  " + name + "\n"
+				case base + name:
+					body = bytes
+				default:
+					t.Fatalf("unexpected request %s", target)
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{}, ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			asset, err := brclioAsset(ctx, client, "windows-x64.exe")
+			if err != nil {
+				t.Fatal(err)
+			}
+			opens := 0
+			var status string
+			err = useBrclioVersion(tc.current, asset.version, func(s string) { status = s }, func() error { opens++; return nil }, func() error {
+				_, _, err := fetchInstaller(ctx, client, t.TempDir(), asset, func(int64, int64) {})
+				return err
+			})
+			if err != nil || !strings.Contains(status, tc.status) {
+				t.Fatalf("status %q; %v", status, err)
+			}
+			expected := []string{releaseAPI}
+			if !tc.shouldOpen {
+				expected = append(expected, asset.checksumURL, asset.url)
+			}
+			if strings.Join(calls, "\n") != strings.Join(expected, "\n") || (tc.shouldOpen && opens != 1) || (!tc.shouldOpen && opens != 0) {
+				t.Fatalf("requests %v, opens %d", calls, opens)
+			}
+		})
+	}
+}

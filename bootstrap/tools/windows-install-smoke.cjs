@@ -26,7 +26,13 @@ async function descriptor(product, filename, version) {
 async function visibleApplication(product, wantedVersion) {
   const deadline = Date.now() + 180000;
   while (Date.now() < deadline) {
-    const installed = await getInstalled(product);
+    // NSIS can remove the old exe before replacing its registration. The
+    // normal lookup stays strict; only this bounded observer waits through
+    // that intermediate state.
+    const installed = await getInstalled(product).catch(error => {
+      if (/PathNotFound,Microsoft\.PowerShell\.Commands\.GetItemCommand/.test(error.stderr || '')) return null;
+      throw error;
+    });
     if (installed?.version === wantedVersion) {
       const { stdout } = await powershell(`
         $p = Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($env:SMOKE_EXE)) -ErrorAction SilentlyContinue |
@@ -42,8 +48,10 @@ async function visibleApplication(product, wantedVersion) {
 async function stopInstalled(exe) {
   await powershell(`
     $name = [IO.Path]::GetFileNameWithoutExtension($env:SMOKE_EXE)
-    @(Get-Process -Name $name -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $env:SMOKE_EXE }) |
-      ForEach-Object { $_.Kill(); $_.WaitForExit(10000) | Out-Null }
+    foreach ($process in @(Get-Process -Name $name -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $env:SMOKE_EXE })) {
+      try { if (-not $process.HasExited) { $process.Kill(); [void]$process.WaitForExit(10000) } }
+      catch { if (-not $process.HasExited) { throw } }
+    }
   `, {SMOKE_EXE:exe});
 }
 

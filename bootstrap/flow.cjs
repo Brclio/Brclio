@@ -65,10 +65,13 @@ async function runDownloader({currentVersion, directory, router, installer, repo
   });
   const checked = await updater.check();
   if (checked.status === 'error') throw new Error(checked.error);
-  if (installed && compareVersions(installed.version, checked.version) >= 0) {
-    show({title:'打开 Brclio', detail:`本机已安装 Brclio ${installed.version}。`, progress:100});
+  const installedOrder = installed ? compareVersions(installed.version, checked.version) : -1;
+  if (installedOrder >= 0) {
+    const detail = installedOrder === 0 ? `本机 Brclio ${installed.version} 已是最新版。`
+      : `本机 Brclio ${installed.version} 高于最新正式版 ${checked.version}。`;
+    show({title:'打开 Brclio', detail, progress:100});
     await installer.openInstalled('brclio');
-    show({title:'Brclio 已打开', detail:`本机已安装 Brclio ${installed.version}。`, progress:100});
+    show({title:'Brclio 已打开', detail, progress:100});
     return {quit:false};
   }
   const downloaded = await updater.download();

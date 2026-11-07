@@ -466,30 +466,47 @@ func runLite(ctx context.Context, action, dir string, report func(string), progr
 	if err != nil {
 		return false, err
 	}
-	if current != "" {
-		if !versionPattern.MatchString(current) {
-			return false, errors.New("已安装 Brclio 的版本号无效")
+	err = useBrclioVersion(current, a.version, report, func() error {
+		return openBrclio(ctx)
+	}, func() error {
+		f, h, err := downloadOnCurrentRoute(ctx, dir, a, report, progress)
+		if err != nil {
+			return err
 		}
-		if compareVersion(current, a.version) >= 0 {
-			if err = openBrclio(ctx); err != nil {
-				return false, err
-			}
-			report("已打开 Brclio " + current)
-			return false, nil
+		report("正在安装并打开 Brclio " + a.version)
+		if err = installBrclio(ctx, f, a.version, h); err != nil {
+			return err
 		}
+		_ = os.Remove(f)
+		report("已安装并打开 Brclio " + a.version)
+		return nil
+	})
+	return false, err
+}
+
+// Decide before requesting the installer checksum or bytes.
+func useBrclioVersion(current, latest string, report func(string), open, downloadAndInstall func() error) error {
+	if current == "" {
+		report("未安装 Brclio，准备下载 " + latest)
+		return downloadAndInstall()
 	}
-	report("下载 Brclio " + a.version)
-	f, h, err := downloadOnCurrentRoute(ctx, dir, a, report, progress)
-	if err != nil {
-		return false, err
+	if !versionPattern.MatchString(current) {
+		return errors.New("已安装 Brclio 的版本号无效")
 	}
-	report("正在安装并打开 Brclio " + a.version)
-	if err = installBrclio(ctx, f, a.version, h); err != nil {
-		return false, err
+	order := compareVersion(current, latest)
+	if order < 0 {
+		report("正在将 Brclio 从 " + current + " 升级至 " + latest)
+		return downloadAndInstall()
 	}
-	_ = os.Remove(f)
-	report("已安装并打开 Brclio " + a.version)
-	return false, nil
+	if err := open(); err != nil {
+		return err
+	}
+	if order == 0 {
+		report("Brclio " + current + " 已是最新版，已打开")
+	} else {
+		report("本机版本 " + current + " 高于正式版 " + latest + "，已打开本机 Brclio")
+	}
+	return nil
 }
 
 var errRestart = errors.New("restart lite")

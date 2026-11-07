@@ -66,6 +66,14 @@ test('unchanged downloader opens a newer installed Brclio without a package down
   await f.run();
   assert.deepEqual(f.products, ['open brclio']);
   assert.deepEqual(f.calls, [POINTER, API_URL]);
+  assert.equal(f.events.at(-1).detail, '本机 Brclio 5.0.0 高于最新正式版 4.5.6。');
+});
+test('download on the current official version only checks metadata and opens Brclio', async t => {
+  const f = await fixture(t, {installed:{version:'4.5.6'}});
+  assert.deepEqual(await f.run('brclio'), {quit:false});
+  assert.deepEqual(f.calls, [API_URL]);
+  assert.deepEqual(f.products, ['open brclio']);
+  assert.equal(f.events.at(-1).detail, '本机 Brclio 4.5.6 已是最新版。');
 });
 test('new self release verifies before handoff and defers Brclio to the relaunched downloader', async t => {
   const f = await fixture(t, {pointer:{version:'1.9.0'}});
