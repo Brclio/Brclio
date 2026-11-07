@@ -2,6 +2,12 @@
 
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+if (process.platform === 'darwin') {
+  window.addEventListener('DOMContentLoaded', () => {
+    document.documentElement.classList.add('mac-titlebar');
+  }, { once: true });
+}
+
 contextBridge.exposeInMainWorld('brclio', Object.freeze({
   xhsRequest: (action, input) => ipcRenderer.invoke('brclio:xhs:request', action, input),
   onXhsEvent: callback => {

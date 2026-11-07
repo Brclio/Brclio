@@ -68,6 +68,25 @@ async function main() {
     await page.locator('#copy-manual').waitFor();
     const platform = await page.evaluate(() => window.brclio.getPlatform());
     assert.equal(platform.platform, process.platform);
+    if (process.platform === 'darwin') {
+      const windowBounds = await tested.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        return { frame: window.getBounds(), content: window.getContentBounds() };
+      });
+      assert.equal(windowBounds.frame.y, windowBounds.content.y, 'The toolbar must reach the top of the native window.');
+      const titlebar = await page.evaluate(() => ({
+        controls: navigator.windowControlsOverlay.getTitlebarAreaRect().height,
+        brandTop: document.querySelector('.brand').getBoundingClientRect().top,
+        toolbarDrag: getComputedStyle(document.querySelector('.app-header')).getPropertyValue('app-region'),
+        actionsDrag: getComputedStyle(document.querySelector('.header-actions')).getPropertyValue('app-region'),
+      }));
+      assert.ok(titlebar.controls > 0 && titlebar.brandTop >= titlebar.controls, 'The brand link must clear the traffic lights.');
+      assert.equal(titlebar.toolbarDrag, 'drag');
+      assert.equal(titlebar.actionsDrag, 'no-drag');
+      await page.click('#help-button');
+      await expect(page.locator('#help-dialog')).toBeVisible();
+      await page.keyboard.press('Escape');
+    }
     if (packagedExecutable) assert.equal(platform.packaged, true);
     if (process.env.BRCLIO_SMOKE_VERSION) assert.equal(platform.version, process.env.BRCLIO_SMOKE_VERSION);
     assert.equal((await page.evaluate(() => window.brclio.getSettings())).pathMode, 'absolute');
