@@ -142,25 +142,39 @@ test('successful NSIS exit with a mismatched installed version cannot launch the
 
 test('Windows self-upgrade hands a verified release to the detached launcher before returning', async t => {
   const { descriptor } = await packageFixture(t, { product:'downloader' });
-  let job;
+  let job, cfg, released = false;
   const result = await installAndOpen(descriptor, { platform:'win32', arch:'x64',
-    async run(command, args) {
+    async run(_command, args) {
+      assert.ok(args.includes('-Command'));
+      return {stdout:''};
+    },
+    spawn(command, args, opts) {
       assert.equal(path.win32.basename(command), 'powershell.exe');
-      if (args.includes('-Command')) return { stdout:'' };
+      assert.equal(opts.stdio[0], 'ignore');
+      assert.ok(Number.isInteger(opts.stdio[1]));
+      assert.equal(opts.stdio[1], opts.stdio[2]);
+      assert.ok(!Object.keys(opts.env).some(name => name.toLowerCase() === 'psmodulepath'));
       const config = args[args.indexOf('-Configuration') + 1];
       job = path.dirname(config);
       t.after(() => fs.rm(job, { recursive:true, force:true }));
-      const cfg = JSON.parse(await fs.readFile(config, 'utf8'));
-      assert.equal(cfg.filename, descriptor.filename);
-      assert.equal(cfg.expected, descriptor.expected);
-      assert.equal(cfg.parentPid, process.pid);
-      assert.equal(cfg.guid, '6aae18b5-b2c5-5fd1-9b91-8184c8766ad1');
       assert.equal(args[args.indexOf('-File') + 1], path.join(job, 'launch.ps1'));
-      assert.equal(await fs.readFile(path.join(job, 'install.ps1'), 'utf8'), await fs.readFile(path.join(__dirname, 'replace-win.ps1'), 'utf8'));
-      await fs.writeFile(path.join(job, 'ready'), 'ready');
-      return { stdout:'' };
+      const child = new EventEmitter();
+      child.unref = () => { released = true; };
+      child.kill = () => {};
+      (async () => {
+        cfg = JSON.parse(await fs.readFile(config, 'utf8'));
+        await fs.writeFile(path.join(job, 'ready'), cfg.token);
+      })().catch(error => child.emit('error', error));
+      return child;
     },
   });
   assert.ok(job);
+  assert.equal(released, true);
+  assert.equal(cfg.filename, descriptor.filename);
+  assert.equal(cfg.expected, descriptor.expected);
+  assert.equal(cfg.parentPid, process.pid);
+  assert.equal(cfg.guid, '6aae18b5-b2c5-5fd1-9b91-8184c8766ad1');
+  assert.equal(await fs.readFile(path.join(job, 'install.ps1'), 'utf8'), await fs.readFile(path.join(__dirname, 'replace-win.ps1'), 'utf8'));
+  assert.equal(await fs.readFile(path.join(job, 'commit'), 'utf8'), cfg.token);
   assert.deepEqual(result, { handoff:true });
 });

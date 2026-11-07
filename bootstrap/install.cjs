@@ -236,21 +236,40 @@ async function windowsSelfUpgrade(descriptor, options, existingVersion) {
   const work = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-bootstrap-'));
   const config = path.join(work, 'config.json');
   const ready = path.join(work, 'ready');
+  const token = crypto.randomUUID();
+  let child, failure;
   let transferred = false;
   try {
     const file = await require('node:fs/promises').readFile(path.join(__dirname, 'replace-win.ps1'));
     await fs.writeFile(path.join(work, 'install.ps1'), file);
     await fs.writeFile(path.join(work, 'launch.ps1'), LAUNCHER);
-    await fs.writeFile(config, JSON.stringify({ ...descriptor, parentPid: process.pid, guid: products.downloader.guid, existingVersion }));
-    await (options.run || defaultRun)(powershell(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(work, 'launch.ps1'), '-Configuration', config], { windowsHide: true });
+    await fs.writeFile(config, JSON.stringify({ ...descriptor, parentPid: process.pid, guid: products.downloader.guid, existingVersion, token }));
+    // The helper outlives this process. Inherited stdout pipes could keep
+    // execFile waiting for the child that is itself waiting for us to quit.
+    const log = await fs.open(path.join(work, 'launcher.log'), 'a');
+    const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== 'psmodulepath'));
+    try {
+      child = (options.spawn || spawn)(powershell(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(work, 'launch.ps1'), '-Configuration', config],
+        {windowsHide:true, env, stdio:['ignore', log.fd, log.fd]});
+      child.once('error', error => { failure = error; });
+      child.once('exit', code => { if (code !== 0) failure ||= new Error('下载器升级助手启动失败。'); });
+    } finally { await log.close(); }
     const deadline = Date.now() + 15000;
     while (Date.now() < deadline) {
-      try { await fs.access(ready); transferred = true; return { handoff: true }; }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const receipt = await fs.readFile(ready, 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; });
+      if (receipt === token) {
+        await fs.writeFile(path.join(work, 'commit.tmp'), token, {flag:'wx'});
+        await fs.rename(path.join(work, 'commit.tmp'), path.join(work, 'commit'));
+        transferred = true; child.unref();
+        return { handoff: true };
+      }
+      if (failure) throw failure;
       await pause(100);
     }
     throw new Error('下载器升级助手启动超时。');
-  } finally { if (!transferred) await fs.rm(work, { recursive: true, force: true }); }
+  } finally {
+    if (!transferred) { child?.kill(); await fs.rm(work, {recursive:true, force:true, maxRetries:5}); }
+  }
 }
 
 async function installAndOpen(descriptor, options = {}) {

@@ -34,6 +34,10 @@ jobs:
         run: node --test bootstrap/*.test.cjs
       - name: Package macOS downloader
         if: matrix.platform == 'mac'
+        env:
+          # This product uses the ad-hoc '-' identity, without certificates or keys.
+          CSC_FOR_PULL_REQUEST: 'true'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: bash bootstrap/tools/build-mac.sh ${{ matrix.arch }}
       - name: Package Windows downloader
         if: matrix.platform == 'win'
@@ -66,6 +70,7 @@ jobs:
           New-Item -ItemType Directory -Force $fixture | Out-Null
           gh release download v0.2.8 -R Brclio/Brclio -D $fixture -p Brclio-0.2.8-windows-x64.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:GH_TOKEN
           node bootstrap/tools/windows-install-smoke.cjs (Join-Path $fixture 'Brclio-0.2.8-windows-x64.exe')
       - uses: actions/upload-artifact@v4
         with:

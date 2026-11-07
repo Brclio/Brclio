@@ -45,6 +45,27 @@ jobs:
           bundle="$mount/Brclio Downloader Lite.app"
           codesign --verify --deep --strict "$bundle"
           "$bundle/Contents/MacOS/Brclio Downloader Lite" --version | grep -F -- "$version"
+      - name: Install the official Brclio DMG in an isolated Applications directory
+        if: runner.os == 'macOS'
+        shell: bash
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          tag=$(gh api repos/Brclio/Brclio/releases/latest --jq 'select(.draft == false and .prerelease == false) | .tag_name')
+          [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version=${tag#v}
+          asset="Brclio-$version-$BUILD_TARGET.dmg"
+          temp=$(mktemp -d)
+          trap 'rm -rf "$temp"' EXIT
+          gh release download "$tag" --repo Brclio/Brclio --dir "$temp" --pattern "$asset" --pattern SHA256SUMS.txt
+          digest=$(awk -v name="$asset" '$2==name {print $1; matches++} END {if (matches != 1) exit 1}' "$temp/SHA256SUMS.txt")
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          export BRCLIO_TEST_OFFICIAL_DMG="$temp/$asset" BRCLIO_TEST_OFFICIAL_SHA="$digest" BRCLIO_TEST_OFFICIAL_VERSION="$version"
+          cd lite
+          go test -count=1 -v -timeout=5m -run '^TestOfficialMacReleaseInstall$' .
       - name: Verify packaged Windows version
         if: runner.os == 'Windows'
         shell: bash

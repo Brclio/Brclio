@@ -1,0 +1,26 @@
+name: First download site
+
+on:
+  pull_request:
+    paths: ['downloader-site/**', '.github/workflows/downloader-site.yml']
+  push:
+    branches: [main]
+    paths: ['downloader-site/**', '.github/workflows/downloader-site.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cloudflare/package-lock.json
+      - run: node --test downloader-site/worker.test.mjs
+      - run: npm ci --prefix cloudflare
+      - run: ../cloudflare/node_modules/.bin/wrangler deploy --dry-run
+        working-directory: downloader-site

@@ -4,7 +4,14 @@ $work = Split-Path -LiteralPath $Configuration
 try {
   $cfg = Get-Content -LiteralPath $Configuration -Raw -Encoding UTF8 | ConvertFrom-Json
   $parent = Get-Process -Id $cfg.parentPid -ErrorAction Stop
-  [IO.File]::WriteAllText((Join-Path $work 'ready'), 'ready')
+  [IO.File]::WriteAllText((Join-Path $work 'ready'), $cfg.token)
+  $commit = Join-Path $work 'commit'
+  $deadline = [DateTime]::UtcNow.AddSeconds(20)
+  while (!(Test-Path -LiteralPath $commit -PathType Leaf)) {
+    if (!(Test-Path -LiteralPath $work) -or [DateTime]::UtcNow -ge $deadline) { return }
+    Start-Sleep -Milliseconds 100
+  }
+  if ([IO.File]::ReadAllText($commit) -cne $cfg.token) { throw 'Downloader handoff was not confirmed.' }
   if (-not $parent.WaitForExit(90000)) { throw 'Downloader did not quit.' }
   if (-not $cfg.existingVersion) {
     $stream = [IO.File]::OpenRead($cfg.filename)

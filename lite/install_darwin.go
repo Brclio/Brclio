@@ -254,7 +254,7 @@ func prepareMacApp(ctx context.Context, stage, filename, version, digest string,
 	if runtime.GOARCH == "amd64" {
 		arch = "x86_64"
 	}
-	if _, err = installCommand(ctx, "/usr/bin/lipo", "-verify_arch", arch, filepath.Join(next, "Contents", "MacOS", product.name)); err != nil {
+	if _, err = installCommand(ctx, "/usr/bin/lipo", filepath.Join(next, "Contents", "MacOS", product.name), "-verify_arch", arch); err != nil {
 		return "", err
 	}
 	if _, err = installCommand(ctx, "/usr/bin/codesign", "--verify", "--deep", "--strict", next); err != nil {
