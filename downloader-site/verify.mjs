@@ -42,6 +42,8 @@ for(const file of full.assets){
   assert.equal(res.status,302); assert.equal(res.headers.get('location'),file.url);
   console.log('Full release link verified',file.name);
 }
+const homepage = await read('https://tools.brclio.com/','manual');
+assert.equal(homepage.status,200); assert.match(await homepage.text(),/<title>[^<]*Brclio/i);
 const health = await json('https://tools.brclio.com/api/health');
 assert.equal(health.ok,true); assert.equal(health.service,'brclio-client-services');
 const main = await json('https://tools.brclio.com/api/releases/latest');

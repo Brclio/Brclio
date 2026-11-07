@@ -7,7 +7,7 @@ const fs = require('node:fs/promises');
 const { createReadStream } = require('node:fs');
 const { createHash } = require('node:crypto');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
 const { getInstalled, installAndOpen } = require('../install.cjs');
 const { version } = require('../package.json');
@@ -55,6 +55,7 @@ async function main() {
   if (process.argv[2] === '--handoff') {
     const result = await installAndOpen(await descriptor('downloader', target, version));
     assert.equal(result.handoff, true);
+    console.log('Verified helper readiness; exiting the old downloader process.');
     return; // The detached installer waits for this exact parent PID to exit.
   }
   assert.equal(await getInstalled('downloader'), null, 'Existing downloader installation');
@@ -74,7 +75,13 @@ async function main() {
     await powershell('New-NetFirewallRule -DisplayName $env:SMOKE_RULE -Program $env:SMOKE_EXE -Direction Outbound -Action Block -Profile Any | Out-Null',
       {SMOKE_RULE:rule, SMOKE_EXE:old.path});
     firewall = true;
-    await execute(process.execPath, [__filename, '--handoff'], {timeout:90000});
+    // Measure the old process's actual exit. A relaunched application may
+    // still hold inherited handles, so do not wait for captured pipes to close.
+    await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [__filename, '--handoff'], {stdio:'inherit', timeout:90000});
+      child.once('error', reject);
+      child.once('exit', (code, signal) => code === 0 ? resolve() : reject(new Error(`Handoff process exited: ${code ?? signal}`)));
+    });
     const updated = await visibleApplication('downloader', version);
     assert.equal(updated.path, old.path);
     console.log(`NSIS downloader 0.0.1 -> ${version} installed and opened its window at the existing path`);

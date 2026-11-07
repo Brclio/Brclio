@@ -84,7 +84,7 @@ function store(cache, context, key, res) {
 }
 async function index(edition, cache, context, fetcher) {
   const key = new Request(ORIGIN + ROOT + '_cache/index/' + edition);
-  const cached = await cache?.match(key);
+  const cached = await cache?.match(key).catch(() => undefined);
   if (cached) return validateIndex(JSON.parse(await cached.text()), edition);
   const url = GH + EDITIONS[edition].channel + '/latest.json';
   const res = await officialResponse(url, fetcher, AbortSignal.timeout(12000));
@@ -105,7 +105,7 @@ async function download(file, method, cache, ctx, fetcher) {
     'Content-Disposition':'attachment; filename="' + file.name + '"', ETag:'"' + file.sha256 + '"',
     'X-Checksum-Sha256':file.sha256, 'X-Content-Type-Options':'nosniff','Cache-Control':'public, max-age=604800, immutable'};
   const headers = {...cacheHeaders,'Cache-Control':'public, max-age=60'};
-  const cached = await cache?.match(key);
+  const cached = await cache?.match(key).catch(() => undefined);
   if (cached) {
     if (method === 'HEAD') { void cached.body?.cancel().catch(() => {}); return new Response(null,{headers}); }
     return new Response(cached.body,{headers});
