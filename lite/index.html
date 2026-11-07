@@ -1,0 +1,18 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Brclio 便捷版</title>
+<style>
+:root{color-scheme:light;--blue:#245f9c;--ink:#212136;--cream:#fefcf6}*{box-sizing:border-box}body{background:var(--cream);color:var(--ink);font:16px/1.6 -apple-system,"Microsoft YaHei",sans-serif;margin:0}main{max-width:600px;margin:clamp(28px,10vh,120px) auto;padding:24px}header{display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #dcdacf;padding-bottom:12px}strong{font:italic 700 30px Georgia,serif}header span,label,#route{font-size:14px;color:#535465}h1{font:700 clamp(24px,4vw,32px)/1.45 "Songti SC",SimSun,serif;margin:28px 0 12px;overflow-wrap:anywhere}progress{width:100%;height:9px;accent-color:var(--blue)}p{margin:10px 0}.actions{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0}button{font:inherit;border:1px solid var(--blue);border-radius:6px;color:var(--blue);background:var(--cream);padding:7px 14px;cursor:pointer}button:first-child{background:var(--blue);color:white}button:disabled{opacity:.5;cursor:default}#exit{border-color:#d4d1c9;color:var(--ink)}input{accent-color:var(--blue)}#message{color:#9d3746}::selection{background:#f4d758}
+</style><main>
+<header><strong>Brclio.</strong><span>下载器便捷版 <b id="version"></b></span></header><h1 id="status" aria-live="polite">连接本地下载器</h1>
+<progress id="bar" aria-label="下载进度" max="100"></progress><p id="bytes"></p><p id="route"></p>
+<div class="actions"><button id="brclio" disabled>下载或升级 Brclio</button><button id="self" disabled>升级便捷版</button><button id="exit" disabled>退出</button></div>
+<label><input id="automatic" type="checkbox" disabled> 启动时自动检查便捷版更新</label><p id="message" role="alert"></p><a href="/licenses" target="_blank" rel="noopener" style="font-size:12px;color:#535465">开源许可</a>
+</main><script>
+const key=location.hash.slice(1),el=id=>document.getElementById(id);
+let timer;
+async function request(path,method='GET'){const r=await fetch(path,{method,headers:{'X-Lite-Key':key},cache:'no-store'});if(!r.ok)throw Error(await r.text());return r}
+async function render(){const s=await(await request('/state')).json();el('version').textContent=s.version;el('status').textContent=s.status;el('route').textContent=s.route;el('bytes').textContent=s.total?(s.done/1048576).toFixed(1)+' / '+(s.total/1048576).toFixed(1)+' MiB':'';if(s.total)el('bar').value=100*s.done/s.total;else el('bar').removeAttribute('value');for(const id of ['brclio','self','exit'])el(id).disabled=s.busy;el('automatic').checked=s.autoSelf;el('automatic').disabled=false}
+async function poll(){try{await render()}catch{el('status').textContent='本地下载器已关闭，请重新打开便捷版';for(const id of ['brclio','self','exit','automatic'])el(id).disabled=true;return}timer=setTimeout(poll,700)}
+for(const id of ['brclio','self','exit'])el(id).onclick=async()=>{try{await request(id==='exit'?'/close':'/action?name='+id,'POST');if(id==='exit'){clearTimeout(timer);el('status').textContent='便捷版已退出';for(const x of ['brclio','self','exit','automatic'])el(x).disabled=true}else await render()}catch(e){el('message').textContent=e.message}};
+el('automatic').onchange=async()=>{try{await request('/preference?enabled='+el('automatic').checked,'POST')}catch(e){el('message').textContent=e.message}};
+poll()
+</script></html>

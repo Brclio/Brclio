@@ -2,7 +2,7 @@
 
 让日常的小事，变得顺手一点。Windows、macOS、Android 共用界面的本地工具软件，提供**复制文件和文件夹路径**与**小红书媒体工具**。
 
-[下载安装包](https://github.com/Brclio/Brclio/releases/latest) · [发布记录](https://github.com/Brclio/Brclio/releases)
+[便捷下载器（支持无 VPN 安装）](https://tools.brclio.com/downloader/) · [Brclio 客户端安装包](https://github.com/Brclio/Brclio/releases/latest) · [发布记录](https://github.com/Brclio/Brclio/releases)
 
 ![Brclio 界面预览](docs/screenshots/desktop-preview.png)
 
