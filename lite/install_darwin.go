@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -65,35 +64,25 @@ func inspectMacProduct(ctx context.Context, path string, product macProduct) (*m
 	return &macBundle{path, meta.CFBundleShortVersionString, info}, nil
 }
 
-func macInstallTarget(ctx context.Context) (string, *macBundle, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", nil, err
-	}
-	target := filepath.Join(home, "Applications", "Brclio.app")
-	for _, path := range []string{target, "/Applications/Brclio.app"} {
-		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-			continue
+const macBrclioPath = "/Applications/Brclio.app"
+
+// The user-level bundle created by older downloaders (and any custom copy)
+// is a different installation. Only inspect the exact destination we manage.
+func installedMacBrclio(ctx context.Context, target string) (*macBundle, error) {
+	if _, err := os.Lstat(target); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
 		}
-		app, err := inspectBundle(ctx, path)
-		return path, app, err
+		return nil, macTargetError(target, err)
 	}
-	const locate = `ObjC.import("AppKit");const url=$.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier("com.brclio.toolbox");if(url && !url.isNil()) url.path.js`
-	custom, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", locate)
-	if err != nil {
-		return "", nil, err
-	}
-	if filepath.IsAbs(custom) && !strings.HasPrefix(custom, "/Volumes/") && !strings.Contains(custom, "/AppTranslocation/") {
-		if _, err := os.Lstat(custom); !errors.Is(err, os.ErrNotExist) {
-			app, err := inspectBundle(ctx, custom)
-			return custom, app, err
-		}
-	}
-	return target, nil, nil
+	return inspectBundle(ctx, target)
 }
 
 func installedVersion(ctx context.Context) (string, error) {
-	_, app, err := macInstallTarget(ctx)
+	if err := checkMacProcesses(ctx, brclioMac.id, macBrclioPath, false); err != nil {
+		return "", err
+	}
+	app, err := installedMacBrclio(ctx, macBrclioPath)
 	if err != nil || app == nil {
 		return "", err
 	}
@@ -101,18 +90,38 @@ func installedVersion(ctx context.Context) (string, error) {
 }
 
 func openMacBundle(ctx context.Context, path string) error {
-	_, err := installCommand(ctx, "/usr/bin/open", "-a", path)
+	if err := checkMacProcesses(ctx, brclioMac.id, path, false); err != nil {
+		return err
+	}
+	args, err := macOpenArgs(path, os.Getenv("BRCLIO_USER_DATA"))
+	if err != nil {
+		return err
+	}
+	_, err = installCommand(ctx, "/usr/bin/open", args...)
 	return err
 }
+
+func macOpenArgs(path, userData string) ([]string, error) {
+	args := []string{"-a", path}
+	if userData == "" {
+		return args, nil
+	}
+	profile, err := filepath.Abs(userData)
+	if err != nil {
+		return nil, err
+	}
+	return append(args, "--env", "BRCLIO_USER_DATA="+profile), nil
+}
+
 func openBrclio(ctx context.Context) error {
-	path, app, err := macInstallTarget(ctx)
+	app, err := installedMacBrclio(ctx, macBrclioPath)
 	if err != nil {
 		return err
 	}
 	if app == nil {
-		return errors.New("没有找到已安装的 Brclio")
+		return fmt.Errorf("没有找到 %s", macBrclioPath)
 	}
-	return openMacBundle(ctx, path)
+	return openMacBundle(ctx, macBrclioPath)
 }
 
 // Darwin renamex_np atomically swaps two nonempty directories. RENAME_EXCL
@@ -127,24 +136,63 @@ func moveMacBundle(ctx context.Context, from, to string, swap bool) error {
 	return err
 }
 
+// Launch Services and Electron can reuse a running copy with the same bundle
+// ID. Check every matching process before opening or terminating any of them.
+const runningBrclioScript = `ObjC.import("AppKit"); function run(argv) {
+	const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(argv[0]).js;
+	const target = $.NSURL.fileURLWithPath(argv[1]).URLByResolvingSymlinksInPath.path.js;
+	for (const app of apps) {
+		const location = app.bundleURL.URLByResolvingSymlinksInPath.path.js;
+		if (location !== target) throw Error("请先退出从 " + location + " 运行的 Brclio，再重试");
+	}
+	if (argv[2] === "quit") apps.forEach(app => app.terminate);
+	return apps.length ? "running" : "";
+}`
+
+func checkMacProcesses(ctx context.Context, id, target string, quit bool) error {
+	action := "check"
+	if quit {
+		action = "quit"
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, 30*time.Second, fmt.Errorf("请退出 %s 后重试：%w", target, context.DeadlineExceeded))
+		defer cancel()
+	}
+	for {
+		active, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", runningBrclioScript, id, target, action)
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		if err != nil || !quit || active == "" {
+			return err
+		}
+		// Notify the original snapshot only once. Each later invocation reads
+		// current Launch Services state and checks every path again.
+		action = "check"
+		select {
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
 func quitTarget(ctx context.Context, target string) error {
-	const quit = `ObjC.import("AppKit"); function run(argv) {
-	  const apps=$.NSRunningApplication.runningApplicationsWithBundleIdentifier("com.brclio.toolbox").js;
-	  for(const app of apps) { if (app.bundleURL.path.js !== argv[0]) throw Error("请先退出其他位置打开的 Brclio"); }
-	  apps.forEach(app => app.terminate);
-	  for(let i=0; i<300 && apps.some(app=>!app.terminated); i++) delay(0.1);
-	  if(apps.some(app=>!app.terminated)) throw Error("请退出 Brclio 后重试");
-	}`
-	_, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", quit, target)
-	return err
+	return checkMacProcesses(ctx, brclioMac.id, target, true)
 }
 
 func installBrclio(ctx context.Context, filename, version, digest string) error {
-	target, app, err := macInstallTarget(ctx)
+	app, err := installedMacBrclio(ctx, macBrclioPath)
 	if err != nil {
 		return err
 	}
-	return installMacAt(ctx, filename, version, digest, target, app, openMacBundle, quitTarget)
+	return installMacAt(ctx, filename, version, digest, macBrclioPath, app, openMacBundle, quitTarget)
+}
+
+func macTargetError(target string, err error) error {
+	if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EROFS) {
+		return fmt.Errorf("无法写入 %s，请让管理员为应用程序目录提供写入权限后重试：%w", target, err)
+	}
+	return err
 }
 
 func installMacAt(ctx context.Context, filename, version, digest, target string, old *macBundle, launch, quit func(context.Context, string) error) error {
@@ -153,11 +201,11 @@ func installMacAt(ctx context.Context, filename, version, digest, target string,
 	}
 	parent := filepath.Dir(target)
 	if err := os.MkdirAll(parent, 0755); err != nil {
-		return err
+		return macTargetError(target, err)
 	}
 	lock, err := os.Open(parent)
 	if err != nil {
-		return err
+		return macTargetError(target, err)
 	}
 	defer lock.Close()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
@@ -168,7 +216,7 @@ func installMacAt(ctx context.Context, filename, version, digest, target string,
 	}
 	stage, err := os.MkdirTemp(parent, ".brclio-lite-")
 	if err != nil {
-		return err
+		return macTargetError(target, err)
 	}
 	preserve := false
 	defer func() {
@@ -186,19 +234,34 @@ func installMacAt(ctx context.Context, filename, version, digest, target string,
 	// After commit begins, finish or restore the installation even if the caller closes the window.
 	commit, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	var candidate os.FileInfo
 	if old != nil {
 		current, err := inspectBundle(commit, target)
 		if err != nil || !os.SameFile(old.file, current.file) || old.version != current.version {
 			return errors.New("原 Brclio 安装已改变，请重试")
 		}
+		candidate, err = os.Lstat(next)
+		if err != nil {
+			return err
+		}
 	}
 	if err = moveMacBundle(commit, next, target, old != nil); err != nil {
-		return err
+		return fmt.Errorf("无法替换 %s，请检查应用程序目录的写入权限以及目标是否已被更改：%w", target, err)
 	}
 	if err = launch(commit, target); err == nil {
 		return nil
 	}
 	if old != nil {
+		backup, backupErr := os.Lstat(next)
+		if backupErr != nil || !os.SameFile(old.file, backup) {
+			preserve = true
+			return fmt.Errorf("新版未能打开，旧版备份已变化，请检查保留的恢复目录 %s：%w", stage, err)
+		}
+		current, currentErr := os.Lstat(target)
+		if currentErr != nil || !os.SameFile(candidate, current) {
+			preserve = true
+			return fmt.Errorf("新版未能打开，安装目标已被其他操作更改，旧版保存在 %s：%w", next, err)
+		}
 		if rollback := moveMacBundle(commit, next, target, true); rollback != nil {
 			preserve = true
 			return fmt.Errorf("新版未能打开，旧版保存在 %s: %w", next, rollback)
