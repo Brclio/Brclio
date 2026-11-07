@@ -29,6 +29,7 @@ app.whenReady().then(async () => {
     args: [...(process.platform === 'linux' ? ['--no-sandbox'] : []), temporary],
     env: environment, timeout: 30000 });
   const page = await application.firstWindow();
+  await page.waitForURL('file://**/index.html');
   const makerUrl = pathToFileURL(path.resolve(__dirname, '../web/xhs/lib/live-photo-maker.js')).href;
   const editorUrl = pathToFileURL(path.resolve(__dirname, '../web/xhs/lib/live-photo-image-edit.js')).href;
   await page.evaluate(async ({ makerUrl, editorUrl }) => {
