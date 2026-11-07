@@ -42,6 +42,8 @@ Windows x64、macOS Apple Silicon 和 macOS Intel 安装包均在本页附件中
 
 macOS 打开 DMG，将应用拖至“应用程序”后双击。Windows 运行对应的 EXE。Mac 包使用 ad-hoc 签名，Windows 包未配置 Authenticode 发行签名。
 
+在 macOS 上，本下载器将 Brclio 客户端安装到系统目录 \`/Applications/Brclio.app\`。若此前从 \`~/Applications/Brclio.app\` 启动了 Brclio，请先退出那份应用，然后运行新版下载器。用户目录中的旧副本会保留。
+
 [官方首次下载入口](https://tools.brclio.com/downloader/) · [Brclio 客户端正式版本](https://github.com/Brclio/Brclio/releases/latest)
 NOTES
 if ! gh release view "$tag" --json isDraft,isPrerelease > "$work/tag.json"; then

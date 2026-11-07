@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -67,6 +69,113 @@ func fixtureDMG(t *testing.T, product macProduct, prefix, version, receipt strin
 		t.Fatal(err)
 	}
 	return image, hash
+}
+
+func TestMacSystemTargetAndLegacyCopy(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if macBrclioPath != "/Applications/Brclio.app" {
+		t.Fatalf("unexpected install target %s", macBrclioPath)
+	}
+	system := filepath.Join(root, macBrclioPath)
+	legacy := fixtureBundle(t, filepath.Join(root, "Users", "test", "Applications"), brclioMac, "9.0.0", filepath.Join(t.TempDir(), "unused"))
+	original, err := os.Lstat(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := installedMacBrclio(ctx, system)
+	if err != nil || app != nil {
+		t.Fatalf("legacy copy masked absent system bundle: %v, %v", app, err)
+	}
+	fixtureBundle(t, filepath.Dir(system), brclioMac, "1.2.0", filepath.Join(t.TempDir(), "unused"))
+	app, err = installedMacBrclio(ctx, system)
+	if err != nil || app == nil || app.version != "1.2.0" || app.path != system {
+		t.Fatalf("system bundle was not selected: %v, %v", app, err)
+	}
+	now, err := os.Lstat(legacy)
+	if err != nil || !os.SameFile(original, now) {
+		t.Fatalf("legacy bundle changed: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "Brclio.app")
+	if err = os.Symlink(legacy, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = installedMacBrclio(ctx, link); err == nil {
+		t.Fatal("accepted symlink to a user bundle")
+	}
+	if err = macTargetError(macBrclioPath, syscall.EROFS); !errors.Is(err, syscall.EROFS) || !strings.Contains(err.Error(), macBrclioPath) {
+		t.Fatalf("missing destination permission guidance: %v", err)
+	}
+}
+
+// Run the same Cocoa guard as the installer against a uniquely identified
+// temporary application, never against a real user's Brclio process.
+func TestMacRejectsRunningOtherLocation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	prod := macProduct{"GuardProbe", "com.brclio.test.runningpath." + strconv.FormatInt(time.Now().UnixNano(), 10)}
+	bundle := fixtureBundle(t, t.TempDir(), prod, "1.0.0", filepath.Join(t.TempDir(), "unused"))
+	exe := filepath.Join(bundle, "Contents", "MacOS", prod.name)
+	sleep, err := os.ReadFile("/bin/sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(exe, sleep, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = installCommand(ctx, "/usr/bin/codesign", "--force", "--sign", "-", bundle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = installCommand(ctx, "/usr/bin/open", "-g", "-n", "-a", bundle, "--args", "30"); err != nil {
+		t.Fatal(err)
+	}
+	// Constrain cleanup to both the unique bundle identity and the temporary path,
+	// even if registration is delayed or a test assertion fails.
+	t.Cleanup(func() {
+		const cleanup = `ObjC.import("AppKit"); function run(argv) {
+			const target = $.NSURL.fileURLWithPath(argv[1]).URLByResolvingSymlinksInPath.path.js;
+			for (const app of $.NSRunningApplication.runningApplicationsWithBundleIdentifier(argv[0]).js) {
+				if (app.bundleURL.URLByResolvingSymlinksInPath.path.js === target) app.forceTerminate;
+			}
+		}`
+		stop, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := installCommand(stop, "/usr/bin/osascript", "-l", "JavaScript", "-e", cleanup, prod.id, bundle); err != nil {
+			t.Error(err)
+		}
+	})
+	lookup := `ObjC.import("AppKit"); function run(argv) {const apps=$.NSRunningApplication.runningApplicationsWithBundleIdentifier(argv[0]).js;return apps.length ? String(apps[0].processIdentifier) : "";}`
+	var pid int
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		out, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", lookup, prod.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pid, _ = strconv.Atoi(out); pid > 0 {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	if pid <= 0 {
+		t.Fatal("test application not registered")
+	}
+	check := func(target, mode string) error {
+		_, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", runningBrclioScript, prod.id, target, mode)
+		return err
+	}
+	if err = check(bundle, "check"); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"check", "quit"} {
+		err = check(filepath.Join(t.TempDir(), "GuardProbe.app"), mode)
+		if err == nil || !strings.Contains(err.Error(), "请先退出") {
+			t.Fatalf("%s accepted another running copy: %v", mode, err)
+		}
+		alive, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", lookup, prod.id)
+		if err != nil || alive != strconv.Itoa(pid) {
+			t.Fatalf("%s did not preserve the other instance: %s, %v", mode, alive, err)
+		}
+	}
 }
 
 func TestMacInstallFreshAndRollback(t *testing.T) {

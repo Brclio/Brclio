@@ -67,6 +67,7 @@ jobs:
           export BRCLIO_TEST_OFFICIAL_DMG="$temp/$asset" BRCLIO_TEST_OFFICIAL_SHA="$digest" BRCLIO_TEST_OFFICIAL_VERSION="$version"
           cd lite
           go test -count=1 -v -timeout=5m -run '^TestOfficialMacReleaseInstall$' .
+          python3 ../bootstrap/tools/mac-canonical-install-smoke.py lite "$BUILD_TARGET"
       - name: Verify packaged Windows version
         if: runner.os == 'Windows'
         shell: bash
