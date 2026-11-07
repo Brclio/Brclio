@@ -145,20 +145,53 @@ def install_baseline(work, dmg, version):
         run("hdiutil", "detach", mount)
 
 
+def helper_error(value):
+    # Helper invocations can contain the private 64-hex launch token. Keep a
+    # short error summary, never print arguments, configuration or whole logs.
+    line = str(value).splitlines()[0] if value else ""
+    line = re.sub(r"(?i)\b[0-9a-f]{64}\b", "[redacted]", line)
+    return line.partition("--brclio-update-token")[0][:280]
+
+
+def helper_diagnostics(jobs):
+    if not jobs.is_dir() or jobs.resolve() != jobs:
+        return "No install-jobs directory in this run's private profile"
+    details = []
+    for job in jobs.glob("mac-*"):
+        if not job.is_dir() or job.resolve() != job:
+            continue
+        hints = []
+        for name, keys in [("state.json", ("phase",)), ("result.json", ("status", "phase", "error"))]:
+            file = job / name
+            if file.is_file() and not file.is_symlink():
+                record = json.loads(file.read_text())
+                hints.extend(f"{key}={helper_error(record[key])}" for key in keys if key in record)
+        log = job / "helper.log"
+        if log.is_file() and not log.is_symlink():
+            errors = [helper_error(line) for line in log.read_text(errors="replace").splitlines()
+                      if line.startswith(("Error:", "Waiting for startup acknowledgement:", "Update journal failed:"))]
+            hints.extend(dict.fromkeys(errors[-2:]))
+        details.append(", ".join(hints) or "No stage or error recorded")
+    return "; ".join(details) or "No helper job in this run's private profile"
+
+
 def check_helper_result(profile, version):
     jobs = profile / "updates/install-jobs"
     def receipt():
         for result in jobs.glob("mac-*/result.json"):
             recorded = json.loads(result.read_text())
             if recorded["status"] != "installed":
-                raise RuntimeError(f"Upgrade helper failed: {recorded}")
+                raise RuntimeError("Upgrade helper reported failure")
             assert recorded["current"] == str(CANONICAL) and recorded["version"] == version
             assert recorded["appId"] == APP_ID and recorded["launchAcknowledged"] is True
             ack = json.loads((result.parent / "launch-ack.json").read_text())
             assert ack["executable"] == str(CANONICAL / "Contents/MacOS/Brclio") and ack["version"] == version
             return ack["pid"]
         return None
-    return wait(receipt, 180)
+    try:
+        return wait(receipt, 180)
+    except (RuntimeError, AssertionError) as error:
+        raise RuntimeError(f"{error}; {helper_diagnostics(jobs)}") from error
 
 
 def smoke(edition, target):
@@ -188,16 +221,20 @@ def smoke(edition, target):
         if edition == "lite":
             driver = work / "install.test"
             run("go", "test", "-c", "-o", driver, ".", cwd=ROOT / "lite")
-            def phase(value):
+            def invoke(value):
                 subprocess.run([driver, "-test.run", "^TestCanonicalApplicationsOnMacRunner$", "-test.v"],
                                env={**env, "BRCLIO_CANONICAL_PHASE":value}, check=True)
         else:
             folder = "mac-arm64" if target == "mac-arm64" else "mac"
             app = ROOT / "release/downloader" / folder / "Brclio Downloader.app/Contents"
-            def phase(value):
+            def invoke(value):
                 subprocess.run([app / "MacOS/Brclio Downloader", ROOT / "bootstrap/tools/mac-canonical-install-smoke.cjs", value],
                                env={**env, "BRCLIO_CANONICAL_ASAR":str(app / "Resources/app.asar"), "ELECTRON_RUN_AS_NODE":"1"}, check=True)
         owned = None
+        def phase(value):
+            print(f"{edition} {value} → {CANONICAL}", flush=True)
+            invoke(value)
+
         def check_current(installed, first_pid):
             phase("current")
             assert snapshot(CANONICAL) == installed and before == snapshot(legacy)
@@ -218,7 +255,7 @@ def smoke(edition, target):
 
             check_current(installed, first_pid)
             print(f"Verified {edition}: {tag} installed and opened {CANONICAL} (PID {first_pid}); "
-                  "same-version action preserved global bundle, and legacy copy was never replaced or reopened.")
+                  "same-version action preserved global bundle, and legacy copy was never replaced or reopened.", flush=True)
 
             remove_owned(owned)
             old = install_baseline(work, old_dmg, baseline)
@@ -227,7 +264,13 @@ def smoke(edition, target):
             run("/usr/bin/open", "-n", "-a", CANONICAL, "--env",
                 "BRCLIO_USER_DATA=" + env["BRCLIO_USER_DATA"], env=env)
             old_pid = wait(lambda: running(CANONICAL))
-            phase("upgrade")
+            print(f"Starting {edition} upgrade from running {baseline}, PID {old_pid} at {CANONICAL}", flush=True)
+            try:
+                phase("upgrade")
+            except subprocess.CalledProcessError:
+                if edition == "full":
+                    print(helper_diagnostics(Path(env["BRCLIO_USER_DATA"]) / "updates/install-jobs"), flush=True)
+                raise
             receipt_pid = check_helper_result(Path(env["BRCLIO_USER_DATA"]), version) if edition == "full" else None
             if edition == "full":
                 assert not (home / "Library/Application Support" / APP_ID / "updates/install-jobs").exists()

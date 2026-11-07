@@ -106,7 +106,7 @@ test('fresh Brclio detection uses only the system Applications folder by default
     run:async (command, args) => {
       assert.equal(command, '/usr/bin/osascript');
       assert.equal(args.at(-1), 'check');
-      return {stdout:''};
+      return {stdout:JSON.stringify({pids:[]})};
     }});
   assert.equal(result, null);
   assert.deepEqual(locations, [path.join('/Applications', 'Brclio.app')]);
@@ -126,7 +126,7 @@ async function macFixture(t) {
     run:async (command, args) => {
       if (command === '/usr/bin/osascript') {
         assert.deepEqual(args.slice(-2), [bundle, 'check']);
-        return {stdout:''};
+        return {stdout:JSON.stringify({pids:[]})};
       }
       if (command === '/usr/bin/plutil') {
         assert.equal(args.at(-1), path.join(bundle, 'Contents', 'Info.plist'));
@@ -180,14 +180,14 @@ test('when both copies exist, only the canonical bundle is inspected and opened'
 test('an active noncanonical Brclio prevents installation and cannot receive a canonical open', async t => {
   const {descriptor, bundle, legacy, addApp, options, opened} = await macFixture(t);
   const run = options.run;
-  options.run = async (command, args) => command === '/usr/bin/osascript' ? {stdout:legacy} : run(command, args);
+  options.run = async (command, args) => command === '/usr/bin/osascript' ? {stdout:JSON.stringify({other:legacy})} : run(command, args);
   await assert.rejects(installAndOpen(descriptor, options), error => error.message.includes(legacy));
   await assert.rejects(fs.lstat(bundle), {code:'ENOENT'});
 
   await addApp(bundle);
   let checks = 0;
   options.run = async (command, args) => command === '/usr/bin/osascript'
-    ? {stdout:++checks === 1 ? '' : legacy} : run(command, args);
+    ? {stdout:JSON.stringify(++checks === 1 ? {pids:[]} : {other:legacy})} : run(command, args);
   await assert.rejects(openInstalled('brclio', options), error => error.message.includes(legacy));
   assert.deepEqual(opened, []);
 });

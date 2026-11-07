@@ -79,7 +79,7 @@ func installedMacBrclio(ctx context.Context, target string) (*macBundle, error) 
 }
 
 func installedVersion(ctx context.Context) (string, error) {
-	if err := runningMacBrclio(ctx, macBrclioPath, "check"); err != nil {
+	if err := checkMacProcesses(ctx, brclioMac.id, macBrclioPath, false); err != nil {
 		return "", err
 	}
 	app, err := installedMacBrclio(ctx, macBrclioPath)
@@ -90,7 +90,7 @@ func installedVersion(ctx context.Context) (string, error) {
 }
 
 func openMacBundle(ctx context.Context, path string) error {
-	if err := runningMacBrclio(ctx, path, "check"); err != nil {
+	if err := checkMacProcesses(ctx, brclioMac.id, path, false); err != nil {
 		return err
 	}
 	args, err := macOpenArgs(path, os.Getenv("BRCLIO_USER_DATA"))
@@ -145,19 +145,39 @@ const runningBrclioScript = `ObjC.import("AppKit"); function run(argv) {
 		const location = app.bundleURL.URLByResolvingSymlinksInPath.path.js;
 		if (location !== target) throw Error("请先退出从 " + location + " 运行的 Brclio，再重试");
 	}
-	if (argv[2] !== "quit") return;
-	apps.forEach(app => app.terminate);
-	for(let i=0; i<300 && apps.some(app=>!app.terminated); i++) delay(0.1);
-	if(apps.some(app=>!app.terminated)) throw Error("请退出 Brclio 后重试");
+	if (argv[2] === "quit") apps.forEach(app => app.terminate);
+	return apps.length ? "running" : "";
 }`
 
-func runningMacBrclio(ctx context.Context, target, action string) error {
-	_, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", runningBrclioScript, brclioMac.id, target, action)
-	return err
+func checkMacProcesses(ctx context.Context, id, target string, quit bool) error {
+	action := "check"
+	if quit {
+		action = "quit"
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, 30*time.Second, fmt.Errorf("请退出 %s 后重试：%w", target, context.DeadlineExceeded))
+		defer cancel()
+	}
+	for {
+		active, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", runningBrclioScript, id, target, action)
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		if err != nil || !quit || active == "" {
+			return err
+		}
+		// Notify the original snapshot only once. Each later invocation reads
+		// current Launch Services state and checks every path again.
+		action = "check"
+		select {
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
 
 func quitTarget(ctx context.Context, target string) error {
-	return runningMacBrclio(ctx, target, "quit")
+	return checkMacProcesses(ctx, brclioMac.id, target, true)
 }
 
 func installBrclio(ctx context.Context, filename, version, digest string) error {

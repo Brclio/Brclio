@@ -16,8 +16,9 @@ test('quit requests only reach the canonical instance and recheck once it exits'
   const target = '/Applications/Brclio.app', other = '/Users/test/Applications/Brclio.app';
   const url = filename => ({ path: { js: filename }, URLByResolvingSymlinksInPath: { path: { js: filename } } });
   const stopped = [];
+  let nextPid = 20;
   function app(filename) {
-    return { bundleURL: url(filename), terminated: false, get terminate() { this.terminated = true; stopped.push(filename); } };
+    return { processIdentifier: ++nextPid, bundleURL: url(filename), terminated: false, get terminate() { this.terminated = true; stopped.push(filename); } };
   }
   let snapshot;
   const run = async (_program, args) => {
@@ -25,7 +26,7 @@ test('quit requests only reach the canonical instance and recheck once it exits'
       NSRunningApplication: { runningApplicationsWithBundleIdentifier(id) {
         assert.equal(id, APP_ID);
         return { js: snapshot.shift() };
-      } } }, argv: args.slice(-2) };
+      } } }, argv: args.slice(-3) };
     return { stdout: vm.runInNewContext(args[3] + '\nrun(argv)', context) };
   };
   snapshot = [[app(target), app(other)]];
@@ -81,7 +82,7 @@ async function transaction(t, conflict) {
       const action = args.at(-1);
       if (cfg) checks.push(action);
       const blocked = cfg && (conflict === 'swap' || (conflict === 'launch' && action === 'check'));
-      return { stdout: blocked ? legacy : '' };
+      return { stdout: JSON.stringify(blocked ? {other:legacy} : {pids:[]}) };
     }
     if (command === '/usr/bin/hdiutil') {
       if (args[0] !== 'attach') return { stdout: '' };

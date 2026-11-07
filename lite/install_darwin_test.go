@@ -178,7 +178,7 @@ int main(void) {
 			t.Error(err)
 		}
 	})
-	lookup := `ObjC.import("AppKit"); function run(argv) {const apps=$.NSRunningApplication.runningApplicationsWithBundleIdentifier(argv[0]).js;return apps.length ? String(apps[0].processIdentifier) : "";}`
+	lookup := `ObjC.import("AppKit"); function run(argv) { const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(argv[0]).js; return apps.length && apps[0].finishedLaunching ? String(apps[0].processIdentifier) : ""; }`
 	var pid int
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
 		out, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", lookup, prod.id)
@@ -193,22 +193,33 @@ int main(void) {
 	if pid <= 0 {
 		t.Fatal("test application not registered")
 	}
-	check := func(target, mode string) error {
-		_, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", runningBrclioScript, prod.id, target, mode)
-		return err
-	}
-	if err := check(bundle, "check"); err != nil {
+	if err := checkMacProcesses(ctx, prod.id, bundle, false); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"check", "quit"} {
-		err := check(filepath.Join(t.TempDir(), "GuardProbe.app"), mode)
+	for _, quit := range []bool{false, true} {
+		err := checkMacProcesses(ctx, prod.id, filepath.Join(t.TempDir(), "GuardProbe.app"), quit)
 		if err == nil || !strings.Contains(err.Error(), "请先退出") {
-			t.Fatalf("%s accepted another running copy: %v", mode, err)
+			t.Fatalf("quit=%t accepted another running copy: %v", quit, err)
 		}
 		alive, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", lookup, prod.id)
 		if err != nil || alive != strconv.Itoa(pid) {
-			t.Fatalf("%s did not preserve the other instance: %s, %v", mode, alive, err)
+			t.Fatalf("quit=%t did not preserve the other instance: %s, %v", quit, alive, err)
 		}
+	}
+	cancelled, cancelQuit := context.WithCancel(ctx)
+	cancelQuit()
+	if err := checkMacProcesses(cancelled, prod.id, bundle, true); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancelled quit, got %v", err)
+	}
+	// Quit only this fixture and require a fresh Launch Services snapshot
+	// to observe its exit well before the installer's normal deadline.
+	stop, cancelStop := context.WithTimeout(ctx, 8*time.Second)
+	defer cancelStop()
+	if err := checkMacProcesses(stop, prod.id, bundle, true); err != nil {
+		t.Fatalf("matching bundle did not quit: %v", err)
+	}
+	if alive, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", lookup, prod.id); err != nil || alive != "" {
+		t.Fatalf("quit returned before the fixture exited: %s, %v", alive, err)
 	}
 }
 
