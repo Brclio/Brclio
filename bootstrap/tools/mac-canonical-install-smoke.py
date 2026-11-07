@@ -6,6 +6,7 @@ from pathlib import Path
 import platform
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,8 +36,8 @@ def processes():
     return json.loads(run("/usr/bin/osascript", "-l", "JavaScript", "-e", script))
 
 
-def wait(check):
-    until = time.monotonic() + 45
+def wait(check, timeout=45):
+    until = time.monotonic() + timeout
     while time.monotonic() < until:
         result = check()
         if result:
@@ -82,8 +83,9 @@ def fixture(home):
     return bundle
 
 
-def official_release(work, target):
-    release = json.loads(run("gh", "api", "repos/Brclio/Brclio/releases/latest"))
+def official_release(work, target, requested=None):
+    route = "tags/" + requested if requested else "latest"
+    release = json.loads(run("gh", "api", f"repos/Brclio/Brclio/releases/{route}"))
     tag = release["tag_name"]
     if release["draft"] or release["prerelease"] or not re.fullmatch(r"v?\d+\.\d+\.\d+", tag):
         raise ValueError("Invalid stable GitHub tag")
@@ -92,14 +94,18 @@ def official_release(work, target):
     assets = [a for a in release["assets"] if a["name"] == name]
     if len(assets) != 1:
         raise ValueError("Official release missing the platform installer")
-    if os.getenv("BRCLIO_TEST_OFFICIAL_DMG"):
+    if requested and tag != requested:
+        raise ValueError("Unexpected baseline release tag")
+    if not requested and os.getenv("BRCLIO_TEST_OFFICIAL_DMG"):
         dmg = Path(os.environ["BRCLIO_TEST_OFFICIAL_DMG"])
         if dmg.name != name or os.environ.get("BRCLIO_TEST_OFFICIAL_VERSION") != version:
             raise ValueError("Previously fetched installer differs from current release")
     else:
-        run("gh", "release", "download", tag, "--repo", "Brclio/Brclio", "--dir", work,
+        directory = work / tag
+        directory.mkdir()
+        run("gh", "release", "download", tag, "--repo", "Brclio/Brclio", "--dir", directory,
             "--pattern", name, "--pattern", "SHA256SUMS.txt")
-        dmg = work / name
+        dmg = directory / name
     manifest = (dmg.parent / "SHA256SUMS.txt").read_text().splitlines()
     hashes = [line.split()[0] for line in manifest if line.split()[1:] == [name]]
     if len(hashes) != 1 or not re.fullmatch(r"[0-9a-f]{64}", hashes[0]) or sha(dmg) != hashes[0]:
@@ -107,6 +113,52 @@ def official_release(work, target):
     if assets[0]["size"] != dmg.stat().st_size or assets[0]["digest"] != "sha256:" + hashes[0]:
         raise ValueError("Installer differs from official GitHub size/digest")
     return tag, version, dmg, hashes[0]
+
+
+def verify_app(path, version):
+    plist = plistlib.loads((path / "Contents/Info.plist").read_bytes())
+    assert plist["CFBundleIdentifier"] == APP_ID and plist["CFBundleShortVersionString"] == version
+    run("codesign", "--verify", "--deep", "--strict", path)
+    return snapshot(path)
+
+
+def remove_owned(owned):
+    if snapshot(CANONICAL)[:2] != owned:
+        raise RuntimeError("Refusing to remove an unexpected system bundle")
+    quit_owned(CANONICAL)
+    if snapshot(CANONICAL)[:2] != owned:
+        raise RuntimeError("System bundle changed during cleanup")
+    shutil.rmtree(CANONICAL)
+
+
+def install_baseline(work, dmg, version):
+    mount = work / "old-image"
+    mount.mkdir()
+    run("hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", mount, dmg)
+    try:
+        bundle = mount / "Brclio.app"
+        verify_app(bundle, version)
+        CANONICAL.mkdir()  # Exclusive reservation; never clobber another installation.
+        run("ditto", "--rsrc", "--extattr", "--acl", bundle, CANONICAL)
+        return verify_app(CANONICAL, version)
+    finally:
+        run("hdiutil", "detach", mount)
+
+
+def check_helper_result(profile, version):
+    jobs = profile / "updates/install-jobs"
+    def receipt():
+        for result in jobs.glob("mac-*/result.json"):
+            recorded = json.loads(result.read_text())
+            if recorded["status"] != "installed":
+                raise RuntimeError(f"Upgrade helper failed: {recorded}")
+            assert recorded["current"] == str(CANONICAL) and recorded["version"] == version
+            assert recorded["appId"] == APP_ID and recorded["launchAcknowledged"] is True
+            ack = json.loads((result.parent / "launch-ack.json").read_text())
+            assert ack["executable"] == str(CANONICAL / "Contents/MacOS/Brclio") and ack["version"] == version
+            return ack["pid"]
+        return None
+    return wait(receipt, 180)
 
 
 def smoke(edition, target):
@@ -121,12 +173,16 @@ def smoke(edition, target):
     with tempfile.TemporaryDirectory(prefix="brclio-canonical-", dir=temp) as scratch:
         work = Path(scratch)
         tag, version, dmg, digest = official_release(work, target)
+        _, baseline, old_dmg, _ = official_release(work, target, "v0.2.7")
+        if tuple(map(int, version.split("."))) <= tuple(map(int, baseline.split("."))):
+            raise ValueError("Stable release must be newer than the upgrade baseline")
         home = work / "home"
         legacy = fixture(home)
         before = snapshot(legacy)
         env = {k:v for k,v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
         env.update(HOME=str(home), CFFIXED_USER_HOME=str(home), BRCLIO_CANONICAL_SMOKE_DIR=str(work),
                    BRCLIO_USER_DATA=str(work / "profile"), BRCLIO_CANONICAL_RELEASE_TAG=tag,
+                   BRCLIO_CANONICAL_BASELINE=baseline,
                    BRCLIO_TEST_OFFICIAL_VERSION=version, BRCLIO_TEST_OFFICIAL_DMG=str(dmg),
                    BRCLIO_TEST_OFFICIAL_SHA=digest)
         if edition == "lite":
@@ -142,35 +198,54 @@ def smoke(edition, target):
                 subprocess.run([app / "MacOS/Brclio Downloader", ROOT / "bootstrap/tools/mac-canonical-install-smoke.cjs", value],
                                env={**env, "BRCLIO_CANONICAL_ASAR":str(app / "Resources/app.asar"), "ELECTRON_RUN_AS_NODE":"1"}, check=True)
         owned = None
+        def check_current(installed, first_pid):
+            phase("current")
+            assert snapshot(CANONICAL) == installed and before == snapshot(legacy)
+            assert running(CANONICAL) == first_pid and not running(legacy)
+
         try:
-            run("/usr/bin/open", "-n", "-a", legacy)
+            run("/usr/bin/open", "-n", "-a", legacy, env=env)
             legacy_pid = wait(lambda: running(legacy))
             phase("blocked")
             assert running(legacy) == legacy_pid and not os.path.lexists(CANONICAL)
             quit_owned(legacy)
 
             phase("fresh")
-            plist = plistlib.loads((CANONICAL / "Contents/Info.plist").read_bytes())
-            assert plist["CFBundleIdentifier"] == APP_ID and plist["CFBundleShortVersionString"] == version
-            run("codesign", "--verify", "--deep", "--strict", CANONICAL)
-            installed = snapshot(CANONICAL)
+            installed = verify_app(CANONICAL, version)
             owned = installed[:2]
             first_pid = wait(lambda: running(CANONICAL))
             assert before == snapshot(legacy)
 
-            phase("current")
-            assert snapshot(CANONICAL) == installed and before == snapshot(legacy)
-            assert running(CANONICAL) == first_pid and not running(legacy)
+            check_current(installed, first_pid)
             print(f"Verified {edition}: {tag} installed and opened {CANONICAL} (PID {first_pid}); "
                   "same-version action preserved global bundle, and legacy copy was never replaced or reopened.")
+
+            remove_owned(owned)
+            old = install_baseline(work, old_dmg, baseline)
+            owned = old[:2]
+            env["BRCLIO_USER_DATA"] = str(work / "upgrade-profile")
+            run("/usr/bin/open", "-n", "-a", CANONICAL, "--env",
+                "BRCLIO_USER_DATA=" + env["BRCLIO_USER_DATA"], env=env)
+            old_pid = wait(lambda: running(CANONICAL))
+            phase("upgrade")
+            receipt_pid = check_helper_result(Path(env["BRCLIO_USER_DATA"]), version) if edition == "full" else None
+            if edition == "full":
+                assert not (home / "Library/Application Support" / APP_ID / "updates/install-jobs").exists()
+            upgraded = verify_app(CANONICAL, version)
+            assert upgraded[:2] != owned and before == snapshot(legacy)
+            owned = upgraded[:2]
+            new_pid = wait(lambda: running(CANONICAL))
+            assert new_pid != old_pid and (receipt_pid is None or receipt_pid == new_pid)
+            check_current(upgraded, new_pid)
+            print(f"Verified {edition}: running {baseline} (PID {old_pid}) upgraded to {version} "
+                  f"(PID {new_pid}) at {CANONICAL}; next run only opened it; legacy fixture preserved.")
         finally:
             if running(legacy):
                 quit_owned(legacy)
             # Only the proven newly created bundle may be removed. Anything else
             # is left alone; even an interrupted test runs on a disposable VM.
             if owned and CANONICAL.is_dir() and snapshot(CANONICAL)[:2] == owned:
-                quit_owned(CANONICAL)
-                CANONICAL.rename(work / "installed.app")
+                remove_owned(owned)
 
 
 if __name__ == "__main__":

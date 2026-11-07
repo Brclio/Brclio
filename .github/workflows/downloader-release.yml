@@ -55,9 +55,9 @@ jobs:
           bundle="release/downloader/$folder/Brclio Downloader.app"
           codesign --verify --deep --strict "$bundle"
           node bootstrap/tools/smoke.cjs "$bundle"
-      - name: Verify canonical macOS installation and launch with a legacy copy
+      - name: Verify official macOS fresh install, upgrade and idempotent relaunch
         if: matrix.platform == 'mac'
-        timeout-minutes: 12
+        timeout-minutes: 15
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 bootstrap/tools/mac-canonical-install-smoke.py full mac-${{ matrix.arch }}

@@ -7,6 +7,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { VERSION, defaultRun, verifyBundle, guiEnvironment, identity } = require('../desktop/mac-installer-helper.cjs');
+const { checkMacBrclioProcesses, spawnMacClientHelper } = require('./mac-client-helper.cjs');
 const { createMacInstaller } = require('../desktop/mac-installer.cjs');
 const { createWindowsInstaller, LAUNCHER } = require('../desktop/windows-installer.cjs');
 const { compareVersions } = require('../desktop/updater.cjs');
@@ -54,23 +55,6 @@ function macInstallError(error, target) {
     return new Error(`没有写入 ${target} 的权限。请由管理员将官方安装包中的 Brclio.app 安装到该位置后重试。`, { cause: error });
   }
   return error;
-}
-
-async function checkMacBrclioProcesses(target, run, quit = false) {
-  const script = `ObjC.import('AppKit'); function run(argv) {
-    const target = $.NSURL.fileURLWithPath(argv[0]).URLByResolvingSymlinksInPath.path.js;
-    const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier('com.brclio.toolbox').js;
-    const other = apps.find(app => app.bundleURL.URLByResolvingSymlinksInPath.path.js !== target);
-    if (other) return other.bundleURL.path.js;
-    if (argv[1] === 'quit') {
-      apps.forEach(app => app.terminate);
-      for (let n = 0; n < 300 && apps.some(app => !app.terminated); n++) delay(0.1);
-      if (apps.some(app => !app.terminated)) throw Error('请退出正在运行的 Brclio 后重试。');
-    }
-    return '';
-  }`;
-  const { stdout } = await run('/usr/bin/osascript', ['-l', 'JavaScript', '-e', script, target, quit ? 'quit' : 'check'], { timeout: 40000 });
-  if (stdout.trim()) throw new Error(`另一份 Brclio 正在运行（${stdout.trim()}），请先退出该副本，再重试。`);
 }
 
 async function registeredMacApplication(id, run) {
@@ -163,7 +147,11 @@ async function launch(installed, options, product = 'brclio') {
   if (platform === 'darwin') {
     const run = options.run || defaultRun;
     if (product === 'brclio') await checkMacBrclioProcesses(installed.path, run);
-    await run('/usr/bin/open', ['-a', installed.path], { env: guiEnvironment() });
+    const args = ['-a', installed.path];
+    if (product === 'brclio' && process.env.BRCLIO_USER_DATA) {
+      args.push('--env', 'BRCLIO_USER_DATA=' + path.resolve(process.env.BRCLIO_USER_DATA));
+    }
+    await run('/usr/bin/open', args, { env: guiEnvironment() });
   } else {
     const child = (options.spawn || spawn)(installed.path, [], { detached: true, stdio: 'ignore', env: guiEnvironment() });
     await new Promise((resolve, reject) => { child.once('error', reject); child.once('spawn', resolve); });
@@ -197,8 +185,14 @@ async function quitBrclio(installed, options) {
 async function upgradeBrclio(installed, descriptor, options) {
   const mac = (options.platform || process.platform) === 'darwin';
   const appData = options.appData || (mac ? path.join(os.homedir(), 'Library', 'Application Support') : process.env.APPDATA);
-  const settings = { executable: installed.executable || installed.path, userData: path.join(appData, products.brclio.id), helperExecutable: process.execPath };
+  const userData = process.env.BRCLIO_USER_DATA ? path.resolve(process.env.BRCLIO_USER_DATA) : path.join(appData, products.brclio.id);
+  const settings = { executable: installed.executable || installed.path, userData, helperExecutable: process.execPath };
   if (mac) {
+    // The helper outlives this downloader, so its final swap and launch need their own checks.
+    settings.spawn = spawnMacClientHelper(await fs.realpath(installed.path), options.spawn || spawn);
+    settings.run = options.run;
+    settings.platform = options.platform;
+    settings.architecture = options.arch;
     try { await fs.access(path.dirname(installed.path), nativeFS.constants.W_OK); }
     catch (error) { throw macInstallError(error, installed.path); }
   }

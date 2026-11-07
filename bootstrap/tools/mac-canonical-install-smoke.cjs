@@ -25,7 +25,8 @@ async function main() {
     await assert.rejects(installer.getInstalled('brclio'), err => err.message.includes(legacy));
     return;
   }
-  assert.ok(phase === 'fresh' || phase === 'current');
+  assert.ok(['fresh', 'current', 'upgrade'].includes(phase));
+  const downloads = phase !== 'current';
   const file = process.env.BRCLIO_TEST_OFFICIAL_DMG, name = path.basename(file);
   const version = process.env.BRCLIO_TEST_OFFICIAL_VERSION;
   const sha = process.env.BRCLIO_TEST_OFFICIAL_SHA;
@@ -41,17 +42,21 @@ async function main() {
   const router = { async setBusy() {}, async fetch(url) {
     calls.push(url);
     if (url === API_URL) return Response.json(release);
-    if (phase === 'fresh' && url === base+'SHA256SUMS.txt') return new Response(manifest);
-    if (phase === 'fresh' && url === base+name) return new Response(Readable.toWeb(fs.createReadStream(file)), {headers:{'content-length':String(size)}});
+    if (downloads && url === base+'SHA256SUMS.txt') return new Response(manifest);
+    if (downloads && url === base+name) return new Response(Readable.toWeb(fs.createReadStream(file)), {headers:{'content-length':String(size)}});
     throw Error('Unexpected release request in ' + phase);
   }};
   const before = await installer.getInstalled('brclio');
   if (phase === 'fresh') assert.equal(before, null);
-  else assert.equal(before?.path, canonical);
+  else {
+    assert.equal(before?.path, canonical);
+    assert.equal(before.version, phase === 'current' ? version : process.env.BRCLIO_CANONICAL_BASELINE);
+  }
   const outcome = await runDownloader({action:'brclio', currentVersion:'0.0.0', installer, router,
-    directory:path.join(work,'packages'), report() {}});
-  assert.equal(outcome.quit, false);
-  assert.deepEqual(calls, phase === 'fresh' ? [API_URL,base+'SHA256SUMS.txt',base+name] : [API_URL]);
+    directory:path.join(work,'packages',phase), report() {}});
+  assert.equal(outcome.quit, phase === 'upgrade');
+  assert.deepEqual(calls, downloads ? [API_URL,base+'SHA256SUMS.txt',base+name] : [API_URL]);
+  if (phase === 'upgrade') return; // The detached helper can commit once this process exits.
   const current = await installer.getInstalled('brclio');
   assert.equal(current?.path,canonical);
   assert.equal(current?.version,version);

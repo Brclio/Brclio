@@ -37,25 +37,25 @@ func TestCanonicalApplicationsOnMacRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	version := os.Getenv("BRCLIO_TEST_OFFICIAL_VERSION")
-	if (phase == "fresh" && current != "") || (phase == "current" && current != version) ||
-		(phase != "fresh" && phase != "current") {
+	wantCurrent, valid := map[string]string{"fresh": "", "current": version, "upgrade": os.Getenv("BRCLIO_CANONICAL_BASELINE")}[phase]
+	if !valid || current != wantCurrent {
 		t.Fatalf("unexpected phase %s or installed version %s", phase, current)
 	}
 	var opens, installs int
 	err = useBrclioVersion(current, version, func(s string) { t.Log(s) }, func() error {
 		opens++
 		if phase != "current" {
-			return errors.New("fresh install tried to open legacy app")
+			return errors.New("fresh install or upgrade unexpectedly skipped the installer")
 		}
 		return openBrclio(ctx)
 	}, func() error {
 		installs++
-		if phase != "fresh" {
+		if phase == "current" {
 			return errors.New("current install attempted another download")
 		}
 		return installBrclio(ctx, os.Getenv("BRCLIO_TEST_OFFICIAL_DMG"), version, os.Getenv("BRCLIO_TEST_OFFICIAL_SHA"))
 	})
-	if err != nil || (phase == "fresh" && (installs != 1 || opens != 0)) || (phase == "current" && (opens != 1 || installs != 0)) {
+	if err != nil || (phase != "current" && (installs != 1 || opens != 0)) || (phase == "current" && (opens != 1 || installs != 0)) {
 		t.Fatalf("%s, open=%d install=%d: %v", phase, opens, installs, err)
 	}
 }

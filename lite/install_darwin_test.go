@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -14,7 +15,7 @@ import (
 	"time"
 )
 
-func fixtureBundle(t *testing.T, root string, product macProduct, version, receipt string) string {
+func signedFixtureBundle(t *testing.T, root string, product macProduct, version string, build func(string)) string {
 	t.Helper()
 	bundle := filepath.Join(root, product.name+".app")
 	bin := filepath.Join(bundle, "Contents", "MacOS", product.name)
@@ -25,32 +26,39 @@ func fixtureBundle(t *testing.T, root string, product macProduct, version, recei
 	if err := os.WriteFile(filepath.Join(bundle, "Contents", "Info.plist"), []byte(plist), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if receipt == "test-binary" {
-		exe, err := os.Executable()
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, err := os.ReadFile(exe)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = os.WriteFile(bin, data, 0755); err != nil {
-			t.Fatal(err)
-		}
-	} else {
-		main := fmt.Sprintf("#include <stdio.h>\nint main(void){FILE*f=fopen(%s,\"w\");if(f){fputs(%s,f);fclose(f);}return 0;}\n", strconv.Quote(receipt), strconv.Quote(version))
-		file := filepath.Join(t.TempDir(), "main.c")
-		if err := os.WriteFile(file, []byte(main), 0644); err != nil {
-			t.Fatal(err)
-		}
-		if out, err := exec.Command("/usr/bin/clang", file, "-o", bin).CombinedOutput(); err != nil {
-			t.Fatalf("compile: %s %v", out, err)
-		}
-	}
+	build(bin)
 	if out, err := exec.Command("/usr/bin/codesign", "--force", "--sign", "-", bundle).CombinedOutput(); err != nil {
 		t.Fatalf("sign: %s %v", out, err)
 	}
 	return bundle
+}
+
+func fixtureBundle(t *testing.T, root string, product macProduct, version, receipt string) string {
+	t.Helper()
+	return signedFixtureBundle(t, root, product, version, func(bin string) {
+		if receipt == "test-binary" {
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(exe)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(bin, data, 0755); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			main := fmt.Sprintf("#include <stdio.h>\nint main(void){FILE*f=fopen(%s,\"w\");if(f){fputs(%s,f);fclose(f);}return 0;}\n", strconv.Quote(receipt), strconv.Quote(version))
+			file := filepath.Join(t.TempDir(), "main.c")
+			if err := os.WriteFile(file, []byte(main), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := exec.Command("/usr/bin/clang", file, "-o", bin).CombinedOutput(); err != nil {
+				t.Fatalf("compile: %s %v", out, err)
+			}
+		}
+	})
 }
 func fixtureDMG(t *testing.T, product macProduct, prefix, version, receipt string) (string, string) {
 	t.Helper()
@@ -108,25 +116,51 @@ func TestMacSystemTargetAndLegacyCopy(t *testing.T) {
 	}
 }
 
+func TestMacOpenUsesExplicitClientProfile(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		profile string
+		want    []string
+	}{
+		{"", []string{"-a", macBrclioPath}},
+		{"client profile", []string{"-a", macBrclioPath, "--env", "BRCLIO_USER_DATA=" + filepath.Join(wd, "client profile")}},
+		{wd, []string{"-a", macBrclioPath, "--env", "BRCLIO_USER_DATA=" + wd}},
+	} {
+		args, err := macOpenArgs(macBrclioPath, tt.profile)
+		if err != nil || !slices.Equal(args, tt.want) {
+			t.Fatalf("profile %q produced args %q, want %q: %v", tt.profile, args, tt.want, err)
+		}
+	}
+}
+
 // Run the same Cocoa guard as the installer against a uniquely identified
 // temporary application, never against a real user's Brclio process.
 func TestMacRejectsRunningOtherLocation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	prod := macProduct{"GuardProbe", "com.brclio.test.runningpath." + strconv.FormatInt(time.Now().UnixNano(), 10)}
-	bundle := fixtureBundle(t, t.TempDir(), prod, "1.0.0", filepath.Join(t.TempDir(), "unused"))
-	exe := filepath.Join(bundle, "Contents", "MacOS", prod.name)
-	sleep, err := os.ReadFile("/bin/sleep")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(exe, sleep, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = installCommand(ctx, "/usr/bin/codesign", "--force", "--sign", "-", bundle); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = installCommand(ctx, "/usr/bin/open", "-g", "-n", "-a", bundle, "--args", "30"); err != nil {
+	bundle := signedFixtureBundle(t, t.TempDir(), prod, "1.0.0", func(bin string) {
+		const source = `#import <AppKit/AppKit.h>
+#include <unistd.h>
+int main(void) {
+  @autoreleasepool {
+    alarm(45);
+    NSApplication *app = [NSApplication sharedApplication];
+    [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    [app run];
+  }
+  return 0;
+}`
+		compiler := exec.CommandContext(ctx, "/usr/bin/clang", "-x", "objective-c", "-", "-framework", "AppKit", "-o", bin)
+		compiler.Stdin = strings.NewReader(source)
+		if out, err := compiler.CombinedOutput(); err != nil {
+			t.Fatalf("compile test application: %s %v", out, err)
+		}
+	})
+	if _, err := installCommand(ctx, "/usr/bin/open", "-g", "-n", "-a", bundle); err != nil {
 		t.Fatal(err)
 	}
 	// Constrain cleanup to both the unique bundle identity and the temporary path,
@@ -163,11 +197,11 @@ func TestMacRejectsRunningOtherLocation(t *testing.T) {
 		_, err := installCommand(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", runningBrclioScript, prod.id, target, mode)
 		return err
 	}
-	if err = check(bundle, "check"); err != nil {
+	if err := check(bundle, "check"); err != nil {
 		t.Fatal(err)
 	}
 	for _, mode := range []string{"check", "quit"} {
-		err = check(filepath.Join(t.TempDir(), "GuardProbe.app"), mode)
+		err := check(filepath.Join(t.TempDir(), "GuardProbe.app"), mode)
 		if err == nil || !strings.Contains(err.Error(), "请先退出") {
 			t.Fatalf("%s accepted another running copy: %v", mode, err)
 		}
@@ -215,6 +249,66 @@ func TestMacInstallFreshAndRollback(t *testing.T) {
 		if !rollback && (err != nil || len(launches) != 1 || launches[0] != version) {
 			t.Fatalf("install: %v %v", err, launches)
 		}
+	}
+}
+
+func TestMacRollbackPreservesChangedBundle(t *testing.T) {
+	ctx := context.Background()
+	version := "1.2.3"
+	image, digest := fixtureDMG(t, brclioMac, "Brclio", version, filepath.Join(t.TempDir(), "unused"))
+	launchErr := errors.New("simulated launch failure")
+	for _, changed := range []string{"target", "backup"} {
+		t.Run(changed, func(t *testing.T) {
+			dir := t.TempDir()
+			target := fixtureBundle(t, dir, brclioMac, "1.0.0", filepath.Join(t.TempDir(), "unused"))
+			old, err := inspectBundle(ctx, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var occupied, backup string
+			var outsider os.FileInfo
+			launch := func(_ context.Context, app string) error {
+				if occupied != "" || app != target {
+					t.Fatal("unexpected launch after path ownership changed")
+				}
+				matches, err := filepath.Glob(filepath.Join(dir, ".brclio-lite-*", "candidate.app"))
+				if err != nil || len(matches) != 1 {
+					t.Fatalf("expected a staged backup, got %q: %v", matches, err)
+				}
+				backup = matches[0]
+				occupied = target
+				if changed == "backup" {
+					occupied = backup
+				}
+				if err = os.Rename(occupied, filepath.Join(dir, "moved.app")); err != nil {
+					t.Fatal(err)
+				}
+				if err = os.Mkdir(occupied, 0755); err != nil {
+					t.Fatal(err)
+				}
+				outsider, err = os.Lstat(occupied)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return launchErr
+			}
+			err = installMacAt(ctx, image, version, digest, target, old, launch, func(context.Context, string) error { return nil })
+			if !errors.Is(err, launchErr) || !strings.Contains(err.Error(), filepath.Dir(backup)) {
+				t.Fatalf("missing preserved recovery path: %v", err)
+			}
+			kept, err := os.Lstat(occupied)
+			if err != nil || !os.SameFile(kept, outsider) {
+				t.Fatalf("occupying bundle was moved or removed: %v", err)
+			}
+			if changed == "target" {
+				previous, err := os.Lstat(backup)
+				if err != nil || !os.SameFile(old.file, previous) {
+					t.Fatalf("previous installation was not preserved in %s: %v", backup, err)
+				}
+			} else if app, err := inspectBundle(ctx, target); err != nil || app.version != version {
+				t.Fatalf("installed bundle was modified despite a changed backup: %v", err)
+			}
+		})
 	}
 }
 

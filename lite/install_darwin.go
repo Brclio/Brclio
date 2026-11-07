@@ -93,8 +93,24 @@ func openMacBundle(ctx context.Context, path string) error {
 	if err := runningMacBrclio(ctx, path, "check"); err != nil {
 		return err
 	}
-	_, err := installCommand(ctx, "/usr/bin/open", "-a", path)
+	args, err := macOpenArgs(path, os.Getenv("BRCLIO_USER_DATA"))
+	if err != nil {
+		return err
+	}
+	_, err = installCommand(ctx, "/usr/bin/open", args...)
 	return err
+}
+
+func macOpenArgs(path, userData string) ([]string, error) {
+	args := []string{"-a", path}
+	if userData == "" {
+		return args, nil
+	}
+	profile, err := filepath.Abs(userData)
+	if err != nil {
+		return nil, err
+	}
+	return append(args, "--env", "BRCLIO_USER_DATA="+profile), nil
 }
 
 func openBrclio(ctx context.Context) error {
@@ -198,10 +214,15 @@ func installMacAt(ctx context.Context, filename, version, digest, target string,
 	// After commit begins, finish or restore the installation even if the caller closes the window.
 	commit, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	var candidate os.FileInfo
 	if old != nil {
 		current, err := inspectBundle(commit, target)
 		if err != nil || !os.SameFile(old.file, current.file) || old.version != current.version {
 			return errors.New("原 Brclio 安装已改变，请重试")
+		}
+		candidate, err = os.Lstat(next)
+		if err != nil {
+			return err
 		}
 	}
 	if err = moveMacBundle(commit, next, target, old != nil); err != nil {
@@ -211,6 +232,16 @@ func installMacAt(ctx context.Context, filename, version, digest, target string,
 		return nil
 	}
 	if old != nil {
+		backup, backupErr := os.Lstat(next)
+		if backupErr != nil || !os.SameFile(old.file, backup) {
+			preserve = true
+			return fmt.Errorf("新版未能打开，旧版备份已变化，请检查保留的恢复目录 %s：%w", stage, err)
+		}
+		current, currentErr := os.Lstat(target)
+		if currentErr != nil || !os.SameFile(candidate, current) {
+			preserve = true
+			return fmt.Errorf("新版未能打开，安装目标已被其他操作更改，旧版保存在 %s：%w", next, err)
+		}
 		if rollback := moveMacBundle(commit, next, target, true); rollback != nil {
 			preserve = true
 			return fmt.Errorf("新版未能打开，旧版保存在 %s: %w", next, rollback)
