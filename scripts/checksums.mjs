@@ -8,7 +8,7 @@ const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const INSTALLER = /\.(exe|dmg|zip|apk)$/i;
 const MANIFEST = 'SHA256SUMS.txt';
 
-export function releaseFilenames(version) {
+export function releaseFilenames(version, { desktopOnly = false } = {}) {
   if (!VERSION.test(version)) throw new Error('Release version must use X.Y.Z without a v prefix.');
   return [
     `Brclio-${version}-windows-x64.exe`,
@@ -16,15 +16,18 @@ export function releaseFilenames(version) {
     `Brclio-${version}-mac-arm64.zip`,
     `Brclio-${version}-mac-x64.dmg`,
     `Brclio-${version}-mac-x64.zip`,
-    `Brclio-${version}-android.apk`,
+    ...(desktopOnly ? [] : [`Brclio-${version}-android.apk`]),
   ].sort();
 }
 
-async function packageNames(directory, version) {
-  const names = (await readdir(directory)).filter(name => INSTALLER.test(name)).sort();
+async function packageNames(directory, { version, desktopOnly }) {
+  if (desktopOnly && !version) throw new Error('Desktop release validation requires a version.');
+  const names = (await readdir(directory))
+    .filter(name => desktopOnly ? name !== MANIFEST : INSTALLER.test(name))
+    .sort();
   if (!names.length) throw new Error('No installer files found; refusing to create an empty manifest.');
   if (version) {
-    const expected = releaseFilenames(version);
+    const expected = releaseFilenames(version, { desktopOnly });
     const missing = expected.filter(name => !names.includes(name));
     const extra = names.filter(name => !expected.includes(name));
     if (missing.length || extra.length) throw new Error(`Incomplete release. Missing: ${missing.join(', ') || 'none'}. Unexpected installers: ${extra.join(', ') || 'none'}.`);
@@ -43,16 +46,16 @@ async function hashFile(filename) {
   return hash.digest('hex');
 }
 
-export async function createManifest(directory, { version } = {}) {
-  const names = await packageNames(directory, version);
+export async function createManifest(directory, options = {}) {
+  const names = await packageNames(directory, options);
   const lines = [];
   for (const name of names) lines.push(`${await hashFile(path.join(directory, name))}  ${name}`);
   await writeFile(path.join(directory, MANIFEST), lines.join('\n') + '\n');
   return names;
 }
 
-export async function verifyManifest(directory, { version } = {}) {
-  const names = await packageNames(directory, version);
+export async function verifyManifest(directory, options = {}) {
+  const names = await packageNames(directory, options);
   const text = await readFile(path.join(directory, MANIFEST), 'utf8');
   const entries = new Map();
   for (const line of text.trimEnd().split(/\r?\n/)) {
@@ -71,9 +74,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const args = process.argv.slice(2);
     const directory = args.shift();
-    if (!directory || directory.startsWith('--')) throw new Error('Usage: node scripts/checksums.mjs DIRECTORY [--version X.Y.Z] [--verify]');
+    if (!directory || directory.startsWith('--')) throw new Error('Usage: node scripts/checksums.mjs DIRECTORY [--version X.Y.Z [--desktop-only]] [--verify]');
     let version;
     let verify = false;
+    let desktopOnly = false;
     while (args.length) {
       const argument = args.shift();
       if (argument === '--version' && args.length && version === undefined) {
@@ -81,10 +85,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         releaseFilenames(version);
       }
       else if (argument === '--verify' && !verify) verify = true;
+      else if (argument === '--desktop-only' && !desktopOnly) desktopOnly = true;
       else throw new Error(`Unknown or repeated argument: ${argument}`);
     }
     if (version) releaseFilenames(version);
-    const names = await (verify ? verifyManifest : createManifest)(path.resolve(directory), { version });
+    const names = await (verify ? verifyManifest : createManifest)(path.resolve(directory), { version, desktopOnly });
     console.log(`${verify ? 'Verified' : 'Wrote'} ${MANIFEST} for ${names.length} installer files.`);
   } catch (error) {
     console.error(error.message);

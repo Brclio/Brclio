@@ -2,6 +2,8 @@
 
 Android 客户端使用 Kotlin Activity 和离线 WebView，共用 `web/` 中的 Brclio 界面。包名为 `com.brclio.toolbox`，调试包为 `com.brclio.toolbox.debug`，当前版本 `0.2.8`（versionCode 25），最低 Android 8.0（API 26）。
 
+自桌面版 v0.2.9 起，Android 暂停发布新 APK。已安装的 Android 客户端查询 GitHub 最新正式版时，遇到仅含桌面安装包的版本会提示缺少 APK。需要安装或升级到最后一版 Android 客户端时，请使用 [v0.2.8 的 APK 和 SHA-256 清单](https://github.com/Brclio/Brclio/releases/tag/v0.2.8)。
+
 ## 使用方式
 
 1. 打开 Brclio，选择文件或文件夹。文件选择支持多选，文件夹选择由系统 Storage Access Framework 提供。

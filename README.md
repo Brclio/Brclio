@@ -47,7 +47,7 @@ Brclio 介绍与正式版本下载主页位于 [tools.brclio.com](https://tools.
 | Windows x64 | `Brclio-版本-windows-x64.exe` | 运行安装向导，可选择安装目录 |
 | macOS Apple Silicon | `Brclio-版本-mac-arm64.dmg` | 打开 DMG，将 Brclio 拖入 Applications |
 | macOS Intel | `Brclio-版本-mac-x64.dmg` | 打开 DMG，将 Brclio 拖入 Applications |
-| Android 8.0+ | `Brclio-版本-android.apk` | 允许当前来源安装应用，交给系统安装器 |
+| Android 8.0+ | [v0.2.8 历史安装包](https://github.com/Brclio/Brclio/releases/tag/v0.2.8) | 新 APK 暂停发布。安装历史 APK 时，允许当前来源安装应用 |
 
 macOS 从 v0.1.1 起使用完整的 ad-hoc 应用签名，修复 v0.1.0 的“应用已损坏”打包缺陷；目前尚无 Developer ID 签名和 Apple 公证。首次打开可能提示无法验证开发者：先尝试打开，再到 **系统设置 → 隐私与安全性 → 仍要打开**，确认“打开”。这是对 Brclio 单个应用的允许，详见 [Apple 官方说明](https://support.apple.com/zh-cn/102445)。如果仍提示“已损坏”，请确认已替换为 v0.1.1 或更新版本。
 
@@ -100,7 +100,7 @@ npm run build:win
 
 浏览器验证可通过 `BRCLIO_CHROME` 指定 Chrome / Chromium 可执行文件。桌面原生烟测会使用独立临时用户目录，不安装主机右键菜单。
 
-Android 构建需要 JDK 17、Android SDK 35，详见 [Android 文档](docs/android.md)。Release 需显式配置签名，缺少签名时构建会失败；不把 debug APK 标为正式版。
+Android 构建需要 JDK 17、Android SDK 35，详见 [Android 文档](docs/android.md)。手工构建正式 APK 需要配置签名。自动发布流程只上传桌面安装包。
 
 ## 项目结构
 

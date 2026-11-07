@@ -164,6 +164,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1220, height: 850, minWidth: 780, minHeight: 620,
     title: 'Brclio', backgroundColor: '#f7f4ee', show: false,
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset', titleBarOverlay: true } : {}),
     icon: path.join(__dirname, '../web/assets/icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
