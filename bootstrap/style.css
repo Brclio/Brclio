@@ -1,0 +1,32 @@
+/* Brclio Design System · Brclio · CC BY-NC-SA 4.0 */
+:root { --cream:#fefcf6; --ink:#1a1a2e; --blue:#2b7fd8; --yellow:#f4d758; --red:#b53046; }
+* { box-sizing:border-box; }
+body { margin:0; color:var(--ink); background:var(--cream); font:15px/1.6 'Noto Sans SC',-apple-system,'Microsoft YaHei',sans-serif; }
+::selection { background:var(--yellow); }
+header { display:flex; align-items:baseline; gap:.8rem; padding:14px 28px; border-bottom:1px solid #dcdacf; }
+header strong { font:italic 700 26px Georgia,serif; }
+header strong span { color:var(--blue); }
+header > span { color:#565665; font-size:13px; }
+header b { font-weight:450; font-variant-numeric:tabular-nums; }
+main { max-width:40rem; padding:28px clamp(20px,6vw,36px); }
+h1 { margin:0; font:700 clamp(24px,5.4vw,32px)/1.35 'Noto Serif SC','Songti SC',SimSun,serif; }
+p { margin:9px 0; overflow-wrap:anywhere; }
+#detail { color:#414151; }
+progress { display:block; margin:22px 0 12px; width:100%; height:7px; appearance:none; border:none; border-radius:6px; overflow:hidden; background:#e5e4dd; }
+progress::-webkit-progress-bar { background:#e5e4dd; }
+progress::-webkit-progress-value { background:var(--blue); }
+progress:indeterminate { background:#e5e4dd; }
+.route { display:flex; align-items:center; gap:8px; color:#565665; font-size:13px; }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--yellow); border:1px solid #a58a24; }
+#warning { font-size:13px; color:var(--red); }
+.actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:18px; }
+button { font:inherit; font-weight:600; padding:7px 14px; border:1px solid #1d5894; border-radius:6px; background:#1d5894; color:#fff; cursor:pointer; }
+button:not(:disabled):hover { background:#194a7b; }
+button.secondary { color:#1d5894; background:transparent; border-color:#9fb7d0; }
+button.secondary:not(:disabled):hover { background:#eef3f8; }
+button:disabled { color:#68727d; background:#edece7; border-color:#cdcec8; cursor:default; }
+button:focus-visible { outline:2px solid var(--blue); outline-offset:3px; }
+
+.preference { display:flex; align-items:center; gap:7px; margin-top:16px; font-size:13px; color:#414151; cursor:pointer; }
+.preference input { accent-color:var(--blue); margin:0; }
+#preferenceError { font-size:13px; color:var(--red); }

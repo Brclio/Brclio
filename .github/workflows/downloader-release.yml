@@ -1,0 +1,105 @@
+name: Release Brclio Downloader
+
+on:
+  pull_request:
+    paths: ['bootstrap/**', 'desktop/**', 'package*.json', '.github/workflows/downloader-release.yml']
+  push:
+    tags: ['downloader-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, platform: mac, arch: arm64 }
+          - { runner: macos-15-intel, platform: mac, arch: x64 }
+          - { runner: windows-2022, platform: win, arch: x64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Match tag to downloader version
+        if: github.event_name == 'push'
+        run: node -e "const {version}=require('./bootstrap/package.json'); if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version) || process.env.GITHUB_REF_NAME !== 'downloader-v'+version) throw Error('Tag and downloader version differ')"
+      - run: npm ci
+      - name: Run downloader tests
+        shell: bash
+        run: node --test bootstrap/*.test.cjs
+      - name: Package macOS downloader
+        if: matrix.platform == 'mac'
+        env:
+          # This product uses the ad-hoc '-' identity, without certificates or keys.
+          CSC_FOR_PULL_REQUEST: 'true'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: bash bootstrap/tools/build-mac.sh ${{ matrix.arch }}
+      - name: Package Windows downloader
+        if: matrix.platform == 'win'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --config bootstrap/electron-builder.cjs --win --${{ matrix.arch }} --publish never
+      - name: Verify the packaged macOS downloader
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          folder=mac
+          if [[ "$BUILD_ARCH" == arm64 ]]; then folder=mac-arm64; fi
+          bundle="release/downloader/$folder/Brclio Downloader.app"
+          codesign --verify --deep --strict "$bundle"
+          node bootstrap/tools/smoke.cjs "$bundle"
+      - name: Build baseline installer for Windows upgrade verification
+        if: matrix.platform == 'win'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --config bootstrap/electron-builder.cjs --win --x64 --publish never --config.extraMetadata.version=0.0.1 --config.directories.output=release/downloader-smoke-old
+      - name: Verify Windows NSIS installation, self-update and Brclio launch
+        if: matrix.platform == 'win'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'brclio-download-install-smoke'
+          New-Item -ItemType Directory -Force $fixture | Out-Null
+          gh release download v0.2.8 -R Brclio/Brclio -D $fixture -p Brclio-0.2.8-windows-x64.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:GH_TOKEN
+          node bootstrap/tools/windows-install-smoke.cjs (Join-Path $fixture 'Brclio-0.2.8-windows-x64.exe')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: downloader-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/downloader/Brclio-Downloader-*.dmg
+            release/downloader/Brclio-Downloader-*.exe
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: brclio-downloader-channel
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: downloader-*
+          path: release-files
+          merge-multiple: true
+      - run: bash bootstrap/publish.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
