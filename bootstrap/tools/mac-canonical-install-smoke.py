@@ -29,11 +29,65 @@ def sha(path):
     return h.hexdigest()
 
 
-def processes():
-    script = '''ObjC.import("AppKit");
-    JSON.stringify($.NSRunningApplication.runningApplicationsWithBundleIdentifier("com.brclio.toolbox").js.map(a =>
-      ({path:a.bundleURL.path.js, pid:a.processIdentifier, ready:a.finishedLaunching})))'''
-    return json.loads(run("/usr/bin/osascript", "-l", "JavaScript", "-e", script))
+PROCESS_SNAPSHOT = '''ObjC.import("AppKit");
+function hasExited(app) {
+    try { return !app || app.isNil() || app.terminated; }
+    catch (error) { return false; }
+}
+function inspect(app) {
+    let pid = null;
+    try {
+        if (hasExited(app)) return null;
+        pid = app.processIdentifier;
+        const url = app.bundleURL;
+        const value = url && !url.isNil() ? ObjC.unwrap(url.path) : null;
+        const path = typeof value === "string" && value.startsWith("/") && pid > 0 ? value : null;
+        const ready = app.finishedLaunching;
+        if (hasExited(app)) return null;
+        return {pid, path, ready};
+    } catch (error) {
+        if (hasExited(app)) return null;
+        return {pid, path:null, ready:false};
+    }
+}
+function run(args) {
+    const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(args[0]).js;
+    const rows = apps.map(app => ({app, entry:inspect(app)})).filter(row => row.entry);
+    const result = rows.map(row => row.entry);
+    if (!args[1] || result.some(entry => entry.path === null)) return JSON.stringify(result);
+    for (const {app, entry} of rows) {
+        if (entry.path !== args[1]) continue;
+        const current = inspect(app);
+        if (!current) continue;
+        if (current.pid !== entry.pid || current.path !== args[1]) {
+            return JSON.stringify([{pid:current.pid, path:null, ready:false}]);
+        }
+        try { app.terminate; } catch (error) { if (!hasExited(app)) throw error; }
+    }
+    return JSON.stringify(result);
+}'''
+
+
+def processes(quit_path=None):
+    # A matching record without a bundle URL may be between launch and exit.
+    # Only a fresh, fully identified snapshot may authorize cleanup.
+    deadline = time.monotonic() + 5
+    while True:
+        result = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", PROCESS_SNAPSHOT,
+                                 APP_ID, str(quit_path) if quit_path else ""], text=True, capture_output=True)
+        if result.returncode:
+            raise RuntimeError(f"CI Launch Services observer failed: {result.stderr.strip()}")
+        try:
+            rows = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("CI Launch Services observer returned invalid process data") from error
+        unknown = [row for row in rows if not row["path"]]
+        if not unknown:
+            return rows
+        if time.monotonic() >= deadline:
+            pids = [row["pid"] for row in unknown]
+            raise RuntimeError(f"CI Launch Services observer could not identify matching processes {pids}")
+        time.sleep(0.2)
 
 
 def wait(check, timeout=45):
@@ -54,12 +108,7 @@ def running(path):
 
 
 def quit_owned(path):
-    # LaunchServices termination is restricted to this exact test bundle.
-    script = '''ObjC.import("AppKit"); function run(args) {
-        $.NSRunningApplication.runningApplicationsWithBundleIdentifier("com.brclio.toolbox").js
-        .filter(a => a.bundleURL.path.js === args[0]).forEach(a => a.terminate);
-    }'''
-    run("/usr/bin/osascript", "-l", "JavaScript", "-e", script, path)
+    processes(quit_path=path)
     wait(lambda: all(Path(p["path"]).resolve() != path for p in processes()))
 
 
@@ -283,12 +332,17 @@ def smoke(edition, target):
             print(f"Verified {edition}: running {baseline} (PID {old_pid}) upgraded to {version} "
                   f"(PID {new_pid}) at {CANONICAL}; next run only opened it; legacy fixture preserved.")
         finally:
-            if running(legacy):
-                quit_owned(legacy)
-            # Only the proven newly created bundle may be removed. Anything else
-            # is left alone; even an interrupted test runs on a disposable VM.
-            if owned and CANONICAL.is_dir() and snapshot(CANONICAL)[:2] == owned:
-                remove_owned(owned)
+            failure = sys.exc_info()[1]
+            try:
+                if running(legacy):
+                    quit_owned(legacy)
+                # Only the proven newly created bundle may be removed.
+                if owned and CANONICAL.is_dir() and snapshot(CANONICAL)[:2] == owned:
+                    remove_owned(owned)
+            except Exception as cleanup_error:
+                if failure is None:
+                    raise
+                print(f"CI cleanup also failed: {cleanup_error}", file=sys.stderr)
 
 
 if __name__ == "__main__":

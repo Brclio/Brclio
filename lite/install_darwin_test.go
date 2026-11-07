@@ -136,6 +136,105 @@ func TestMacOpenUsesExplicitClientProfile(t *testing.T) {
 	}
 }
 
+func TestMacSnapshotWhileBundleURLDisappears(t *testing.T) {
+	// Model the interval in which Launch Services still lists an application
+	// but has already cleared its bundle URL, without signalling any process.
+	const scenarios = macProcessSnapshotScript + `
+function run(argv) {
+	const url = $.NSURL.fileURLWithPath(argv[0]), target = bundlePath(url);
+	if (!target) throw Error("missing target");
+	let signals = 0;
+	function app(pid, bundleURL) {
+		return {processIdentifier:pid, bundleURL, terminated:false, get terminate() { signals++; }};
+	}
+	const stable = app(11, url);
+	for (const missing of [undefined, {isNil() {return true;}},
+	    {URLByResolvingSymlinksInPath:undefined}, {URLByResolvingSymlinksInPath:{path:undefined}}]) {
+		const pending = snapshot([stable, app(22, missing)], target, true, null);
+		if (pending.unknown.join() !== "22" || signals) throw Error("signalled while path unknown");
+	}
+	const throwing = app(23, url);
+	Object.defineProperty(throwing, "bundleURL", {get() { throw Error("released object"); }});
+	const uncertain = snapshot([stable, throwing], target, true, null);
+	if (uncertain.unknown.join() !== "23" || signals) throw Error("throwing getter bypassed live unknown");
+	const vanishing = app(33, null);
+	Object.defineProperty(vanishing, "bundleURL", {get() { this.terminated = true; throw Error("gone"); }});
+	const exited = snapshot([vanishing], target, true, null);
+	if (exited.pids.length || exited.unknown.length || exited.matched || signals) throw Error("did not skip exited process");
+	let blocked = false;
+	try { snapshot([stable, app(44, $.NSURL.fileURLWithPath(argv[1]))], target, true, null); }
+	catch (e) { blocked = e.message.includes(argv[1]); }
+	if (!blocked || signals) throw Error("failed to block other path");
+	blocked = false;
+	try { snapshot([stable, app(55, url)], target, true, [11]); }
+	catch (e) { blocked = e.message.includes("刚刚启动"); }
+	if (!blocked || signals) throw Error("signalled a newly launched application");
+	const verified = snapshot([stable], target, true, [11]);
+	if (verified.matched !== 1 || verified.unknown.length || signals !== 1) throw Error("matching original pid was not signalled");
+	return "ok";
+}`
+	other := filepath.Join(t.TempDir(), "Other.app")
+	realParent, err := filepath.EvalSymlinks(filepath.Dir(other))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := installCommand(context.Background(), "/usr/bin/osascript", "-l", "JavaScript", "-e", scenarios,
+		filepath.Join(t.TempDir(), "Target.app"), filepath.Join(realParent, "Other.app"))
+	if err != nil || out != "ok" {
+		t.Fatalf("snapshot cases: %s %v", out, err)
+	}
+}
+
+func TestMacWaitsForUnidentifiedProcess(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "Target.app")
+	pid := os.Getpid() // always alive throughout the test
+	pending := macProcessSnapshot{Pids: []int{pid}, Unknown: []int{pid}}
+	for _, quit := range []bool{false, true} {
+		var count int
+		err := waitMacProcesses(context.Background(), target, quit, func(_ context.Context, _ string, initial []int) (macProcessSnapshot, error) {
+			count++
+			if quit && count > 1 && !slices.Equal(initial, []int{pid}) {
+				t.Fatalf("lost original PID list: %v", initial)
+			}
+			return pending, nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "无法确定") || count != 5 {
+			t.Fatalf("quit=%t allowed a live unknown process after %d queries: %v", quit, count, err)
+		}
+	}
+	var actions []string
+	err := waitMacProcesses(context.Background(), target, true, func(_ context.Context, action string, initial []int) (macProcessSnapshot, error) {
+		actions = append(actions, action)
+		switch len(actions) {
+		case 1, 3:
+			return pending, nil
+		case 2:
+			if !slices.Equal(initial, []int{pid}) {
+				t.Fatalf("expected original PID only: %v", initial)
+			}
+			return macProcessSnapshot{Pids: []int{pid}, Matched: 1}, nil
+		default:
+			return macProcessSnapshot{}, nil
+		}
+	})
+	if err != nil || !slices.Equal(actions, []string{"quit", "quit", "check", "check"}) {
+		t.Fatalf("unexpected retry sequence: %v, %v", actions, err)
+	}
+	// Reap our own short-lived helper to exercise positive ESRCH evidence.
+	exited := exec.Command("/usr/bin/true")
+	if err := exited.Run(); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	err = waitMacProcesses(context.Background(), target, true, func(context.Context, string, []int) (macProcessSnapshot, error) {
+		calls++
+		return macProcessSnapshot{Pids: []int{exited.Process.Pid}, Unknown: []int{exited.Process.Pid}}, nil
+	})
+	if err != nil || calls != 1 {
+		t.Fatalf("known exited process still blocked quit: %v", err)
+	}
+}
+
 // Run the same Cocoa guard as the installer against a uniquely identified
 // temporary application, never against a real user's Brclio process.
 func TestMacRejectsRunningOtherLocation(t *testing.T) {
@@ -166,10 +265,10 @@ int main(void) {
 	// Constrain cleanup to both the unique bundle identity and the temporary path,
 	// even if registration is delayed or a test assertion fails.
 	t.Cleanup(func() {
-		const cleanup = `ObjC.import("AppKit"); function run(argv) {
-			const target = $.NSURL.fileURLWithPath(argv[1]).URLByResolvingSymlinksInPath.path.js;
+		const cleanup = macProcessSnapshotScript + ` function run(argv) {
+			const target = bundlePath($.NSURL.fileURLWithPath(argv[1]));
 			for (const app of $.NSRunningApplication.runningApplicationsWithBundleIdentifier(argv[0]).js) {
-				if (app.bundleURL.URLByResolvingSymlinksInPath.path.js === target) app.forceTerminate;
+				if (!app.terminated && bundlePath(app.bundleURL) === target) app.forceTerminate;
 			}
 		}`
 		stop, cancel := context.WithTimeout(context.Background(), 3*time.Second)
