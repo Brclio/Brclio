@@ -72,6 +72,29 @@ test('each Windows product uses its electron-builder NSIS registry identity', as
   }
 });
 
+test('macOS detects a verified registered bundle in a custom folder and rejects transient images', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-moved-app-'));
+  t.after(() => fs.rm(root, {recursive:true, force:true}));
+  const bundle = path.join(root, 'Moved Tools', 'Renamed.app');
+  const executable = path.join(bundle, 'Contents', 'MacOS', 'Brclio');
+  await fs.mkdir(path.dirname(executable), {recursive:true});
+  await fs.writeFile(executable, 'fixture');
+  let registered = bundle, id = 'com.brclio.toolbox';
+  const options = {platform:'darwin', macDirectories:[path.join(root, 'Empty')],
+    registeredMacApplication:async requested => { assert.equal(requested, 'com.brclio.toolbox'); return registered; },
+    run:async (command, args) => {
+      assert.equal(command, '/usr/bin/plutil');
+      assert.equal(args.at(-1), path.join(bundle, 'Contents', 'Info.plist'));
+      return {stdout:JSON.stringify({CFBundleIdentifier:id, CFBundlePackageType:'APPL', CFBundleExecutable:'Brclio', CFBundleShortVersionString:'0.2.8'})};
+    }};
+  assert.deepEqual(await getInstalled('brclio', options), {path:bundle, executable, version:'0.2.8'});
+  id = 'org.example.other';
+  await assert.rejects(getInstalled('brclio', options), /身份/);
+  for (registered of ['/Volumes/Installer/Brclio.app', '/private/var/AppTranslocation/job/Brclio.app', path.join(root, 'Deleted.app')]) {
+    assert.equal(await getInstalled('brclio', options), null);
+  }
+});
+
 test('a fresh Windows install runs per-user silently and launches the verified registry path', async t => {
   const { descriptor } = await packageFixture(t);
   const found = { path:'D:\\Custom Location\\Brclio.exe', version:descriptor.version };

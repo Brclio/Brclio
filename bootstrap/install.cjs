@@ -41,6 +41,15 @@ function macDirs(options) {
   return options.macDirectories || [path.join(os.homedir(), 'Applications'), '/Applications'];
 }
 
+async function registeredMacApplication(id, run) {
+  const script = `ObjC.import('AppKit'); function run(args) {
+    const url = $.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier(args[0]);
+    return url && !url.isNil() ? url.path.js : '';
+  }`;
+  const { stdout } = await run('/usr/bin/osascript', ['-l', 'JavaScript', '-e', script, id]);
+  return stdout.trim();
+}
+
 async function macInfo(bundle, info, run) {
   if (!(await fs.lstat(bundle)).isDirectory()) throw new Error('应用程序目录无效。');
   const plist = path.join(bundle, 'Contents', 'Info.plist');
@@ -93,7 +102,14 @@ async function getInstalled(product, options = {}) {
       try { await fs.lstat(bundle); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
       return macInfo(bundle, info, run);
     }
-    return null;
+    // Explicit directories scope isolated installs. On a user's Mac, the
+    // Launch Services registry also includes bundles moved outside Applications.
+    if (options.macDirectories && !options.registeredMacApplication) return null;
+    const locate = options.registeredMacApplication || registeredMacApplication;
+    const bundle = await locate(info.id, run);
+    if (!path.isAbsolute(bundle) || !bundle.endsWith('.app') || bundle.startsWith('/Volumes/') || bundle.includes('/AppTranslocation/')) return null;
+    try { await fs.lstat(bundle); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    return macInfo(bundle, info, run);
   }
   if (platform === 'win32') {
     const { stdout } = await run(powershell(), ['-NoProfile', '-NonInteractive', '-Command', REGISTRY_QUERY], {
