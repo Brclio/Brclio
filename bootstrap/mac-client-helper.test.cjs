@@ -5,10 +5,39 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { installAndOpen } = require('./install.cjs');
+const { checkMacBrclioProcesses } = require('./mac-client-helper.cjs');
 const { APP_ID, EXTENSION_ID, atomicJSON } = require('../desktop/mac-installer-helper.cjs');
+
+test('quit requests only reach the canonical instance and recheck once it exits', async () => {
+  const target = '/Applications/Brclio.app', other = '/Users/test/Applications/Brclio.app';
+  const url = filename => ({ path: { js: filename }, URLByResolvingSymlinksInPath: { path: { js: filename } } });
+  const stopped = [];
+  function app(filename) {
+    return { bundleURL: url(filename), terminated: false, get terminate() { this.terminated = true; stopped.push(filename); } };
+  }
+  let snapshot;
+  const run = async (_program, args) => {
+    const context = { ObjC: { import() {} }, $: { NSURL: { fileURLWithPath: url },
+      NSRunningApplication: { runningApplicationsWithBundleIdentifier(id) {
+        assert.equal(id, APP_ID);
+        return { js: snapshot.shift() };
+      } } }, argv: args.slice(-2) };
+    return { stdout: vm.runInNewContext(args[3] + '\nrun(argv)', context) };
+  };
+  snapshot = [[app(target), app(other)]];
+  await assert.rejects(checkMacBrclioProcesses(target, run, true), error => error.message.includes(other));
+  assert.deepEqual(stopped, []);
+  snapshot = [[app(target)], [app(other)]];
+  await assert.rejects(checkMacBrclioProcesses(target, run, true), error => error.message.includes(other));
+  assert.deepEqual(stopped, [target]);
+  snapshot = [[app(target)], [app(target)]];
+  await assert.rejects(checkMacBrclioProcesses(target, run, true), /退出正在运行的 Brclio/);
+  assert.deepEqual(stopped, [target, target]);
+});
 
 async function writeBundle(bundle, version) {
   for (const [directory, id, executable, type] of [

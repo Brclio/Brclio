@@ -16,9 +16,10 @@ async function checkMacBrclioProcesses(target, run, quit = false) {
     if (argv[1] === 'quit') {
       apps.forEach(app => app.terminate);
       for (let n = 0; n < 300 && apps.some(app => !app.terminated); n++) delay(0.1);
-      const appeared = running().find(outsideTarget);
+      const remaining = running().filter(app => !app.terminated);
+      const appeared = remaining.find(outsideTarget);
       if (appeared) return appeared.bundleURL.path.js;
-      if (apps.some(app => !app.terminated)) throw Error('请退出正在运行的 Brclio 后重试。');
+      if (remaining.length) throw Error('请退出正在运行的 Brclio 后重试。');
     }
     return '';
   }`;
@@ -55,7 +56,7 @@ async function runMacClientHelper(helperPath, configPath, target, deps = {}) {
     },
     async run(program, args, options) {
       if (program === '/usr/bin/open') {
-        if (args[args.indexOf('-a') + 1] !== target) throw new Error('启动目标与下载器选定的客户端路径不一致。');
+        if (args[0] !== '-n' || args[1] !== '-a' || args[2] !== target) throw new Error('启动目标与下载器选定的客户端路径不一致。');
         await checkMacBrclioProcesses(target, run);
       }
       return run(program, args, options);
