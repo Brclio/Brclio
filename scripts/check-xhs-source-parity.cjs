@@ -12,7 +12,6 @@ const BASELINE_COMMIT = 'a818212fc0d4450f8cf192e644cdc2f39103e810';
 const DEFAULT_SOURCE = '/Users/bornforthis/Github/WebSite/xhs-images-video-vercel-downloader';
 const ROOT = path.resolve(__dirname, '..');
 const MODULES = [
-  'lib/xhs.js',
   'lib/archive.js',
   'lib/image-dimensions.js',
   'lib/media-tracks.js',
@@ -46,9 +45,11 @@ const DOWNLOAD_CONSTANTS = ['MEBIBYTE', 'DESKTOP_ARCHIVE_LIMIT_BYTES', 'CONSTRAI
 // packaging or UI. Record their hashes separately: passing a copied-unit check
 // never certifies that these adaptations have identical download behavior.
 const ADAPTATIONS = [
+  ['lib/xhs.js', 'desktop/xhs/lib/xhs.js', 'Brclio reports structured, redacted input and redirect failures. All code outside the named validation and fetch helpers is compared.'],
+  ['lib/xhs.js', 'web/xhs/lib/xhs-parser.js', 'Web mirrors the desktop parser byte for byte, including the Brclio diagnostics.'],
   ['api/parse.js', 'desktop/xhs/api/parse.js', 'API response exposes original candidates without the source membership filter.'],
   ['api/video.js', 'desktop/xhs/api/video.js', 'Source membership checks are outside this client; video helper functions are checked separately.'],
-  ['api/python_parse.py', 'desktop/xhs/api/python_parse.py', 'HTTP response adapter differs; all parser and page-fetch helpers are checked separately.'],
+  ['api/python_parse.py', 'desktop/xhs/api/python_parse.py', 'The HTTP adapter and named link/redirect diagnostic helpers differ; the remaining parser core is compared.'],
   ['api/python_video.py', 'desktop/xhs/api/python_video.py', 'Source membership path gate is omitted.'],
   ['desktop/python-worker.py', 'desktop/xhs/python-worker.py', 'Worker source root and installed runtime layout differ.'],
   ['desktop/python-backend.js', 'desktop/xhs/desktop/python-backend.js', 'Packaged paths and application shutdown integration differ.'],
@@ -98,21 +99,33 @@ function copiedFunction(source, name, filename) {
   return Buffer.from(result);
 }
 
+function jsParserCore(bytes, filename) {
+  let source = bytes.toString('utf8');
+  for (const name of ['isAllowedPageUrl', 'pageUrlFailure', 'pageLinkError', 'extractInputUrl', 'fetchNotePage']) {
+    const declaration = new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, 'm');
+    const match = declaration.exec(source);
+    if (!match) continue;
+    const body = copiedFunction(source, name, filename).toString('utf8');
+    source = source.slice(0, match.index) + source.slice(match.index + body.length).replace(/^\r?\n(?:\r?\n)?/, '');
+  }
+  return Buffer.from(source);
+}
+
 function pythonParserCore(bytes, filename) {
   const source = bytes.toString('utf8');
   const end = source.indexOf('\nclass handler(');
   if (end < 0) throw new Error(`${filename}: cannot locate the Python HTTP adapter boundary.`);
   let core = source.slice(0, end + 1);
-  // These two helpers implement the source product's public/member video
-  // filtering. They are not used by Brclio. Every other helper, including page
-  // fetching, redirect validation, extraction, ordering and pairing, is exact.
-  for (const name of ['is_public_playback_video_url', 'public_playback_video']) {
-    const declaration = new RegExp(`^def ${name}\\(`, 'm').exec(core);
+  // Membership filtering belongs to the source product. Input/redirect errors
+  // carry sanitized details in Brclio. Compare the rest of the parser verbatim.
+  for (const name of ['is_public_playback_video_url', 'public_playback_video', 'is_allowed_page_url',
+    'page_url_failure', 'page_link_error', 'extract_input_url', 'SafeRedirectHandler', 'fetch_note_page']) {
+    const declaration = new RegExp(`^(?:def|class) ${name}\\(`, 'm').exec(core);
     if (!declaration) continue;
     const start = declaration.index;
     const next = /^(?:def |class )/m.exec(core.slice(start + declaration[0].length));
-    if (!next) throw new Error(`${filename}: cannot locate the end of Python membership helper ${name}.`);
-    core = core.slice(0, start) + core.slice(start + declaration[0].length + next.index);
+    const end = next ? start + declaration[0].length + next.index : core.length;
+    core = core.slice(0, start) + core.slice(end);
   }
   return Buffer.from(core);
 }
@@ -158,7 +171,13 @@ async function main() {
       identical: original.equals(copied), sourceSha256: digest(original), targetSha256: digest(copied) });
   }
   for (const filename of MODULES) await check(filename, `desktop/xhs/${filename}`);
-  await check('lib/xhs.js', 'web/xhs/lib/xhs-parser.js');
+  await check('lib/xhs.js', 'desktop/xhs/lib/xhs.js', undefined, jsParserCore);
+  Object.assign(checks.at(-1), { name: 'lib/xhs.js#parser-core', scope: 'parser-without-link-diagnostics' });
+  const desktopParser = await fs.readFile(path.join(ROOT, 'desktop/xhs/lib/xhs.js'));
+  const webParser = await fs.readFile(path.join(ROOT, 'web/xhs/lib/xhs-parser.js'));
+  checks.push({ name: 'web/xhs/lib/xhs-parser.js#desktop-mirror', scope: 'whole-file-mirror',
+    sourceFile: 'desktop/xhs/lib/xhs.js', targetFile: 'web/xhs/lib/xhs-parser.js', identical: desktopParser.equals(webParser),
+    sourceSha256: digest(desktopParser), targetSha256: digest(webParser) });
   for (const [sourceFile, targetFile, functionName] of FUNCTIONS) await check(sourceFile, targetFile, functionName);
   for (const name of DOWNLOAD_CONSTANTS) {
     const select = (bytes, filename) => {
@@ -171,6 +190,7 @@ async function main() {
     checks[checks.length - 1].scope = 'constant';
   }
   await check('api/python_parse.py', 'desktop/xhs/api/python_parse.py', undefined, pythonParserCore);
+  Object.assign(checks.at(-1), { name: 'api/python_parse.py#parser-core', scope: 'parser-without-membership-and-link-diagnostics' });
   const adaptations = [];
   for (const [sourceFile, targetFile, reason] of ADAPTATIONS) {
     const [original, copied] = await Promise.all([fs.readFile(path.join(source, sourceFile)), fs.readFile(path.join(ROOT, targetFile))]);

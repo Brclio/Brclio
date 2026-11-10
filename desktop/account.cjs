@@ -6,10 +6,11 @@ const crypto = require('node:crypto');
 
 const ORIGIN = 'https://tools.brclio.com';
 const MAX_BYTES = 128 * 1024;
+const FEEDBACK_MAX_BYTES = 1024 * 1024;
 const ROUTES = { '/api/account/session': ['GET'], '/api/account/code': ['POST'],
   '/api/account/register': ['POST'], '/api/account/login': ['POST'],
   '/api/account/logout': ['POST'], '/api/account/data': ['GET', 'PUT'],
-  '/api/account/profile': ['PUT'], '/api/account/password': ['POST'] };
+  '/api/account/profile': ['PUT'], '/api/account/password': ['POST'], '/api/account/feedback': ['POST'] };
 
 function validateAccountRequest(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('账号请求格式无效。');
@@ -19,7 +20,7 @@ function validateAccountRequest(input) {
   if (input.body !== undefined) {
     if (method === 'GET' || !input.body || typeof input.body !== 'object' || Array.isArray(input.body)) throw new TypeError('账号请求数据无效。');
     body = JSON.stringify(input.body);
-    if (Buffer.byteLength(body) > MAX_BYTES) throw new TypeError('账号请求数据过大。');
+    if (Buffer.byteLength(body) > (input.path === '/api/account/feedback' ? FEEDBACK_MAX_BYTES : MAX_BYTES)) throw new TypeError('账号请求数据过大。');
   }
   return { path: input.path, method, body };
 }
@@ -71,7 +72,7 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
     controllers.add(controller);
     outerSignal?.addEventListener('abort', cancel, { once: true });
     if (outerSignal?.aborted) cancel();
-    const timer = setTimeout(cancel, 30000);
+    const timer = setTimeout(cancel, target === '/api/account/feedback' ? 90000 : 30000);
     try {
       const token = await store.read();
       const response = await fetch(`${ORIGIN}${target}`, { method, body, redirect: 'manual', credentials: 'omit',

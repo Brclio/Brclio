@@ -14,7 +14,7 @@ object AccountPolicy {
         "/api/account/session" to setOf("GET"), "/api/account/code" to setOf("POST"),
         "/api/account/register" to setOf("POST"), "/api/account/login" to setOf("POST"),
         "/api/account/logout" to setOf("POST"), "/api/account/data" to setOf("GET", "PUT"),
-        "/api/account/profile" to setOf("PUT"), "/api/account/password" to setOf("POST"),
+        "/api/account/feedback" to setOf("POST"), "/api/account/profile" to setOf("PUT"), "/api/account/password" to setOf("POST"),
     )
     fun validate(input: JSONObject): AccountRequest {
         val path = input.optString("path")
@@ -23,7 +23,7 @@ object AccountPolicy {
         val body = if (input.has("body")) {
             require(method != "GET" && input.opt("body") is JSONObject) { "账号请求数据无效。" }
             input.getJSONObject("body").toString().also {
-                require(it.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "账号请求数据过大。" }
+                require(it.toByteArray(Charsets.UTF_8).size <= (if (path == "/api/account/feedback") 1024 * 1024 else MAX_BYTES)) { "账号请求数据过大。" }
             }
         } else null
         return AccountRequest(path, method, body)

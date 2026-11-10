@@ -278,6 +278,25 @@
       .workspace-heading { flex-direction: column; gap: 12px; }
       .module-row { flex-direction: column; align-items: start; gap: 18px; }
     }
+    .report-layout { display:grid; grid-template-columns:minmax(200px,.72fr) minmax(0,1.5fr); gap:clamp(18px,3vw,36px); align-items:start; }
+    .report-subtitle { margin-bottom:12px; font-size:.92rem; }
+    .report-item { display:block; text-align:left; padding:12px; width:100%; background:transparent; border-bottom:1px solid var(--border); border-radius:0; overflow-wrap:anywhere; }
+    .report-item[aria-pressed=true] { background:var(--cream-dark,#faf6eb); }
+    .report-item small { display:block; color:var(--ink-light); font-size:.72rem; margin-top:4px; }
+    #report-title, #report-description, #report-history, .report-facts dd { overflow-wrap:anywhere; }
+    #report-title { margin:8px 0; }
+    #report-description, #report-history { white-space:pre-wrap; }
+    .report-facts { font-size:.8rem; margin:16px 0; }
+    .report-facts dt { color:var(--ink-light); font-size:.72rem; }
+    .report-facts dd { margin-bottom:6px; }
+    .report-actions { display:flex; flex-wrap:wrap; gap:6px; }
+    #report-card details { margin:20px 0; }
+    #report-card summary { cursor:pointer; font-size:.86rem; }
+    #report-logs { max-height:340px; padding:12px; background:var(--cream-dark,#faf6eb); overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.72rem; }
+    #report-history { padding-left:18px; margin:8px 0; font-size:.8rem; }
+    #report-card select, #report-card textarea { width:100%; resize:vertical; }
+    #report-save { margin-top:14px; }
+    @media (max-width:780px) { .report-layout { grid-template-columns:minmax(0,1fr); } }
   </style>
 </head>
 <body>
@@ -301,6 +320,22 @@
         </div>
         <div class="module-heading"><h3>服务模块</h3><p>从这里进入已启用的客户端管理功能。</p></div>
         <div id="overview-modules"></div>
+      </section>
+      <section id="feedback-section" role="tabpanel" aria-labelledby="tab-feedback" hidden>
+        <div class="workspace-heading"><div><h2>软件问题反馈</h2><p>查看用户报告、诊断日志和处理记录。</p></div><button class="quiet" id="reports-refresh">刷新反馈</button></div>
+        <div class="report-layout">
+          <div><h3 class="report-subtitle">反馈列表</h3><div id="reports-list" aria-live="polite"></div><button class="quiet" id="reports-more" hidden>加载更多</button></div>
+          <article id="report-card" class="app-card" hidden aria-labelledby="report-title">
+            <p id="report-meta" class="hint"></p><h3 id="report-title"></h3><p id="report-description"></p>
+            <dl class="report-facts"><div><dt>反馈编号</dt><dd id="report-id"></dd></div><div><dt>提交账号 ID</dt><dd id="report-owner"></dd></div></dl>
+            <div class="report-actions"><button type="button" class="primary" id="report-ai">复制给 AI</button><button type="button" class="quiet" id="report-link">复制问题链接</button><button type="button" class="quiet" id="report-skill">复制 Skill 指令</button></div>
+            <details><summary id="report-log-summary">诊断日志</summary><pre id="report-logs" tabindex="0"></pre></details>
+            <h4>处理记录</h4><ol id="report-history"></ol><button class="quiet" type="button" id="report-history-more" hidden>查看更早的记录</button>
+            <form id="report-form"><label for="report-state">处理状态</label><select class="app-input" id="report-state"><option value="open">待处理</option><option value="in_progress">处理中</option><option value="resolved">已解决</option><option value="closed">已关闭</option></select>
+              <label for="report-note">处理说明</label><textarea class="app-input" id="report-note" rows="3" maxlength="2000" placeholder="填写排查结论、修复版本或关闭原因"></textarea>
+              <button type="submit" class="primary" id="report-save">保存处理记录</button></form>
+          </article>
+        </div>
       </section>
       <section id="config-section" role="tabpanel" aria-labelledby="tab-update-proxy" hidden>
       <div class="section-heading"><span class="card-badge">UPDATES & NETWORK</span><h2>更新与网络</h2><p>维护版本检查与安装包下载使用的内置代理订阅。</p></div>

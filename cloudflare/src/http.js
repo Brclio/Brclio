@@ -13,9 +13,9 @@ export function json(data, status = 200, headers = {}) {
   });
 }
 
-export async function readJSON(request) {
+export async function readJSON(request, maxBytes = 16384) {
   if (!(request.headers.get('content-type') || '').startsWith('application/json')) throw new Error('invalid');
-  if (Number(request.headers.get('content-length')) > 16384) throw new Error('invalid');
+  if (Number(request.headers.get('content-length')) > maxBytes) throw new RangeError('body too large');
   const reader = request.body?.getReader();
   if (!reader) throw new Error('invalid');
   let text = '', size = 0;
@@ -25,7 +25,7 @@ export async function readJSON(request) {
       const next = await reader.read();
       if (next.done) break;
       size += next.value.length;
-      if (size > 16384) throw new Error('invalid');
+      if (size > maxBytes) throw new RangeError('body too large');
       text += decoder.decode(next.value, {stream: true});
     }
     return JSON.parse(text + decoder.decode());

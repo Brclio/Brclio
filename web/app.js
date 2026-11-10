@@ -12,7 +12,7 @@
     android: { path: '/storage/emulated/0/Documents/我的项目/项目说明.md', name: '项目说明.md', kind: 'file' },
   };
   const platformNames = { darwin: 'macOS 客户端', win32: 'Windows 客户端', android: 'Android 客户端', browser: '浏览器预览', linux: 'Linux 客户端' };
-  const viewNames = { xhs: '小红书工具', copy: '复制路径', tools: '全部工具', settings: '通用设置' };
+  const viewNames = { feedback: '问题反馈与软件日志', xhs: '小红书工具', copy: '复制路径', tools: '全部工具', settings: '通用设置' };
   let settings = { ...engine.DEFAULT_SETTINGS };
   let platform = { platform: 'browser', capabilities: {} };
   let integration = { installed: false, supported: false };

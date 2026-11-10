@@ -93,6 +93,12 @@ function decodeRecord(file) { return parseRecord(recordBytes(file)); }
 
 export function createAccountStore(env, fetchImpl = fetch, tokenProvider = githubInstallationToken) {
   const repo = env.GITHUB_DATA_REPOSITORY;
+  return createPrivateRecordStore(env, {repo, validatePath: recordPath, manifestPath: 'protocol.json', commitMessage: 'Update shared account records'}, fetchImpl, tokenProvider);
+}
+
+// Each store owns its repository, allowed paths and version manifest. All its
+// records in a transaction become visible together at a single branch update.
+export function createPrivateRecordStore(env, {repo, validatePath, manifestPath, commitMessage, cacheMetadata = true}, fetchImpl = fetch, tokenProvider = githubInstallationToken) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo || '')) throw new AccountStorageError('Account storage unavailable');
   const base = `https://api.github.com/repos/${repo}`;
   async function github(path, method = 'GET', body) {
@@ -126,10 +132,10 @@ export function createAccountStore(env, fetchImpl = fetch, tokenProvider = githu
   }
   async function branch() {
     const cache = metadataCache.get(repo);
-    if (cache?.until > Date.now()) return cache.branch;
+    if (cacheMetadata && cache?.until > Date.now()) return cache.branch;
     const data = await requireJSON('');
     if (data.private !== true || !data.default_branch) throw new AccountStorageError('User data requires a private repository');
-    metadataCache.set(repo, {branch: data.default_branch, until: Date.now() + 60000});
+    if (cacheMetadata) metadataCache.set(repo, {branch: data.default_branch, until: Date.now() + 60000});
     return data.default_branch;
   }
   async function snapshot() {
@@ -140,14 +146,14 @@ export function createAccountStore(env, fetchImpl = fetch, tokenProvider = githu
     const state = {
       name, head,
       async read(path, fallback = null) {
-        recordPath(path, true);
+        validatePath(path, true);
         if (!files.has(path)) {
           const response = await github(`/contents/${path}?ref=${encodeURIComponent(head)}`);
           if (response.status === 404) { await response.body?.cancel(); files.set(path, MISSING); }
           else {
             if (!response.ok) { await response.body?.cancel(); throw new AccountStorageError('Cannot read account record'); }
             const value = await readContentsRecord(await response.json());
-            if (path !== 'protocol.json') recordVersion(value);
+            if (path !== manifestPath) recordVersion(value);
             files.set(path, value);
           }
         }
@@ -157,7 +163,7 @@ export function createAccountStore(env, fetchImpl = fetch, tokenProvider = githu
     };
     // A missing manifest is an existing legacy repository. An unsupported or
     // corrupt manifest must stop all reads and mutations before data is changed.
-    const protocol = await state.read('protocol.json');
+    const protocol = await state.read(manifestPath);
     if (protocol !== null && protocol.version !== 1) throw new AccountStorageError('Unsupported account storage protocol');
     return state;
   }
@@ -168,10 +174,10 @@ export function createAccountStore(env, fetchImpl = fetch, tokenProvider = githu
         const state = await snapshot(), writes = new Map();
         const result = await mutate({
           async read(path, fallback = null) {
-            recordPath(path, true);
+            validatePath(path, true);
             return writes.has(path) ? JSON.parse(writes.get(path)) : state.read(path, fallback);
           },
-          write(path, value) { recordPath(path); writes.set(path, serializeRecord(value)); }
+          write(path, value) { validatePath(path); writes.set(path, serializeRecord(value)); }
         });
         if (!writes.size) return result;
         // Even a caller replacing a whole record must not overwrite an unknown
@@ -179,7 +185,7 @@ export function createAccountStore(env, fetchImpl = fetch, tokenProvider = githu
         for (const path of writes.keys()) await state.read(path);
         const parent = await requireJSON(`/git/commits/${state.head}`);
         const tree = await requireJSON('/git/trees', 'POST', {base_tree: parent.tree.sha, tree: Array.from(writes, ([path, content]) => ({path, mode: '100644', type: 'blob', content}))});
-        const commit = await requireJSON('/git/commits', 'POST', {message: 'Update shared account records', tree: tree.sha, parents: [state.head]});
+        const commit = await requireJSON('/git/commits', 'POST', {message: commitMessage, tree: tree.sha, parents: [state.head]});
         const updated = await github(`/git/refs/heads/${encodeURIComponent(state.name)}`, 'PATCH', {sha: commit.sha, force: false});
         if (updated.ok) { await updated.body?.cancel(); return result; }
         const retry = [409, 422].includes(updated.status); await updated.body?.cancel();

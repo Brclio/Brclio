@@ -118,6 +118,8 @@ jobs:
           curl --fail --silent http://127.0.0.1:4173/ > /dev/null
           node scripts/verify-ui.mjs
           node scripts/verify-account-ui.mjs
+          npm ci --prefix cloudflare
+          node scripts/verify-feedback-ui.mjs
       - name: Verify XHS browser behavior and native UI contracts
         run: |
           node scripts/verify-xhs-ui.mjs

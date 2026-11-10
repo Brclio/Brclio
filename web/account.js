@@ -102,6 +102,7 @@
   }
   function render() {
     const signedIn = Boolean(state.user);
+    if (trigger) window.dispatchEvent(new CustomEvent('brclio:account-state', { detail: { userId: state.user?.id || null } }));
     $('anonymous').hidden = signedIn;
     $('signed-in').hidden = !signedIn;
     for (const tab of root.querySelectorAll('[data-account-tab]')) {

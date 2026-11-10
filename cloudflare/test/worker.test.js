@@ -81,7 +81,7 @@ test('deployed login limiter is used and returns Retry-After',async()=>{
   const limited=await handle(request('/api/admin/login',{method:'POST',body:{email:env.ADMIN_EMAIL,password:env.ADMIN_PASSWORD}}),{...env,LOGIN_LIMITER:{limit:async({key})=>{assert.equal(key,'test-worker-ip');return {success:false};}}});
   assert.equal(limited.status,429);assert.equal(limited.headers.get('retry-after'),'60');
 });
-test('general admin overview lists only the implemented module and excludes private subscription values',async()=>{
+test('general admin overview lists implemented modules and excludes private subscription values',async()=>{
   let reads=0;
   const unauth=await handle(request('/api/admin/overview'),env,{readConfig:async()=>{reads++;}});
   assert.equal(unauth.status,401);assert.equal(reads,0);
@@ -90,7 +90,7 @@ test('general admin overview lists only the implemented module and excludes priv
   assert.equal(result.status,200);const overview=await result.json();
   assert.deepEqual(overview.service,{id:'brclio-client-services',name:'Brclio客户端服务'});
   assert.deepEqual(overview.account,{email:env.ADMIN_EMAIL});
-  assert.deepEqual(overview.modules.map(module=>module.id),['update-proxy']);
+  assert.deepEqual(overview.modules.map(module=>module.id),['update-proxy','feedback']);
   assert.equal(overview.modules[0].status,'implemented');
   assert.deepEqual(overview.updates,{configured:true,repository:'Brclio/Brclio',subscriptionConfigured:true,updatedAt:'2026-10-18T00:00:00.000Z',configurationStatus:'configured',transport:'vless-tls-websocket'});
   assert.equal(overview.csrf,session.csrf);assert.ok(!JSON.stringify(overview).includes('private-overview-token'));assert.ok(!JSON.stringify(overview).includes('private-config-sha'));
@@ -133,4 +133,17 @@ test('workers.dev bootstrap alias serves only GET configuration and health',asyn
   const configuration=await handle(new Request(alias+'/api/client/update-proxy'),env,dependencies);assert.equal(configuration.status,200);assert.equal((await configuration.json()).nodes.length,1);
   for(const path of ['/','/admin','/admin.js','/home.js','/api/admin/login','/api/admin/config','/api/releases/latest','/api/update'])assert.equal((await handle(new Request(alias+path),env,dependencies)).status,404);
   assert.equal((await handle(new Request(alias+'/api/client/update-proxy',{method:'POST'}),env,dependencies)).status,404);assert.equal(calls,1);
+});
+
+test('feedback detail and mutations require the administrator session and CSRF; an account bearer cannot read reports', async () => {
+  const url = '/api/admin/feedback/01234567-89ab-4cde-9234-a56789012345';
+  const scoped = {...env, LOGIN_LIMITER: {limit: async () => ({success: true})}, LOGIN_GLOBAL_LIMITER: {limit: async () => ({success: true})}};
+  const dependencies = {feedbackStore: {snapshot: () => {throw new Error('unauthorized access');}, transaction: () => {throw new Error('unauthorized write');}}};
+  assert.equal((await handle(request(url), scoped, dependencies)).status, 401);
+  assert.equal((await handle(request(url, {headers: {Authorization: 'Bearer revoked-sample'}}), scoped, dependencies)).status, 401);
+  const signed = await handle(request('/api/admin/login', {method: 'POST', body: {email: env.ADMIN_EMAIL, password: env.ADMIN_PASSWORD}}), scoped);
+  const cookie = signed.headers.get('set-cookie').split(';')[0], {csrf} = await signed.json();
+  const body = {status: 'resolved', note: 'test', revision: 0};
+  assert.equal((await handle(request(url, {method: 'PUT', headers: {cookie}, body}), scoped, dependencies)).status, 403);
+  assert.equal((await handle(request(url, {method: 'PUT', headers: {cookie, origin: 'https://evil.test', 'X-CSRF-Token': csrf}, body}), scoped, dependencies)).status, 403);
 });

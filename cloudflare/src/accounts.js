@@ -6,6 +6,7 @@ import {random, digest, seal, unseal, hashPassword, checkPassword} from './accou
 import {googleIdentity} from './accounts-google.js';
 import {sendRegistrationCode} from './mail.js';
 import {handleAccountSettings} from './account-settings.js';
+import {submitFeedback} from './modules/feedback.js';
 
 const COOKIE = '__Host-brclio_user', OAUTH_COOKIE = '__Host-brclio_oauth';
 const WEB_LIFETIME = 7 * 86400, NATIVE_LIFETIME = 30 * 86400;
@@ -205,7 +206,7 @@ export async function handleAccount(request, env, dependencies = {}) {
   }
 
   let input;
-  if (request.method !== 'GET') {
+  if (request.method !== 'GET' && path !== '/api/account/feedback') {
     try { input = await readJSON(request); if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error(); }
     catch { return json({error: '请求格式无效'}, 400); }
   }
@@ -311,6 +312,7 @@ export async function handleAccount(request, env, dependencies = {}) {
   if (!session) return json({error: '请先登录'}, 401);
   if (request.method !== 'GET' && !session.isBearer && !await safeEqual(request.headers.get('X-CSRF-Token') || '', session.csrf)) return json({error: '页面会话已更新，请刷新后重试'}, 403);
 
+  if (path === '/api/account/feedback') return submitFeedback(request, env, session, dependencies);
   const settings = await handleAccountSettings({path, request, input, session, store, env, ip, usernameValue, publicUser});
   if (settings) return settings;
   const dataResponse = await handleAccountData({path, request, input, session, store, preferencesValue});

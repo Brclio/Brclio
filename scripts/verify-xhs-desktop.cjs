@@ -62,6 +62,7 @@ function mock(value){
 function fixtureResponse(request){
   global.__xhsNetwork.push(request.url);
   const url=new URL(request.url);
+  if(url.hostname==='xhslink.cn'&&url.pathname==='/blocked')return new Response(null,{status:302,headers:{location:'https://foreign.example/private-path?xsec_token=private-query#private-fragment'}});
   if(url.hostname==='tools.brclio.com'&&url.pathname.startsWith('/api/account/'))return Response.json({user:null,csrf:'fixture-csrf',googleEnabled:false});
   if(url.hostname==='www.xiaohongshu.com')return new Response(${JSON.stringify(html)},{headers:{'content-type':'text/html;charset=utf-8'}});
   let data,type;
@@ -91,6 +92,26 @@ require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
     const info = await page.evaluate(() => window.brclio.xhsRequest('info'));
     assert.equal(info.pythonAvailable, true, 'the actual bundled Python worker must start');
     report.checks.push('main/preload IPC and native Python runtime health');
+    await page.locator('#xhs-share').fill('https://xhslink.cn/blocked');
+    await page.locator('#xhs-parse').click();
+    await expect(page.locator('#xhs-message.error')).toContainText('第 1 次跳转（foreign.example）');
+    await page.locator('#xhs-engine').selectOption('python');
+    await page.locator('#xhs-share').fill('https://private-user:private-password@xhslink.cn/private-path?xsec_token=private-query');
+    await page.locator('#xhs-parse').click();
+    await expect(page.locator('#xhs-message.error')).toContainText('原始链接（xhslink.cn）。网址内嵌了用户名或密码');
+    assert.doesNotMatch(await page.locator('#xhs-message').textContent(), /Error invoking|private-|xsec_token/);
+    await page.locator('#xhs-report-error').click();
+    await expect(page.locator('#feedback-preview')).toContainText('XHS_URL_CREDENTIALS');
+    const logs = await page.evaluate(() => window.brclio.getSoftwareLogs());
+    const failures = logs.logs.filter(entry => entry.action === 'xhs.parse' && entry.level === 'ERROR').map(entry => entry.fields);
+    assert.ok(failures.some(fields => fields.engine === 'node' && fields.code === 'XHS_URL_HOST' && fields.stage === 'redirect'
+      && fields.hop === 1 && fields.host === 'foreign.example'));
+    assert.ok(failures.some(fields => fields.engine === 'python' && fields.code === 'XHS_URL_CREDENTIALS'
+      && fields.stage === 'input' && fields.hop === 0 && fields.host === 'xhslink.cn'));
+    assert.doesNotMatch(logs.text + await page.locator('#feedback-preview').textContent(), /private-|xsec_token|Error invoking/);
+    await page.locator('[data-view="xhs"]').first().click();
+    await page.locator('#xhs-engine').selectOption('node');
+    report.checks.push('Node redirect and frozen Python input failures reach the feedback preview through main/preload with redacted reasons');
     await page.locator('#xhs-share').fill(noteURL);
     await page.locator('#xhs-parse').click();
     await expect(page.locator('#xhs-note-title')).toHaveText('本地验证笔记');

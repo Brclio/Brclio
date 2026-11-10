@@ -154,7 +154,11 @@ async function handler(req, res, { fetchPage, onParsed, onError }) {
       : "服务器解析失败，请稍后重试。";
 
     onError(error);
-    return res.status(statusCode).json({ success: false, engine: "node", message, ...(error.code === "INVALID_JSON" ? { code: "INVALID_JSON" } : {}) });
+    return res.status(statusCode).json({
+      success: false, engine: "node", message,
+      ...(error instanceof XhsError && error.code ? { code: error.code } : {}),
+      ...(error instanceof XhsError && error.diagnostic ? { diagnostic: error.diagnostic } : {})
+    });
   }
 }
 
