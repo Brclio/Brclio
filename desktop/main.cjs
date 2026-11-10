@@ -18,6 +18,7 @@ const { createMacInstaller } = require('./mac-installer.cjs');
 const { createWindowsInstaller } = require('./windows-installer.cjs');
 const { isLocalDocument } = require('./trusted-url.cjs');
 const { createAccountClient } = require('./account.cjs');
+const { createSoftwareLogs, errorFields } = require('./software-logs.cjs');
 
 // Register before app readiness so the isolated media proxy has a secure,
 // stream-capable origin. Existing account and update transports stay separate.
@@ -47,6 +48,7 @@ let keepRunning = false;
 const pendingOpenURLs = [];
 const indexPath = path.join(__dirname, '..', 'web', 'index.html');
 const indexURL = pathToFileURL(indexPath).href;
+const softwareLogs = createSoftwareLogs({ directory: path.join(app.getPath('userData'), 'software-logs'), version: app.getVersion() });
 let xhsServicePromise;
 let xhsClosing = false;
 function getXhsService() {
@@ -55,6 +57,7 @@ function getXhsService() {
     xhsServicePromise = import('./xhs/index.mjs').then(({ createXhsService }) => createXhsService({
       app, BrowserWindow, session, dialog, clipboard, net, shell,
       getWindow: () => mainWindow,
+      onDiagnostic: softwareLogs.recordDiagnostic,
       onEvent: event => {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('brclio:xhs:event', event);
       },
@@ -68,6 +71,7 @@ const account = createAccountClient({ directory: app.getPath('userData'),
 const copySelection = createSelectionCopier({
   copyPaths: paths => copyFromMenu(paths, { exitWhenIdle: false }),
   onError: async error => {
+    softwareLogs.record('paths.shortcut', 'ERROR', errorFields(error));
     createWindow();
     await dialog.showMessageBox(mainWindow, { type: 'warning', title: '无法复制所选路径',
       message: error.message, detail: '原剪贴板内容已保留。选中文件或文件夹后，请返回 Finder 或资源管理器再按快捷键。' });
@@ -100,6 +104,7 @@ const updateProxy = createUpdateProxy({ whenReady: () => app.whenReady(),
   fetchSession: (value, url, options) => electronUpdateFetch(options => net.request(options), value, url, options),
   netFetch: (url, options) => electronUpdateFetch(options => net.request(options), session.defaultSession, url, options),
 });
+let lastUpdateState;
 const updater = createUpdater({ currentVersion: app.getVersion(), directory: path.join(app.getPath('userData'), 'updates'),
   fetch: (url, options, context) => updateProxy.fetch(url, options, context),
   onOperation: (_kind, active, targets) => updateProxy.setBusy(active, targets),
@@ -107,7 +112,14 @@ const updater = createUpdater({ currentVersion: app.getVersion(), directory: pat
     if (!app.isPackaged || !installer) throw new Error('请使用安装版 Brclio 进行在线更新。');
     return installer.start(descriptor);
   },
-  onState: state => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('brclio:update', state); },
+  onState: state => {
+    if (state.status !== lastUpdateState) {
+      lastUpdateState = state.status;
+      softwareLogs.record('update.state', state.status === 'error' ? 'ERROR' : 'INFO', { state: state.status,
+        ...(state.status === 'error' ? errorFields({ message: state.error }) : {}) });
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('brclio:update', state);
+  },
   afterStart: () => setTimeout(() => app.quit(), 500),
 });
 
@@ -178,7 +190,10 @@ function createWindow() {
   });
   mainWindow.on('blur', resumeRecordingShortcut);
   mainWindow.webContents.on('did-start-loading', resumeRecordingShortcut);
-  mainWindow.webContents.on('render-process-gone', resumeRecordingShortcut);
+  mainWindow.webContents.on('render-process-gone', () => {
+    softwareLogs.record('app.renderer', 'ERROR');
+    resumeRecordingShortcut();
+  });
   mainWindow.on('closed', () => { account.cancelGoogle(); mainWindow = null; rendererReady = false; resumeRecordingShortcut(); });
   mainWindow.loadFile(indexPath);
   return mainWindow;
@@ -191,10 +206,15 @@ function trusted(event) {
 }
 
 function handle(channel, callback) {
-  ipcMain.handle(channel, async (event, ...args) => { trusted(event); return callback(...args); });
+  ipcMain.handle(channel, async (event, ...args) => {
+    trusted(event);
+    return softwareLogs.observeIPC(channel, args, () => callback(...args));
+  });
 }
 
 function registerIPC() {
+  handle('brclio:logs:get', () => softwareLogs.read());
+  handle('brclio:logs:event', (action, outcome) => softwareLogs.recordUI(action, outcome));
   handle('brclio:xhs:request', async (action, input) => (await getXhsService()).request(action, input));
   handle('brclio:account:request', input => account.request(input));
   handle('brclio:account:google', () => account.google());
@@ -269,8 +289,10 @@ function copyFromMenu(paths, { exitWhenIdle = true } = {}) {
       // Resolve the native shell's directory \\. suffix before formatting.
       const text = formatPaths(await describePaths(paths), current);
       await clipboard.writeText(text);
+      softwareLogs.record('paths.contextMenu', 'INFO', { count: paths.length });
       if (mainWindow) await deliverPaths(paths);
     } catch (error) {
+      softwareLogs.record('paths.contextMenu', 'ERROR', errorFields(error));
       createWindow();
       await deliverPaths(paths);
       await dialog.showMessageBox(mainWindow, { type: 'error', title: '暂时无法复制路径',
@@ -318,11 +340,15 @@ if (!gotLock) {
     } else createWindow();
   });
   app.whenReady().then(async () => {
+    softwareLogs.record('app.start');
     protocol.handle('brclio-xhs', async request => {
       try { return await (await getXhsService()).handleProtocol(request); }
-      catch { return Response.json({ success: false, message: '小红书本地媒体服务暂不可用，请重试。' }, {
-        status: 503, headers: { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' },
-      }); }
+      catch (error) {
+        softwareLogs.record('xhs.protocol', 'ERROR', errorFields(error));
+        return Response.json({ success: false, message: '小红书本地媒体服务暂不可用，请重试。' }, {
+          status: 503, headers: { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' },
+        });
+      }
     });
     shortcuts.initialize((await settings.read()).copyShortcut);
     if (process.platform === 'darwin' && !app.isPackaged) {
@@ -342,6 +368,7 @@ if (!gotLock) {
       { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'close' }] },
     ]));
     if (startupError) {
+      softwareLogs.record('app.startup', 'ERROR', errorFields(startupError));
       createWindow();
       dialog.showErrorBox('无法复制路径', startupError.message);
     } else if (initialPaths || pendingOpenURLs.length) {
@@ -353,13 +380,13 @@ if (!gotLock) {
   app.on('activate', () => createWindow());
   let xhsQuitReady = false;
   app.on('before-quit', event => {
-    if (!xhsServicePromise || xhsQuitReady) return;
+    if (xhsQuitReady) return;
     event.preventDefault();
     if (xhsClosing) return;
     xhsClosing = true;
-    void xhsServicePromise.then(service => service.close()).catch(error => {
+    void Promise.resolve(xhsServicePromise).then(service => service?.close()).catch(error => {
       console.warn('小红书任务关闭失败：', error.message);
-    }).finally(() => { xhsQuitReady = true; app.quit(); });
+    }).then(() => softwareLogs.settle()).finally(() => { xhsQuitReady = true; app.quit(); });
   });
   app.on('will-quit', () => { account.close(); shortcuts.dispose(); void updateProxy.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

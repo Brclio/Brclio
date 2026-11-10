@@ -1,0 +1,175 @@
+{
+  "actions": [
+    "app.start",
+    "app.renderer",
+    "app.startup",
+    "paths.shortcut",
+    "paths.contextMenu",
+    "settings.save",
+    "paths.pick",
+    "paths.describe",
+    "clipboard.write",
+    "integration.set",
+    "update.check",
+    "update.download",
+    "update.install",
+    "update.state",
+    "update-proxy.set",
+    "account.request",
+    "account.google",
+    "account.google.cancel",
+    "account.session",
+    "account.code",
+    "account.register",
+    "account.login",
+    "account.logout",
+    "account.data",
+    "account.profile",
+    "account.password",
+    "account.feedback",
+    "xhs.request",
+    "xhs.parse",
+    "xhs.chooseDirectory",
+    "xhs.openDirectory",
+    "xhs.openVideo",
+    "xhs.login",
+    "xhs.clearLogin",
+    "xhs.startProfile",
+    "xhs.pauseProfile",
+    "xhs.cancelProfile",
+    "xhs.resumeProfile",
+    "xhs.retryFailed",
+    "xhs.retryItem",
+    "xhs.saveVideo",
+    "xhs.cancelVideo",
+    "xhs.copyImages",
+    "xhs.saveImages",
+    "xhs.saveNote",
+    "xhs.exportArchive",
+    "xhs.cancelArchive",
+    "xhs.cancelTransfer",
+    "xhs.protocol",
+    "xhs.access.blocked",
+    "xhs.navigation.error",
+    "xhs.task.interrupted",
+    "xhs.note.error",
+    "xhs.note.completed",
+    "xhs.request.retry",
+    "xhs.request.error",
+    "xhs.media.error",
+    "xhs.python.request_failed",
+    "live.import",
+    "live.generate",
+    "live.export",
+    "ui.error"
+  ],
+  "uiActions": [
+    "live.import",
+    "live.generate",
+    "live.export",
+    "ui.error"
+  ],
+  "enums": {
+    "engine": [
+      "node",
+      "python"
+    ],
+    "outcome": [
+      "ok",
+      "error",
+      "cancel"
+    ],
+    "code": [
+      "XHS_URL_HOST",
+      "XHS_URL_PROTOCOL",
+      "XHS_URL_PORT",
+      "XHS_URL_CREDENTIALS",
+      "XHS_URL_INVALID",
+      "XHS_REDIRECT_LIMIT",
+      "XHS_REDIRECT_LOOP",
+      "XHS_REDIRECT_LOCATION",
+      "INVALID_JSON",
+      "AUTH_REQUIRED",
+      "RATE_LIMITED",
+      "DISCOVERY_INCOMPLETE",
+      "MEDIA_DOWNLOAD_FAILED",
+      "MEDIA_DOWNLOAD_TIMEOUT",
+      "VIDEO_INPUT_INVALID",
+      "VIDEO_DOWNLOAD_FAILED",
+      "DOWNLOAD_SHUTDOWN",
+      "TASK_FAILED",
+      "NOTE_DOWNLOAD_FAILED",
+      "REQUEST_FAILED",
+      "ENOSPC",
+      "EACCES",
+      "EPERM",
+      "ENOENT",
+      "ECONNRESET",
+      "ENOTFOUND",
+      "ETIMEDOUT",
+      "ECONNREFUSED",
+      "ABORTED",
+      "TIMEOUT",
+      "NETWORK_ERROR",
+      "OPERATION_FAILED"
+    ],
+    "stage": [
+      "input",
+      "redirect"
+    ],
+    "protocol": [
+      "http",
+      "https",
+      "ftp",
+      "file",
+      "other"
+    ],
+    "state": [
+      "idle",
+      "checking",
+      "available",
+      "up-to-date",
+      "downloading",
+      "downloaded",
+      "preparing",
+      "restarting",
+      "installed",
+      "error",
+      "paused",
+      "cancelled",
+      "completed",
+      "discovering",
+      "waiting"
+    ]
+  },
+  "numbers": {
+    "port": [
+      0,
+      65535
+    ],
+    "hop": [
+      0,
+      16
+    ],
+    "status": [
+      100,
+      599
+    ],
+    "durationMs": [
+      0,
+      86400000
+    ],
+    "count": [
+      0,
+      1000000
+    ],
+    "sequence": [
+      0,
+      1000000
+    ],
+    "attempt": [
+      0,
+      1000
+    ]
+  }
+}

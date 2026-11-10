@@ -285,3 +285,21 @@ runs the real Electron native proxy fixture. Backend deployment, complete live
 native downloads, signed packages, publication, and actual installed-client
 replacement/relaunch are separate verification stages. Passing local tests or
 updating this documentation does not establish any later stage.
+
+## 软件问题反馈
+
+已登录的客户端通过 `POST /api/account/feedback` 提交反馈，可附最近 7 天的诊断日志。正文上限为 1 MiB，每条反馈最多接收 1792 条日志。服务端从有效会话取得用户 ID，重新验证诊断字段，剔除七天窗口外的记录，并过滤反馈文本中的常见凭据。网页管理入口为 `/admin?feedback=<UUID>`，需登录管理员账号才能读取和处理。
+
+Worker 使用现有 GitHub App 为私有仓库 `BrclioData/BrclioLogData` 单独签发短期令牌。该安装必须获得这个仓库的 Contents 读写权限，并且仓库已有默认分支。数据只写入以下目录。
+
+```text
+feedback/v1/
+  index/head.json                          当前索引页号
+  index/00000001.json                      每页最多 40 条摘要
+  reports/<UUID 前两位>/<UUID>/
+    report.json                            已脱敏的反馈、提交账号 ID、状态和版本
+    logs/YYYY-MM-DD.json                   按 UTC 日期分组的诊断记录
+    history/000001.json                    每页最多 50 条处理记录
+```
+
+单次提交以一个 Git commit 同时保存报告、索引、日志和处理记录。请求超时后，客户端使用同一 UUID 重试。管理端保存时提交 revision，并发更新返回 409。使用已授权的 GitHub 账号按 UUID 读取对应的反馈目录，即可获取 AI 维修所需的完整材料。

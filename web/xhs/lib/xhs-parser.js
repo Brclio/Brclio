@@ -140,16 +140,39 @@ function isAllowedPageHost(hostname) {
   );
 }
 
-function isAllowedPageUrl(value) {
-  const parsed = value instanceof URL ? value : parseUrl(value);
-  return Boolean(
-    parsed &&
-    parsed.protocol === "https:" &&
-    !parsed.username &&
-    !parsed.password &&
-    (!parsed.port || parsed.port === "443") &&
-    isAllowedPageHost(parsed.hostname)
-  );
+function pageUrlFailure(parsed) {
+  if (!parsed) return "XHS_URL_INVALID";
+  if (parsed.protocol !== "https:") return "XHS_URL_PROTOCOL";
+  if (parsed.username || parsed.password) return "XHS_URL_CREDENTIALS";
+  if (parsed.port && parsed.port !== "443") return "XHS_URL_PORT";
+  if (!isAllowedPageHost(parsed.hostname)) return "XHS_URL_HOST";
+  return null;
+}
+
+function pageLinkError(code, parsed, hop = 0) {
+  const host = parsed?.hostname.toLowerCase() || "";
+  const protocol = parsed?.protocol.slice(0, -1);
+  const diagnostic = { code, stage: hop ? "redirect" : "input", hop };
+  // Never retain the URL, userinfo, path, query, or fragment in diagnostics.
+  if (/^(?:[a-z0-9.-]{1,253}|\[[a-f0-9:]{2,45}\])$/.test(host)) diagnostic.host = host;
+  if (protocol) diagnostic.protocol = ["http", "https", "ftp", "file"].includes(protocol) ? protocol : "other";
+  if (parsed?.port) diagnostic.port = Number(parsed.port);
+  const where = hop ? `第 ${hop} 次跳转` : "原始链接";
+  const target = diagnostic.host ? `（${diagnostic.host}）` : "";
+  const reasons = {
+    XHS_URL_HOST: "笔记页面只允许 xiaohongshu.com、xhslink.com、xhslink.cn 及其子域名。",
+    XHS_URL_PROTOCOL: `目标协议为 ${diagnostic.protocol === "other" ? "自定义协议" : (diagnostic.protocol || "").toUpperCase()}，只允许 HTTPS。`,
+    XHS_URL_PORT: `目标使用端口 ${diagnostic.port}，只允许 HTTPS 默认端口 443。`,
+    XHS_URL_CREDENTIALS: "网址内嵌了用户名或密码。",
+    XHS_URL_INVALID: "网址格式无效，无法识别目标地址。",
+    XHS_REDIRECT_LIMIT: "已达到最多跟随 5 次跳转的上限。",
+    XHS_REDIRECT_LOCATION: "服务器返回了重定向，但没有提供目标地址。"
+  };
+  const error = new XhsError(`已拦截${where}${target}。${reasons[code]}请在小红书中打开这篇笔记，通过「分享 → 复制链接」重新获取链接。`,
+    code === "XHS_REDIRECT_LOCATION" || (hop && code === "XHS_URL_INVALID") ? 502 : 400);
+  error.code = code;
+  error.diagnostic = diagnostic;
+  return error;
 }
 
 export function extractInputUrl(text) {
@@ -159,24 +182,27 @@ export function extractInputUrl(text) {
     ...[...input.matchAll(URL_PATTERN)].map((match) => match[0])
   ];
   if (candidates.length === 0) {
+    const foreign = input.match(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>'"()[\]{}，。！？、]+/i);
+    if (foreign) {
+      const parsed = parseUrl(foreign[0]);
+      throw pageLinkError(parsed ? "XHS_URL_PROTOCOL" : "XHS_URL_INVALID", parsed);
+    }
     throw new XhsError("没有检测到有效链接，请粘贴小红书分享文案或链接。");
   }
 
-  let foundParsedUrl = false;
+  let firstError;
   for (const candidate of new Set(candidates)) {
     const markdownUnescaped = candidate.replace(/\\([^A-Za-z0-9\s])/g, "$1");
     const value = normalizeImageUrl(
       markdownUnescaped.replace(/[.,;:!?\])}，。！？；：）】》]+$/g, "")
     );
     const parsed = parseUrl(value);
-    if (!parsed) continue;
-    foundParsedUrl = true;
-
-    if (isAllowedPageUrl(parsed) || isXhsImageUrl(value)) return value;
+    const failure = pageUrlFailure(parsed);
+    if (!failure || isXhsImageUrl(value)) return value;
+    firstError ??= pageLinkError(failure, parsed);
   }
 
-  if (!foundParsedUrl) throw new XhsError("链接格式无效。");
-  throw new XhsError("只支持小红书分享链接或小红书图片链接。");
+  throw firstError;
 }
 
 /**
@@ -1283,13 +1309,12 @@ async function readTextWithLimit(response, maxBytes = 6 * 1024 * 1024) {
 }
 
 export async function fetchNotePage(inputUrl, { signal, fetchImpl = globalThis.fetch } = {}) {
-  let current = new URL(inputUrl);
+  let current = parseUrl(inputUrl);
 
-  for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
+  for (let redirectCount = 0; ; redirectCount += 1) {
     signal?.throwIfAborted();
-    if (!isAllowedPageUrl(current)) {
-      throw new XhsError("分享链接跳转到了不受支持的地址。", 400);
-    }
+    const failure = pageUrlFailure(current);
+    if (failure) throw pageLinkError(failure, current, redirectCount);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
@@ -1315,12 +1340,14 @@ export async function fetchNotePage(inputUrl, { signal, fetchImpl = globalThis.f
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get("location");
         await response.body?.cancel();
-        if (!location) throw new XhsError("分享链接跳转响应缺少目标地址。", 502);
+        const hop = redirectCount + 1;
+        if (!location) throw pageLinkError("XHS_REDIRECT_LOCATION", null, hop);
         try {
           current = new URL(location, current);
         } catch {
-          throw new XhsError("分享链接跳转地址无效。", 502);
+          throw pageLinkError("XHS_URL_INVALID", null, hop);
         }
+        if (hop > 5) throw pageLinkError("XHS_REDIRECT_LIMIT", current, hop);
         continue;
       }
 
@@ -1346,5 +1373,4 @@ export async function fetchNotePage(inputUrl, { signal, fetchImpl = globalThis.f
     } finally { clearTimeout(timer); }
   }
 
-  throw new XhsError("分享链接跳转次数过多。", 400);
 }

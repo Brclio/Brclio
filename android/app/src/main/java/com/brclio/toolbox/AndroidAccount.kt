@@ -136,7 +136,7 @@ class AndroidAccount(private val activity: Activity) {
             connection.requestMethod = method
             connection.instanceFollowRedirects = false
             connection.connectTimeout = 15_000
-            connection.readTimeout = 30_000
+            connection.readTimeout = if (path == "/api/account/feedback") 90_000 else 30_000
             connection.useCaches = false
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("User-Agent", "Brclio/${BuildConfig.VERSION_NAME}")

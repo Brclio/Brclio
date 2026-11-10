@@ -174,7 +174,7 @@ function downloadEngine(input, note) {
 }
 
 export async function createXhsService({ app, BrowserWindow, session, dialog, clipboard, net, shell, getWindow = () => undefined,
-  onEvent = () => {}, fetchImpl, clipboardWriters } = {}) {
+  onEvent = () => {}, onDiagnostic = () => {}, fetchImpl, clipboardWriters } = {}) {
   const directory = path.join(app.getPath('userData'), 'xhs');
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   // No account API, authentication token or shared Brclio setting enters this module.
@@ -191,9 +191,9 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
   const network = withLifetime(fetchImpl || globalThis.fetch);
   const nativeNetwork = withLifetime(fetchImpl || createElectronUpdateFetch(net, { session: browserSession }));
   const emit = (type, state) => { try { onEvent({ type, state }); } catch { /* Closed renderer. */ } };
-  const browser = new XhsBrowser({ BrowserWindow, session, fetchPage: (url, options) => fetchNotePage(url, { ...options, fetchImpl: network }),
+  const browser = new XhsBrowser({ BrowserWindow, session, onDiagnostic, fetchPage: (url, options) => fetchNotePage(url, { ...options, fetchImpl: network }),
     onLoginState: state => emit('login', state) });
-  const manager = new ProfileManager({ stateDirectory: path.join(directory, 'profile-jobs'), browser, fetchImpl: network,
+  const manager = new ProfileManager({ stateDirectory: path.join(directory, 'profile-jobs'), browser, fetchImpl: network, onDiagnostic,
     onUpdate: state => emit('profile', state) });
   await manager.initialize();
   const approved = new Set();
@@ -221,7 +221,7 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
       buttons: ['取消', '清除登录记录'], defaultId: 0, cancelId: 0, noLink: true }), lifetime.signal); return result.response === 1;
   } });
   const python = new PythonBackend({ appDirectory: app.getAppPath(), sourceDirectory, resourcesDirectory: process.resourcesPath,
-    packaged: app.isPackaged });
+    packaged: app.isPackaged, onDiagnostic });
   // Python is optional. Initialize it only when a parse or media request selects it.
   let pythonReady;
   const ensurePython = () => pythonReady ||= python.initialize();
@@ -273,7 +273,7 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
     }
     return response;
   }
-  const video = new NativeVideoDownload({ fetchImpl: nativeNetwork,
+  const video = new NativeVideoDownload({ fetchImpl: nativeNetwork, onDiagnostic,
     showSaveDialog: options => dialog.showSaveDialog(getWindow(), options), onProgress: state => emit('video', state) });
   let imageClipboard;
   async function copyImages(input) {
@@ -558,7 +558,14 @@ export async function createXhsService({ app, BrowserWindow, session, dialog, cl
           if (!await ensurePython()) throw new Error('Python 备用引擎尚未准备好，请运行 npm run prepare:xhs 或使用完整安装包。');
           response = await python.request({ path: '/api/python_parse', method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
         } else response = await invokeHandler(parse, { method: 'POST', body });
-        const result = await response.json(); if (!response.ok || !result.success) throw new Error(result.message || '小红书解析失败。');
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          const error = new Error(result.message || '小红书解析失败。');
+          error.status = response.status;
+          if (result.code) error.code = result.code;
+          if (result.diagnostic) error.diagnostic = result.diagnostic;
+          throw error;
+        }
         return result;
       }
       case 'chooseDirectory': return chooseDirectory(lifetime.signal);

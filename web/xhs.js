@@ -8,10 +8,19 @@
   const state = { hostPlatform: 'browser', note: null, parseBusy: false, selected: new Set(), directory: '', profile: null, videoRequest: null, archiveRequest: null, transferRequest: null, profileFilter: 'all', profileVisible: 100, profileRowsKey: '', profileDirty: new Set(), clipboardSeen: '', clipboardPending: '', clipboardChecking: false, previewController: null, fileController: null, liveBusy: false, files: [], fileInfo: null, liveResult: null, liveController: null, previewUrls: [], previewTimer: null, fileRevision: 0 };
   const labels = { idle: '尚未开始', discovering: '正在发现笔记', downloading: '正在下载', waiting: '等待下一次请求', paused: '已暂停', completed: '已完成', canceled: '已停止', cancelled: '已停止', error: '任务出错', pending: '等待中', skipped: '已跳过', failed: '失败' };
   const isNative = typeof native === 'function';
-  function message(text, failed = false, reason = '') { $('message').textContent = text || ''; $('message').hidden = !text; $('message').classList.toggle('error', failed); $('message').dataset.reason = reason; }
+  function diagnostic(action, outcome) {
+    try { Promise.resolve(host.recordSoftwareEvent?.(action, outcome)).catch(() => {}); } catch {}
+  }
+  function message(text, failed = false, reason = '') { $('report-error').hidden = !failed || !text; $('message').textContent = String(text || '').replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''); $('message').hidden = !text; $('message').classList.toggle('error', failed); $('message').dataset.reason = reason; }
   async function request(action, input = {}) { if (!isNative) throw new Error('请在 Brclio 桌面客户端中使用此功能。'); if (['saveImages', 'saveNote', 'exportArchive'].includes(action)) input = { ...input, engine: $('engine').value }; const result = await native(action, input); if (result?.ok === false) throw new Error(typeof result.error === 'string' ? result.error : result.error?.message || result.message || '操作未完成，请重试。'); return result; }
   async function run(button, task) { const old = button?.disabled; if (button) button.disabled = true; try { return await task(); } catch (error) { message(error.message || '操作未完成，请重试。', true, error.reason); } finally { if (button) button.disabled = old; if ((button?.id?.startsWith('xhs-profile-') || button?.id === 'xhs-choose-directory') && state.profile) renderProfile(state.profile); if (button?.id === 'xhs-live-generate' || button?.id === 'xhs-live-preview') syncLiveControls(); if (button?.closest('#xhs-panel-note') || button?.closest('#xhs-live-result')) syncNativeBusy(); } }
-  function click(id, task) { $(id).addEventListener('click', event => { void run(event.currentTarget, task); }); }
+  function click(id, task) {
+    $(id).addEventListener('click', event => { void run(event.currentTarget, async () => {
+      if (!id.startsWith('live-export-')) return task();
+      try { const result = await task(); diagnostic('live.export', result?.cancelled || result?.canceled ? 'cancel' : 'ok'); return result; }
+      catch (error) { diagnostic('live.export', 'error'); throw error; }
+    }); });
+  }
   function element(tag, className, value) { const result = document.createElement(tag); if (className) result.className = className; if (value !== undefined) result.textContent = value; return result; }
   function actionButton(text, task, requiresNative = true) { const button = element('button', 'text-button', text); button.type = 'button'; button.addEventListener('click', () => { void run(button, task); }); if (requiresNative) { button.dataset.xhsNative = ''; if (!isNative || nativeBusy()) button.disabled = true; } return button; }
   function mediaURL(url, kind = 'image') { return !isNative ? '' : state.hostPlatform === 'android' ? `https://appassets.androidplatform.net/xhs-media?url=${encodeURIComponent(url)}&kind=${kind}` : `brclio-xhs://local/api/${kind}?url=${encodeURIComponent(url)}`; }
@@ -419,7 +428,7 @@
           $('live-source-info').textContent = '图片较大，等待确认压缩导入。';
           const accepted = await confirmLiveCompression(info, files.length, controller.signal, module.LIVE_PHOTO_LIMITS);
           controller.signal.throwIfAborted();
-          if (!accepted) { $('live-source-info').textContent = '已取消导入，可重新选择图片。'; return; }
+          if (!accepted) { diagnostic('live.import', 'cancel'); $('live-source-info').textContent = '已取消导入，可重新选择图片。'; return; }
           $('live-progress').hidden = false; $('live-progress').value = 0;
           files = await module.compressLivePhotoFiles(files, { signal: controller.signal, onProgress: progress => {
             if (revision === state.fileRevision && !controller.signal.aborted) { $('live-progress').value = progress.progress * 100; $('live-source-info').textContent = progress.message; }
@@ -434,10 +443,11 @@
         if (!preserveOptions) { const duration = info.kind === 'video' ? Math.min(3, Math.floor(info.duration * 100) / 100) : 3;
           $('live-duration').value = String(duration); $('live-start').value = '0'; $('live-speed').value = '1'; $('live-cover').value = String(duration / 2);
           $('live-motion').value = 'zoom'; $('live-audio').checked = info.hasAudio !== false; }
-        renderFiles(); void loadLiveSupport(); await updateLivePlan();
+        renderFiles(); diagnostic('live.import', 'ok'); void loadLiveSupport(); await updateLivePlan();
       } catch (error) {
         if (revision !== state.fileRevision) return;
         $('live-source-info').textContent = controller.signal.aborted ? '素材读取已取消，请重新选择。' : '素材读取失败，请重新选择。';
+        diagnostic('live.import', controller.signal.aborted ? 'cancel' : 'error');
         if (!controller.signal.aborted) message(error.message, true);
       } finally {
         if (state.fileController === controller) { state.fileController = null; if (!state.files.length) $('live-files').value = ''; $('live-progress').hidden = true; setLiveBusy(false); }
@@ -527,11 +537,12 @@
       $('live-preview-empty').hidden = true; $('live-preview-video').hidden = false; $('live-preview-video').defaultPlaybackRate = 1; $('live-preview-video').playbackRate = 1; $('live-preview-video').src = objectURL(result.previewBlob);
       if (cover) { $('live-preview-image').src = objectURL(cover); $('live-preview-image').hidden = false; }
       $('live-preview-image').alt = `实况封面 · ${result.keyPhotoTime.toFixed(2)} 秒`;
-      state.liveResult = result; $('live-result').hidden = false;
+      diagnostic('live.generate', 'ok'); state.liveResult = result; $('live-result').hidden = false;
       $('live-result-info').textContent = `${result.duration} 秒 · ${result.photoExtension} + MOV · 照片 ${result.photoWidth} × ${result.photoHeight} · 动态 ${result.width} × ${result.height} · ${result.hasAudio ? '保留声音' : '无声'}`;
       $('live-status').textContent = '实况已生成，照片与 MOV 已写入相同配对标识。';
     } catch (error) {
       if (revision !== state.fileRevision) return;
+      diagnostic('live.generate', controller.signal.aborted ? 'cancel' : 'error');
       state.liveResult = null; $('live-result').hidden = true;
       $('live-status').textContent = controller.signal.aborted ? '制作已取消，可以修改设置后重新生成。' : `${error.message} 素材、裁切和设置已保留，可以用兼容尺寸重试。`;
       $('live-retry').hidden = controller.signal.aborted || error.name === 'AbortError' || error.code === 'AUDIO_CHOICE_REQUIRED';

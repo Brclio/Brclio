@@ -143,15 +143,15 @@ await t.test("extractInputUrl 自动识别电脑与手机分享，兼容 Markdow
 await t.test("extractInputUrl 拒绝伪造域名、凭证 URL 和非安全端口", () => {
   assert.throws(
     () => extractInputUrl("https://xhslink.cn.example.com/o/fake"),
-    /只支持小红书分享链接/
+    /已拦截原始链接（xhslink.cn.example.com）。笔记页面只允许/
   );
   assert.throws(
     () => extractInputUrl("https://user:password@xhslink.cn/o/fake"),
-    /只支持小红书分享链接/
+    /原始链接（xhslink.cn）。网址内嵌了用户名或密码/
   );
   assert.throws(
     () => extractInputUrl("https://xhslink.cn:8443/o/fake"),
-    /只支持小红书分享链接/
+    /原始链接（xhslink.cn）。目标使用端口 8443/
   );
 });
 
@@ -213,7 +213,7 @@ await t.test("fetchNotePage 在第二次请求前拦截 HTTP 降级跳转", asyn
   try {
     await assert.rejects(
       fetchNotePage(shortUrl),
-      /分享链接跳转到了不受支持的地址/
+      /第 1 次跳转（www.xiaohongshu.com）。目标协议为 HTTP，只允许 HTTPS/
     );
     assert.equal(requestCount, 1);
   } finally {
@@ -249,7 +249,7 @@ await t.test('fetchNotePage aborts before another redirect request and never fol
         return new Response(null, { status: 302, headers: { location: 'https://unrelated.example/private' } });
       }
     });
-    await assert.rejects(work, abort ? { name: 'AbortError' } : /不受支持的地址/);
+    await assert.rejects(work, abort ? { name: 'AbortError' } : { code: 'XHS_URL_HOST' });
     assert.equal(requests, 1);
   }
 });

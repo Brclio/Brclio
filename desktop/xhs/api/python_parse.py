@@ -164,19 +164,59 @@ def is_allowed_page_host(hostname: str | None) -> bool:
     )
 
 
-def is_allowed_page_url(value: str) -> bool:
+def page_url_failure(parsed) -> str | None:
+    if parsed is None or not parsed.scheme:
+        return "XHS_URL_INVALID"
+    if parsed.scheme.lower() != "https":
+        return "XHS_URL_PROTOCOL"
+    if not parsed.hostname:
+        return "XHS_URL_INVALID"
+    if parsed.username or parsed.password:
+        return "XHS_URL_CREDENTIALS"
     try:
-        parsed = urlparse(value)
-        port = parsed.port
+        if parsed.port not in (None, 443):
+            return "XHS_URL_PORT"
     except ValueError:
-        return False
-    return bool(
-        parsed.scheme.lower() == "https"
-        and not parsed.username
-        and not parsed.password
-        and port in (None, 443)
-        and is_allowed_page_host(parsed.hostname)
+        return "XHS_URL_INVALID"
+    if not is_allowed_page_host(parsed.hostname):
+        return "XHS_URL_HOST"
+    return None
+
+
+def page_link_error(code: str, parsed=None, hop: int = 0) -> XhsError:
+    diagnostic = {"code": code, "stage": "redirect" if hop else "input", "hop": hop}
+    if parsed:
+        host = parsed.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        if re.fullmatch(r"(?:[a-z0-9.-]{1,253}|\[[a-f0-9:]{2,45}\])", host):
+            diagnostic["host"] = host
+        if parsed.scheme:
+            diagnostic["protocol"] = parsed.scheme if parsed.scheme in ("http", "https", "ftp", "file") else "other"
+        try:
+            if parsed.port is not None:
+                diagnostic["port"] = parsed.port
+        except ValueError:
+            pass
+    where = f"第 {hop} 次跳转" if hop else "原始链接"
+    target = f"（{diagnostic['host']}）" if "host" in diagnostic else ""
+    protocol = diagnostic.get("protocol", "")
+    reasons = {
+        "XHS_URL_HOST": "笔记页面只允许 xiaohongshu.com、xhslink.com、xhslink.cn 及其子域名。",
+        "XHS_URL_PROTOCOL": f"目标协议为 {'自定义协议' if protocol == 'other' else protocol.upper()}，只允许 HTTPS。",
+        "XHS_URL_PORT": f"目标使用端口 {diagnostic.get('port')}，只允许 HTTPS 默认端口 443。",
+        "XHS_URL_CREDENTIALS": "网址内嵌了用户名或密码。",
+        "XHS_URL_INVALID": "网址格式无效，无法识别目标地址。",
+        "XHS_REDIRECT_LIMIT": "已达到最多跟随 5 次跳转的上限。",
+        "XHS_REDIRECT_LOOP": "服务器重复跳转到同一地址。",
+        "XHS_REDIRECT_LOCATION": "服务器返回了重定向，但没有提供目标地址。",
+    }
+    error = XhsError(
+        f"已拦截{where}{target}。{reasons[code]}请在小红书中打开这篇笔记，通过「分享 → 复制链接」重新获取链接。",
+        502 if code == "XHS_REDIRECT_LOCATION" or (hop and code == "XHS_URL_INVALID") else 400,
     )
+    error.diagnostic = diagnostic
+    return error
 
 
 def extract_input_url(text: str) -> str:
@@ -184,9 +224,16 @@ def extract_input_url(text: str) -> str:
     candidates = MARKDOWN_URL_PATTERN.findall(input_text)
     candidates.extend(match.group(0) for match in URL_PATTERN.finditer(input_text))
     if not candidates:
+        foreign = re.search(r"\b[a-z][a-z0-9+.-]*://[^\s<>'\"()[\]{}，。！？、]+", input_text, re.I)
+        if foreign:
+            try:
+                parsed = urlparse(foreign.group(0))
+            except ValueError:
+                parsed = None
+            raise page_link_error("XHS_URL_PROTOCOL" if parsed else "XHS_URL_INVALID", parsed)
         raise XhsError("没有检测到有效链接，请粘贴小红书分享文案或链接。")
 
-    found_parsed_url = False
+    first_error = None
     for candidate in dict.fromkeys(candidates):
         markdown_unescaped = MARKDOWN_ESCAPE_PATTERN.sub(r"\1", candidate)
         value = normalize_image_url(
@@ -195,17 +242,13 @@ def extract_input_url(text: str) -> str:
         try:
             parsed = urlparse(value)
         except ValueError:
-            continue
-        if not parsed.scheme or not parsed.netloc:
-            continue
-        found_parsed_url = True
-
-        if is_allowed_page_url(value) or is_xhs_image_url(value):
+            parsed = None
+        failure = page_url_failure(parsed)
+        if not failure or is_xhs_image_url(value):
             return value
-
-    if not found_parsed_url:
-        raise XhsError("链接格式无效。")
-    raise XhsError("只支持小红书分享链接或小红书图片链接。")
+        if first_error is None:
+            first_error = page_link_error(failure, parsed)
+    raise first_error
 
 
 def extract_note_id(value: str) -> str | None:
@@ -1371,11 +1414,43 @@ def parse_note_html(page_html: str, note_id: str) -> dict[str, Any]:
 class SafeRedirectHandler(HTTPRedirectHandler):
     max_redirections = 5
 
+    def __init__(self):
+        self.hop = 0
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        self.hop += 1
+        try:
+            location = headers.get("location") or headers.get("uri")
+            if not location:
+                raise page_link_error("XHS_REDIRECT_LOCATION", hop=self.hop)
+            try:
+                target = urlparse(urljoin(req.full_url, location))
+            except ValueError:
+                raise page_link_error("XHS_URL_INVALID", hop=self.hop) from None
+            if self.hop > self.max_redirections:
+                raise page_link_error("XHS_REDIRECT_LIMIT", target, self.hop)
+            if failure := page_url_failure(target):
+                raise page_link_error(failure, target, self.hop)
+        except XhsError:
+            fp.close()
+            raise
+        try:
+            return super().http_error_302(req, fp, code, msg, headers)
+        except HTTPError as error:
+            if str(error.reason).startswith(self.inf_msg):
+                error.close()
+                raise page_link_error("XHS_REDIRECT_LOOP", target, self.hop) from None
+            raise
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        target = urljoin(req.full_url, newurl)
-        if not is_allowed_page_url(target):
-            raise XhsError("分享链接跳转到了不受支持的地址。")
-        return super().redirect_request(req, fp, code, msg, headers, target)
+        # urllib escapes and normalizes Location before this hook.
+        target = urlparse(newurl)
+        if failure := page_url_failure(target):
+            fp.close()
+            raise page_link_error(failure, target, self.hop)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def read_limited(response, max_bytes: int = MAX_HTML_BYTES) -> bytes:
@@ -1397,17 +1472,23 @@ def read_limited(response, max_bytes: int = MAX_HTML_BYTES) -> bytes:
 
 
 def fetch_note_page(input_url: str) -> tuple[str, str]:
-    if not is_allowed_page_url(input_url):
-        raise XhsError("分享链接地址不受支持。")
+    try:
+        parsed = urlparse(input_url)
+    except ValueError:
+        parsed = None
+    if failure := page_url_failure(parsed):
+        raise page_link_error(failure, parsed)
 
-    opener = build_opener(SafeRedirectHandler())
+    redirects = SafeRedirectHandler()
+    opener = build_opener(redirects)
     request = Request(input_url, headers=PAGE_HEADERS, method="GET")
 
     try:
         with opener.open(request, timeout=15) as response:
             final_url = response.geturl()
-            if not is_allowed_page_url(final_url):
-                raise XhsError("分享链接跳转到了不受支持的地址。")
+            parsed = urlparse(final_url)
+            if failure := page_url_failure(parsed):
+                raise page_link_error(failure, parsed, redirects.hop)
             raw = read_limited(response)
             charset = response.headers.get_content_charset() or "utf-8"
     except XhsError:
@@ -1586,9 +1667,11 @@ class handler(BaseHTTPRequestHandler):
                 },
             )
         except XhsError as error:
+            diagnostic = getattr(error, "diagnostic", None)
             self._send_json(
                 error.status_code,
-                {"success": False, "engine": "python", "message": str(error)},
+                {"success": False, "engine": "python", "message": str(error),
+                 **({"code": diagnostic["code"], "diagnostic": diagnostic} if diagnostic else {})},
             )
         except Exception as error:  # noqa: BLE001
             print("python parse error", repr(error))
