@@ -22,7 +22,9 @@ export function repositoryFixture(initial = {}, intercept, kind = "account") {
     if (!path) return Response.json({private: true, default_branch: 'main'});
     if (path === '/git/ref/heads/main') return Response.json({object: {sha: head}});
     if (path.startsWith('/contents/')) {
-      const content = trees.get(commits.get(call.ref).tree.sha).get(path.slice('/contents/'.length));
+      const files = trees.get(commits.get(call.ref).tree.sha);
+      const name = path.slice('/contents/'.length), content = files.get(name);
+      if (content === undefined && [...files.keys()].some(key => key.startsWith(name + '/'))) return Response.json({type: 'dir'});
       return content === undefined ? new Response(null, {status: 404}) : Response.json(encode(content));
     }
     if (path.startsWith('/git/commits/')) return Response.json(commits.get(path.slice('/git/commits/'.length)));
