@@ -57,12 +57,12 @@
     try { await host.copyText(snapshot.text); message('已复制预览中的 ' + snapshot.entryCount + ' 条日志。'); }
     catch { message('复制失败，请在日志预览中选择文字复制。', true); }
   });
-  form.addEventListener('input', () => { retry = null; });
+  form.addEventListener('input', () => { retry = null; if (owner) message(''); });
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (busy || !owner) return;
     const userId = owner;
-    busy = true; controls();
+    busy = true; controls(); message('正在确认账号…');
     try {
       const session = await account('/api/account/session');
       if (owner !== userId || session.user?.id !== userId) {

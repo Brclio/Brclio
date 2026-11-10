@@ -4,6 +4,8 @@ import logSchema from '../../desktop/software-log-schema.json' with {type: 'json
 const categories = new Set(['bug', 'crash', 'performance', 'account', 'update', 'download', 'suggestion', 'other']);
 const levels = new Set(['INFO', 'WARN', 'ERROR']);
 const actions = new Set(logSchema.actions);
+const enumFields = Object.entries(logSchema.enums).map(([key, values]) => [key, new Set(values)]);
+const numericFields = Object.entries(logSchema.numbers);
 const sevenDays = 7 * 24 * 60 * 60 * 1000;
 
 export class FeedbackInputError extends Error {
@@ -50,8 +52,8 @@ export function boundedText(value, limit, field, optional = false) {
 function diagnosticFields(values) {
   const result = {};
   if (!values || typeof values !== 'object' || Array.isArray(values)) return result;
-  for (const [name, allowed] of Object.entries(logSchema.enums)) if (allowed.includes(values[name])) result[name] = values[name];
-  for (const [name, [min, max]] of Object.entries(logSchema.numbers)) {
+  for (const [name, allowed] of enumFields) if (allowed.has(values[name])) result[name] = values[name];
+  for (const [name, [min, max]] of numericFields) {
     const number = values[name];
     if (Number.isSafeInteger(number) && number >= min && number <= max) result[name] = number;
   }
@@ -77,7 +79,7 @@ function normalizeLogs(logs, now) {
     const action = actions.has(entry.action) ? entry.action : 'app.unknown';
     retained.push({time: new Date(time).toISOString(), level: entry.level, action, fields: diagnosticFields(entry.fields)});
   }
-  return retained.sort((a, b) => a.time.localeCompare(b.time));
+  return retained.sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
 }
 
 export function submissionInput(input, now) {

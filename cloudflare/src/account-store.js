@@ -52,12 +52,12 @@ function jsonValue(value, ancestors = new Set()) {
 function recordVersion(value) {
   if (Object.hasOwn(value, 'version') && value.version !== 1) throw new AccountStorageError('Unsupported account record version');
 }
-function serializeRecord(value) {
+function serializeRecord(value, validatedAttachment = false) {
   try {
     if (!recordObject(value)) throw new AccountStorageError('Invalid account JSON');
-    jsonValue(value);
+    if (!validatedAttachment) jsonValue(value);
     recordVersion(value);
-    const content = JSON.stringify(value, null, 2) + '\n';
+    const content = JSON.stringify(value, null, validatedAttachment ? 0 : 2) + '\n';
     if (encoder.encode(content).byteLength > MAX_RECORD_BYTES) throw new AccountStorageError('Account record is too large');
     return content;
   } catch (error) {
@@ -65,12 +65,12 @@ function serializeRecord(value) {
     throw new AccountStorageError('Invalid account JSON');
   }
 }
-function recordBytes(file) {
+function recordBytes(file, attachment = false) {
   if (file?.encoding !== 'base64' || typeof file.content !== 'string' || !Number.isInteger(file.size) || file.size < 0 || file.size > MAX_RECORD_BYTES) throw new AccountStorageError('Invalid account record');
   try {
     const encoded = file.content.replace(/\s/g, '');
     if (encoded.length > Math.ceil(MAX_RECORD_BYTES / 3) * 4) throw new AccountStorageError('Account record is too large');
-    const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+    const bytes = attachment && typeof Uint8Array.fromBase64 === 'function' ? Uint8Array.fromBase64(encoded) : Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
     if (bytes.byteLength !== file.size) throw new AccountStorageError('Account record size mismatch');
     return bytes;
   } catch (error) {
@@ -78,19 +78,20 @@ function recordBytes(file) {
     throw new AccountStorageError('Invalid account record');
   }
 }
-function parseRecord(bytes) {
+function parseRecord(bytes, attachment = false) {
   try {
     const value = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes));
     if (!recordObject(value)) throw new AccountStorageError('Invalid account JSON');
-    jsonValue(value);
+    // JSON.parse already constructs plain records with no cycles or accessors.
+    // Versioned diagnostic attachments are read-only and were reconstructed
+    // from the diagnostic allowlist before serialization.
+    if (!attachment) jsonValue(value);
     return value;
   } catch (error) {
     if (error instanceof AccountStorageError) throw error;
     throw new AccountStorageError('Invalid account JSON');
   }
 }
-function decodeRecord(file) { return parseRecord(recordBytes(file)); }
-
 export function createAccountStore(env, fetchImpl = fetch, tokenProvider = githubInstallationToken) {
   const repo = env.GITHUB_DATA_REPOSITORY;
   return createPrivateRecordStore(env, {repo, validatePath: recordPath, manifestPath: 'protocol.json', commitMessage: 'Update shared account records'}, fetchImpl, tokenProvider);
@@ -98,7 +99,7 @@ export function createAccountStore(env, fetchImpl = fetch, tokenProvider = githu
 
 // Each store owns its repository, allowed paths and version manifest. All its
 // records in a transaction become visible together at a single branch update.
-export function createPrivateRecordStore(env, {repo, validatePath, manifestPath, commitMessage, cacheMetadata = true}, fetchImpl = fetch, tokenProvider = githubInstallationToken) {
+export function createPrivateRecordStore(env, {repo, validatePath, manifestPath, commitMessage, cacheMetadata = true, maxAttempts = 4, attachmentPath = () => false}, fetchImpl = fetch, tokenProvider = githubInstallationToken) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo || '')) throw new AccountStorageError('Account storage unavailable');
   const base = `https://api.github.com/repos/${repo}`;
   async function github(path, method = 'GET', body) {
@@ -115,20 +116,20 @@ export function createPrivateRecordStore(env, {repo, validatePath, manifestPath,
     if (!response.ok) { await response.body?.cancel(); throw new AccountStorageError('Repository operation failed'); }
     return response.json();
   }
-  async function readContentsRecord(file) {
-    if (file?.encoding !== 'none') return decodeRecord(file);
+  async function readContentsRecord(file, attachment) {
+    if (file?.encoding !== 'none') return parseRecord(recordBytes(file, attachment), attachment);
     // The Contents object media type omits content above 1 MiB. Follow only the
     // immutable blob SHA returned for our pinned commit, never a download URL.
     if (file.type !== 'file' || !Number.isInteger(file.size) || file.size < 0 || file.size > MAX_RECORD_BYTES ||
       typeof file.sha !== 'string' || !/^[0-9a-f]{40}$/.test(file.sha)) throw new AccountStorageError('Invalid account record');
     const blob = await requireJSON(`/git/blobs/${file.sha}`);
     if (blob.sha !== file.sha || blob.size !== file.size) throw new AccountStorageError('Account blob metadata mismatch');
-    const bytes = recordBytes(blob), prefix = encoder.encode(`blob ${bytes.byteLength}\0`);
+    const bytes = recordBytes(blob, attachment), prefix = encoder.encode(`blob ${bytes.byteLength}\0`);
     const input = new Uint8Array(prefix.length + bytes.length); input.set(prefix); input.set(bytes, prefix.length);
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-1', input));
     const checksum = Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
     if (checksum !== file.sha) throw new AccountStorageError('Account blob checksum mismatch');
-    return parseRecord(bytes);
+    return parseRecord(bytes, attachment);
   }
   async function branch() {
     const cache = metadataCache.get(repo);
@@ -152,8 +153,12 @@ export function createPrivateRecordStore(env, {repo, validatePath, manifestPath,
           if (response.status === 404) { await response.body?.cancel(); files.set(path, MISSING); }
           else {
             if (!response.ok) { await response.body?.cancel(); throw new AccountStorageError('Cannot read account record'); }
-            const value = await readContentsRecord(await response.json());
+            const attachment = attachmentPath(path);
+            const value = await readContentsRecord(await response.json(), attachment);
             if (path !== manifestPath) recordVersion(value);
+            // Large immutable attachments are consumed once. A later explicit
+            // read still returns a fresh value from the same pinned commit.
+            if (attachment) return value;
             files.set(path, value);
           }
         }
@@ -170,19 +175,33 @@ export function createPrivateRecordStore(env, {repo, validatePath, manifestPath,
   return {
     snapshot,
     async transaction(mutate) {
-      for (let attempt = 0; attempt < 4; attempt++) {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const state = await snapshot(), writes = new Map();
         const result = await mutate({
           async read(path, fallback = null) {
             validatePath(path, true);
             return writes.has(path) ? JSON.parse(writes.get(path)) : state.read(path, fallback);
           },
-          write(path, value) { validatePath(path); writes.set(path, serializeRecord(value)); }
+          write(path, value) { validatePath(path); writes.set(path, serializeRecord(value, attachmentPath(path))); }
         });
         if (!writes.size) return result;
         // Even a caller replacing a whole record must not overwrite an unknown
         // future version or a damaged file that it did not explicitly read.
-        for (const path of writes.keys()) await state.read(path);
+        const newAttachmentDirectories = new Set();
+        for (const path of writes.keys()) {
+          if (attachmentPath(path)) {
+            const directory = path.slice(0, path.lastIndexOf('/'));
+            if (!newAttachmentDirectories.has(directory)) {
+              const listing = await github(`/contents/${directory}?ref=${encodeURIComponent(state.head)}`);
+              await listing.body?.cancel();
+              if (listing.status !== 404) throw new AccountStorageError('Immutable attachment directory is occupied or unavailable');
+              newAttachmentDirectories.add(directory);
+            }
+            // At this pinned commit a missing parent proves that every child is new.
+            continue;
+          }
+          await state.read(path);
+        }
         const parent = await requireJSON(`/git/commits/${state.head}`);
         const tree = await requireJSON('/git/trees', 'POST', {base_tree: parent.tree.sha, tree: Array.from(writes, ([path, content]) => ({path, mode: '100644', type: 'blob', content}))});
         const commit = await requireJSON('/git/commits', 'POST', {message: commitMessage, tree: tree.sha, parents: [state.head]});

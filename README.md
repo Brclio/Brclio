@@ -38,6 +38,8 @@ Brclio 介绍与正式版本下载主页位于 [tools.brclio.com](https://tools.
 
 账号注册支持 3–32 位账号名、邮箱验证及 8–128 位密码，验证码 10 分钟有效。Google 已验证邮箱会自动绑定同邮箱的现有账号；首次通过 Google 注册后，可在账号设置中完善昵称、账号和密码。Google 登录在系统浏览器中完成，客户端仅在网页确认授权后取得自己的会话。共享私库目标为 `BrclioData/BrclioUserData`，保持 `users/<用户ID>/profile.json`、`credentials.json` 的统一身份，复制偏好写入 `apps/brclio/data.json`，小程序数据写入 `apps/miniapp/data.json`。旧 `data.json` 保留并仅在新路径缺失时回退读取。按产品所有者要求，账号密码在 `credentials.json` 的 `passwordPlaintext` 字段明文保存，同时保留加盐哈希用于验证；仓库及 Git 历史的读者可直接读取密码。历史账号无法由旧哈希还原密码，将在成功密码登录或设置密码时补写。验证码和会话标识保存摘要。服务端通过 GitHub App 私钥换取单仓库短期安装令牌，不使用个人 Token；App 私钥、安装令牌、邮件和 Google 密钥不进入仓库或安装包。接入规范和可复制 Skill 见 [共享用户数据文档](docs/shared-user-data/README.md)。App 配置、真实数据迁移和生产切换分别验收，不从本地实现推断已上线。
 
+在「通用设置 → 查看日志与反馈」可预览和复制本机最近 7 天的诊断记录。登录后可提交问题或改进建议，按需随反馈附上日志。管理员在[网页后台](https://tools.brclio.com/admin)查看处理记录，并可复制问题链接、AI 维修资料或 [Brclio 维修 Skill](.agents/skills/brclio-feedback-repair/SKILL.md) 指令。反馈专库存储结构见[客户端服务说明](docs/client-services.md#软件反馈与诊断)。
+
 复制快捷键需要 Brclio 正在运行，窗口最小化也可用；macOS 关闭窗口后仍可用，退出软件后停止，Windows 关闭最后一个窗口会退出软件。macOS 首次使用可能请求允许 Brclio 控制 Finder，可在“系统设置 → 隐私与安全性 → 自动化”中管理。Windows 11 通过资源管理器的活动视图和文件列表焦点识别当前标签页；无法确认时，请先点击该页中已选中的文件或文件夹后重试，也可将目标页移到独立窗口，避免复制后台页的选区。未选中有效项目、前台应用不符或无法确认选区时保留原剪贴板并提示。浏览器预览与 Android 不支持此全局快捷键。
 
 ## 下载与安装

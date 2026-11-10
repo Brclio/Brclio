@@ -116,3 +116,22 @@ test('feedback index flips to a bounded new page without rewriting older pages a
   const current = await (await f.manage('/' + id)).json(), older = await (await f.manage('/' + id + '?historyCursor=1')).json();
   assert.equal(current.nextHistoryCursor, 1); assert.equal(current.history[0].note, 'done'); assert.deepEqual(older.history, entries);
 });
+
+test('full attachments share one pinned-directory check and CAS retries stay within the free Worker request budget', async () => {
+  let refFailures = 0;
+  const f = await fixture({intercept: call => call.path === '/git/refs/heads/main' && refFailures++ === 0 ? new Response(null, {status: 409}) : null});
+  const now = Date.now();
+  const logs = Array.from({length: 1792}, (_, i) => ({level: 'WARN', action: 'xhs.parse', fields: {engine: 'node'},
+    time: new Date(now - 7 * 86400000 + 60000 + (7 * 86400000 - 120000) * i / 1791).toISOString()}));
+  assert.equal((await f.submit({...input, logs})).status, 200);
+  assert.equal(f.repo.updates.length, 1);
+  assert.ok(f.repo.calls.filter(call => call.path.endsWith('/logs')).length === 2);
+  assert.equal(f.repo.calls.some(call => /\/contents\/.*\/logs\//.test(call.path)), false);
+  assert.ok(f.repo.calls.length <= 24, 'also leaves budget for cold signed-account checks and both scoped installation tokens');
+
+  const orphan = reportDirectory(id) + '/logs/2020-01-01.json';
+  const damaged = await fixture({initial: {[orphan]: {version: 1, entries: []}}});
+  assert.equal((await damaged.submit({...input, logs})).status, 503);
+  assert.equal(damaged.repo.updates.length, 0);
+  assert.deepEqual(damaged.repo.read(orphan), {version: 1, entries: []});
+});

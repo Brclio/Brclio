@@ -22,6 +22,9 @@ function validateFeedbackPath(path) {
 export function createFeedbackStore(env, fetchImpl = fetch, tokenProvider) {
   return createPrivateRecordStore(env, {
     repo: feedbackRepository, validatePath: validateFeedbackPath, manifestPath: indexHeadPath,
-    commitMessage: 'Update Brclio feedback records', cacheMetadata: false
+    // A full seven-day window can span eight UTC days. Two CAS attempts leave
+    // room for account authentication and both scoped token exchanges on Free.
+    commitMessage: 'Update Brclio feedback records', cacheMetadata: false, maxAttempts: 2,
+    attachmentPath: path => path.includes('/logs/')
   }, fetchImpl, tokenProvider);
 }
