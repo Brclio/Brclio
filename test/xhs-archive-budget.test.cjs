@@ -12,7 +12,8 @@ const backupUrl = 'https://sns-video-qc.xhscdn.com/spectrum/archive-budget.mp4';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64');
 const imageResponse = () => new Response(png, { headers: { 'content-type': 'image/png', 'content-length': String(png.length) } });
 
-async function fixture(t, fetchImpl) {
+async function fixture(t, fetchImpl, hostMemoryGiB = 8) {
+  t.mock.method(os, 'totalmem', () => hostMemoryGiB * 1024 ** 3);
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-xhs-budget-')));
   const { createXhsService } = await import('../desktop/xhs/index.mjs');
   const target = path.join(directory, 'archive.zip');
@@ -144,6 +145,49 @@ test('ZIP preflight sums all declared live clips against one budget before downl
   assert.deepEqual((await fs.readdir(f.directory)).sort(), ['archive.zip', 'xhs']);
 });
 
+test('ZIP honors a low-memory desktop or Chromium estimate before requesting assets', async t => {
+  for (const [host, renderer] of [[4, 8], [8, 4], [4, undefined]]) {
+    await t.test(`host ${host} GiB, renderer ${renderer ?? 'unavailable'}`, async t => {
+      let requests = 0;
+      const f = await fixture(t, async () => { requests++; return imageResponse(); }, host);
+      const images = [{ index: 1, url: imageUrl, liveVideo: { url: videoUrl, size: 129 * MiB } }];
+      await assert.rejects(f.exportImages(images, 'selected', { deviceMemory: renderer }),
+        { name: 'ArchiveSizeLimitError', limitBytes: 128 * MiB });
+      assert.equal(requests, 0);
+    });
+  }
+});
+
+test('selected ZIP keeps both still images and reports a missing declared clip', async t => {
+  let requests = 0;
+  const f = await fixture(t, async () => { requests++; return imageResponse(); });
+  const result = await f.exportImages([{ index: 1, url: imageUrl, livePhoto: true }, { index: 2, url: imageUrl }]);
+  assert.equal(requests, 2);
+  assert.equal(result.count, 2); assert.equal(result.total, 3);
+  assert.deepEqual(result.failures.map(({ index, kind }) => [index, kind]), [[1, 'video']]);
+  assert.match(result.failures[0].message, /缺少配对视频地址/);
+  assert.deepEqual((await zipEntryHeaders(f.target)).map(entry => entry.name), ['笔记.txt', '001-共享预算.png', '002-共享预算.png']);
+});
+
+test('ZIP checks signatures and MP4 tracks in memory before publishing media', async t => {
+  const { mp4Fixture } = await import('../desktop/xhs/test/fixtures/mp4.js');
+  const soundOnly = mp4Fixture({ video: false });
+  const badImage = imageUrl.replace('archive-budget?', 'bad-signature?');
+  const f = await fixture(t, async url => {
+    if (url === imageUrl) return imageResponse();
+    if (url === badImage) return new Response('bad signature', { headers: { 'content-type': 'image/png' } });
+    const stages = (await fs.readdir(f.directory)).filter(name => name.startsWith('.brclio-xhs-zip-'));
+    for (const stage of stages) assert.deepEqual(await fs.readdir(path.join(f.directory, stage)), []);
+    return new Response(soundOnly, { headers: { 'content-type': 'video/mp4', 'content-length': String(soundOnly.length) } });
+  });
+  const result = await f.exportImages([{ index: 1, url: imageUrl, liveVideo: { url: videoUrl } }, { index: 2, url: badImage }]);
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.failures.map(({ index, kind }) => [index, kind]), [[1, 'video'], [2, 'image']]);
+  assert.match(result.failures[0].message, /MP4 结构/);
+  assert.match(result.failures[1].message, /不符合图片/);
+  assert.deepEqual((await zipEntryHeaders(f.target)).map(entry => entry.name), ['笔记.txt', '001-共享预算.png']);
+});
+
 test('ZIP shared budget reserves source header allowance and includes note text', async t => {
   let calls = 0; const f = await fixture(t, async () => { calls++; return imageResponse(); });
   await assert.rejects(f.exportImages([{ index: 1, url: imageUrl,
@@ -217,6 +261,24 @@ test('ZIP cancellation after a successful asset stops the loop and preserves the
   await began; await f.service.request('cancelArchive', { requestId: 'cancel-partial' });
   assert.equal((await pending).cancelled, true); assert.equal(calls, 2);
   assert.equal(await fs.readFile(f.target, 'utf8'), 'existing archive');
+  assert.deepEqual((await fs.readdir(f.directory)).sort(), ['archive.zip', 'xhs']);
+});
+
+test('cancelling during ZIP buffer preparation preserves the destination without waiting for a late result', async t => {
+  const f = await fixture(t, async () => imageResponse());
+  await fs.writeFile(f.target, 'previous archive');
+  let started;
+  const waiting = new Promise(resolve => { started = resolve; });
+  const stream = Blob.prototype.stream;
+  t.mock.method(Blob.prototype, 'stream', function () {
+    if (this.type === 'image/png') return new ReadableStream({ start() { started(); } });
+    return stream.call(this);
+  });
+  const pending = f.exportImages([{ index: 1, url: imageUrl }], 'images', { requestId: 'buffer-cancel' });
+  await waiting;
+  await f.service.request('cancelArchive', { requestId: 'buffer-cancel' });
+  assert.equal((await pending).cancelled, true);
+  assert.equal(await fs.readFile(f.target, 'utf8'), 'previous archive');
   assert.deepEqual((await fs.readdir(f.directory)).sort(), ['archive.zip', 'xhs']);
 });
 

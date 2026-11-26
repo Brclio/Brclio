@@ -161,7 +161,7 @@ class AndroidXhs(private val activity: Activity, private val emit: (JSONObject) 
             val imageEntries = XhsArchivePolicy.imageEntries(images, format)
             for (index in 0 until imageEntries.length()) records.put(imageEntries.getJSONObject(index))
             if (format == "all") {
-                val video = XhsArchivePolicy.video(note.optJSONArray("originalVideos"), note.optJSONArray("videos"))
+                val video = XhsArchivePolicy.videoForWholeNote(note)
                 if (video != null) records.put(JSONObject().put("name", "视频.mp4").put("kind", "video").put("url", video.getString("url")).put("backupUrls", video.optJSONArray("backupUrls") ?: JSONArray()).put("requireAudio", true))
             }
             if (action != "saveImages") records.put(JSONObject().put("name", "文案.txt").put("text", XhsNoteTextPolicy.render(

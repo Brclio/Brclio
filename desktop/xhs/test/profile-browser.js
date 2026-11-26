@@ -14,6 +14,7 @@ function fixture({ snapshots = [], response, status = 200, responseAuthor = ID, 
   let window;
   let readCount = 0;
   const delays = [];
+  let elapsed = 0;
   class Window extends EventEmitter {
     constructor() {
       super(); window = this; this.shown = false;
@@ -28,6 +29,7 @@ function fixture({ snapshots = [], response, status = 200, responseAuthor = ID, 
       this.webContents = Object.assign(new EventEmitter(), {
         debugger: debug, setWindowOpenHandler() {}, getURL: () => this.url || '', stop() {},
         executeJavaScript: async script => {
+          if (script.endsWith(', true)')) return {};
           if (script.includes('readProfileSnapshot')) {
             return { list: [], cards: [], done: false, pageText: '', ...snapshots[Math.min(readCount++, snapshots.length - 1)] };
           }
@@ -57,15 +59,16 @@ function fixture({ snapshots = [], response, status = 200, responseAuthor = ID, 
   }
   const browser = new XhsBrowser({ BrowserWindow: Window,
     session: { fromPartition: () => ({ setPermissionRequestHandler() {}, setPermissionCheckHandler() {} }) },
-    wait: async (ms, _, { signal }) => { signal?.throwIfAborted(); delays.push(ms); }
+    now: () => elapsed,
+    wait: async (ms, _, { signal }) => { signal?.throwIfAborted(); delays.push(ms); elapsed += ms; }
   });
   return { browser, getWindow: () => window, delays };
 }
 
 // Drive the real discover() iterator through CDP events. The clock and renderer
 // are controlled so slow, overlapping responses need no network or wall time.
-function discoveryFixture({ snapshot = () => ({}), onNavigate = () => {}, onWait = () => {} } = {}) {
-  const state = { reads: 0, elapsed: 0, scrolls: [], waits: [], stopped: false };
+function discoveryFixture({ snapshot = () => ({}), status = () => ({}), onNavigate = () => {}, onWait = () => {} } = {}) {
+  const state = { reads: 0, probes: 0, elapsed: 0, scrolls: [], waits: [], stopped: false };
   const bodies = new Map();
   const debug = new EventEmitter();
   debug.attached = false;
@@ -115,6 +118,7 @@ function discoveryFixture({ snapshot = () => ({}), onNavigate = () => {}, onWait
   browser.navigate = async (_win, url) => { assert.equal(url, PROFILE); await onNavigate(api); };
   browser.execute = async (_win, script, signal) => {
     signal?.throwIfAborted();
+    if (script.endsWith(', true)')) return status(++state.probes, api);
     if (script.includes('readProfileSnapshot')) {
       assert.ok(++state.reads <= 100, 'discovery must make bounded progress or report a timeout');
       return { list: [], cards: [], done: false, fetching: false, pageText: '', ...await snapshot(state.reads, api) };
@@ -233,9 +237,11 @@ await t.test('out-of-order older responses cannot overwrite the latest started r
     }
   });
   const pages = [];
-  for await (const page of browser.discover(PROFILE, { intervalSeconds: 3, jitterSeconds: 0 })) pages.push(page);
-  assert.ok(state.reads >= 3);
-  assert.deepEqual(pages.map(page => page.done), [false, false, true]);
+  for await (const page of browser.discover(PROFILE, { intervalSeconds: 3, jitterSeconds: 0 })) {
+    pages.push({ read: state.reads, done: page.done });
+  }
+  assert.deepEqual(pages, [{ read: 1, done: false }, { read: 3, done: true }],
+    'the old terminal response never marks the page complete and a passive read emits no duplicate queue update');
 });
 
 await t.test('a rate-limit response received during snapshot evaluation prevents a completed page', async () => {
@@ -299,6 +305,80 @@ await t.test('time spent saving a yielded page is not charged to a newer rendere
   } finally { await iterator.return(); }
 });
 
+await t.test('a page that finishes during pacing scrolls at the first eligible deadline', async () => {
+  const second = '668d2967000000002500100a';
+  const { browser, state } = discoveryFixture({
+    snapshot(_read, { state }) {
+      const hydrated = state.elapsed >= 4000;
+      return { list: hydrated ? [{ id: NOTE }, { id: second }] : [{ id: NOTE }],
+        fetching: !hydrated, done: state.scrolls.length > 0 };
+    }
+  });
+  const pages = [];
+  for await (const page of browser.discover(PROFILE, { intervalSeconds: 10, jitterSeconds: 0 })) pages.push(page);
+  assert.deepEqual(pages.flatMap(page => page.notes.map(note => note.id)), [NOTE, second]);
+  assert.equal(state.scrolls.length, 1);
+  assert.equal(state.elapsed, 12200, '1.2s initial render + one 10s interval + 1s after scrolling');
+  assert.equal(pages.at(-1).done, true);
+});
+
+await t.test('a request starting during the pacing wait blocks scrolling until its response is consumed', async () => {
+  let started = false;
+  const { browser, state } = discoveryFixture({
+    snapshot: () => ({ list: [{ id: NOTE }] }),
+    async onWait(ms, api) {
+      if (ms === 3000 && !started) { started = true; api.request('late'); }
+      else if (started) await api.reply('late', postedPage([], false));
+    }
+  });
+  const pages = [];
+  for await (const page of browser.discover(PROFILE, { intervalSeconds: 10, jitterSeconds: 0 })) pages.push(page);
+  assert.equal(pages.at(-1).done, true);
+  assert.deepEqual(state.scrolls, [], 'no scroll while an existing page is loading or already completes the list');
+});
+
+await t.test('long configured intervals observe site access changes and window closure before scrolling', async () => {
+  for (const failure of ['RATE_LIMITED', 'DISCOVERY_INCOMPLETE']) {
+    const { browser, state } = discoveryFixture({
+      snapshot: () => ({ list: [{ id: NOTE }] }),
+      onWait(ms, api) {
+        if (ms === 1200) return;
+        if (failure === 'RATE_LIMITED') { api.request('limited'); api.response('limited', 429); }
+        else api.win.isDestroyed = () => true;
+      }
+    });
+    await assert.rejects(async () => {
+      for await (const _ of browser.discover(PROFILE, { intervalSeconds: 3600, jitterSeconds: 0 })) {}
+    }, { code: failure });
+    assert.equal(state.elapsed, 4200);
+    assert.deepEqual(state.scrolls, []);
+  }
+});
+
+await t.test('an idle hour does not repeatedly copy or publish the profile', async () => {
+  const { browser, state } = discoveryFixture({
+    snapshot: (_read, { state }) => ({ list: [{ id: NOTE }], done: state.elapsed >= 3601200 })
+  });
+  const pages = [];
+  for await (const page of browser.discover(PROFILE, { intervalSeconds: 3600, jitterSeconds: 0 })) pages.push(page);
+  assert.ok(state.probes > 1000);
+  assert.equal(state.reads, 2, 'the full list is read once at the start and once at the deadline');
+  assert.deepEqual(pages.map(page => page.done), [false, true]);
+});
+
+await t.test('a lightweight end observation reads the complete final page before returning', async () => {
+  const second = '668d2967000000002500100a';
+  const { browser, state } = discoveryFixture({
+    snapshot: read => ({ list: read === 1 ? [{ id: NOTE }] : [{ id: NOTE }, { id: second }], done: read > 1 }),
+    status: () => ({ done: true })
+  });
+  const pages = [];
+  for await (const page of browser.discover(PROFILE, { intervalSeconds: 3600, jitterSeconds: 0 })) pages.push(page);
+  assert.equal(state.probes, 1); assert.equal(state.reads, 2); assert.equal(state.elapsed, 4200);
+  assert.deepEqual(pages.flatMap(page => page.notes.map(note => note.id)), [NOTE, second]);
+  assert.deepEqual(state.scrolls, []);
+});
+
 await t.test('renderer fetching state also prevents false stalls and extra scrolls', async () => {
   const { browser, state } = discoveryFixture({
     snapshot: read => ({ list: [{ id: NOTE }], fetching: read < 8, done: read >= 8 })
@@ -349,12 +429,21 @@ await t.test('a title hydrated after its signed URL is emitted without waiting f
 
 await t.test('stalled profile is incomplete, never silently successful, and pagination obeys configured delay', async () => {
   const { browser, delays } = fixture({ snapshots: [{}] });
+  const bottomScrolls = [];
+  const execute = browser.execute.bind(browser);
+  browser.execute = (win, script, signal) => {
+    if (script.includes('scrollProfileList') && script.endsWith('(false)')) bottomScrolls.push(browser.now());
+    return execute(win, script, signal);
+  };
   const pages = [];
   await assert.rejects(async () => {
     for await (const page of browser.discover(PROFILE, { intervalSeconds: 12, jitterSeconds: 0 })) pages.push(page);
   }, { code: 'DISCOVERY_INCOMPLETE' });
   assert.ok(pages.every(page => !page.done));
-  assert.equal(delays.filter(ms => ms === 12000).length, 4);
+  assert.equal(bottomScrolls.length, 4);
+  assert.ok(bottomScrolls[0] >= 12000);
+  assert.ok(bottomScrolls.slice(1).every((at, i) => at - bottomScrolls[i] >= 12000));
+  assert.ok(Math.max(...delays) <= 3000, 'site access is still observed while pacing');
 });
 
 await t.test('profile scrolling finds nested feed owners and crosses the bottom again when loading stalls', async () => {
@@ -391,8 +480,9 @@ await t.test('pausing during the retry delay prevents a late bottom scroll and a
     if (script.includes('scrollProfileList')) scrolls.push(script.endsWith('(true)') ? 'up' : 'down');
     return execute(win, script, signal);
   };
-  browser.wait = async (ms, _, { signal }) => {
-    signal?.throwIfAborted();
+  const wait = browser.wait.bind(browser);
+  browser.wait = async (ms, value, { signal }) => {
+    await wait(ms, value, { signal });
     if (ms === 150) {
       began();
       await new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));

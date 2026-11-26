@@ -60,6 +60,14 @@ await t.test('SSR empty defaults never mean all downloaded; target query may pro
     assert.equal(hydrated.list[0].id, NOTE);
     assert.equal(hydrated.fetching, false);
     assert.equal(hydrated.done, true);
+    Object.defineProperty(window.__INITIAL_STATE__.user, 'notes', { get() { assert.fail('status polls must not access the note list'); } });
+    globalThis.document.querySelectorAll = selector => {
+      assert.doesNotMatch(selector, /note-item|feeds-tab-container/);
+      return [];
+    };
+    const status = readProfileSnapshot(PROFILE, true);
+    assert.equal(status.done, true);
+    assert.equal('list' in status || 'cards' in status, false);
   } finally {
     for (const [key, value] of Object.entries(old)) if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
   }

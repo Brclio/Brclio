@@ -47,6 +47,12 @@ function browserFixture(t) {
   return { browser, store, events, updates, windows };
 }
 
+await t.test('opening login ignores an unfinished profile URL and navigates only to the official account page', async t => {
+  const { browser, windows } = browserFixture(t);
+  assert.equal(await browser.openLogin('https://example.test/draft'), true);
+  assert.equal(windows[0].webContents.getURL(), 'https://www.xiaohongshu.com/explore');
+});
+
 await t.test('cancelled reset does not pause jobs or clear login data', async () => {
   const reset = new XhsLoginReset({ confirm: async () => false,
     manager: { clearLoginData() { assert.fail('cancel must not mutate data'); } } });

@@ -61,7 +61,7 @@ export function parsePostedResponse(payload, profileId) {
 }
 
 // Executed only in the isolated, unprivileged Xiaohongshu browser. No Node API.
-export function readProfileSnapshot(profileId) {
+export function readProfileSnapshot(profileId, statusOnly = false) {
   const unwrap = value => value?._value ?? value?.value ?? value;
   const state = window.__INITIAL_STATE__ || {};
   const user = unwrap(state.user) || {};
@@ -71,6 +71,16 @@ export function readProfileSnapshot(profileId) {
     || unwrap(state.login?.showLogin) === true;
   const active = unwrap(user.activeTab);
   const wrongTab = active && active.query && active.query !== 'note';
+  const query = unwrap(unwrap(user.noteQueries)?.[0]);
+  // Query must explicitly identify the requested author, avoiding initial defaults.
+  const fetching = unwrap(unwrap(user.isFetchingNotes)?.[0]) === true;
+  const queryMatches = (query?.userId || query?.user_id) === profileId;
+  const hasMore = queryMatches ? (typeof query.hasMore === 'boolean' ? query.hasMore
+    : typeof query.has_more === 'boolean' ? query.has_more : null) : null;
+  const done = hasMore === false && !fetching;
+  if (statusOnly) return { done, fetching, challenge, login, wrongTab };
+  const page = unwrap(user.userPageData) || {};
+  const basic = unwrap(page.basicInfo) || {};
   const notes = unwrap(user.notes);
   const first = unwrap(notes?.[0]);
   const list = Array.isArray(first) ? first : [];
@@ -83,15 +93,6 @@ export function readProfileSnapshot(profileId) {
       if (id) cards.push({ id, url: a.href, title: a.closest('.note-item')?.querySelector('.title')?.textContent || '' });
     }
   }
-  const query = unwrap(unwrap(user.noteQueries)?.[0]);
-  const page = unwrap(user.userPageData) || {};
-  const basic = unwrap(page.basicInfo) || {};
-  // Query must explicitly identify the requested author, avoiding initial defaults.
-  const fetching = unwrap(unwrap(user.isFetchingNotes)?.[0]) === true;
-  const queryMatches = (query?.userId || query?.user_id) === profileId;
-  const hasMore = queryMatches ? (typeof query.hasMore === 'boolean' ? query.hasMore
-    : typeof query.has_more === 'boolean' ? query.has_more : null) : null;
-  const done = hasMore === false && !fetching;
   return {
     list: JSON.parse(JSON.stringify(list)), cards, done, fetching, challenge, login, wrongTab,
     profileName: basic.nickname || '',

@@ -296,8 +296,20 @@ try {
   await dismiss(page);
   report.checks.push('An active video download retains its progress and cancellation control across all three XHS tabs; leaving the tool hides its panel, background progress continues and returning restores the current progress.');
   await page.locator('#xhs-save-video').click();
-  await settle(page, await activeRequest(page, 'saveVideo'));
+  const timedId = await activeRequest(page, 'saveVideo'), detail = page.locator('#xhs-download-detail');
+  await emit(page, 'video', timedId, { phase: 'preparing', loadedBytes: 0 });
+  await expect(detail).not.toContainText('平均');
+  await emit(page, 'video', timedId, { phase: 'downloading', attempt: 1, loadedBytes: 8192 });
+  await expect(detail).toContainText(/平均 .*\/秒/);
+  await emit(page, 'video', timedId, { phase: 'downloading', attempt: 2, loadedBytes: 1024 });
+  await expect(detail).not.toContainText('平均');
+  await emit(page, 'video', timedId, { phase: 'checking', loadedBytes: 1024, totalBytes: 1024 });
+  await expect(page.locator('#xhs-video-status')).toContainText('检查视频文件与音轨');
+  await emit(page, 'video', timedId, { phase: 'saving', loadedBytes: 1024, totalBytes: 1024 });
+  await expect(page.locator('#xhs-video-status')).toContainText('正在保存视频');
+  await settle(page, timedId);
   assert.equal(await page.locator('#xhs-video-progress').evaluate(progress => progress.value), 100);
+  await expect(detail).toContainText(/100% · 已耗时 [1-9]\d* 秒/);
   await dismiss(page);
   await page.locator('#xhs-save-video').click();
   await settle(page, await activeRequest(page, 'saveVideo'), { ok: false, error: { message: '下载失败回归' } });
@@ -351,7 +363,10 @@ try {
     assert.equal(await page.locator('#xhs-transfer-progress').isHidden(), true);
     await dismiss(page);
     await page.locator('#' + button).click();
-    await settle(page, await activeRequest(page, action));
+    if (action === 'copyImages') {
+      await settle(page, await activeRequest(page, action), { ok: true, kind: 'files', count: 2 });
+      await expect(page.locator('#xhs-message')).toContainText('已复制 2 个独立图片文件');
+    } else await settle(page, await activeRequest(page, action));
     assert.equal(await page.locator('#xhs-transfer-progress').evaluate(progress => progress.value), 100);
     await dismiss(page);
   }

@@ -12,7 +12,7 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQ
 function imageResponse() { return new Response(png, { headers: { 'content-type': 'image/png', 'content-length': String(png.length) } }); }
 async function temporary(t) { const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-xhs-'))); t.after(() => fs.rm(directory, { recursive: true, force: true })); return directory; }
 
-async function serviceFixture(t, { fetchImpl = async () => imageResponse(), saveDialog, openDialog, onEvent, clipboardWriters } = {}) {
+async function serviceFixture(t, { fetchImpl = async () => imageResponse(), saveDialog, openDialog, openExternal, onEvent, clipboardWriters } = {}) {
   const directory = await temporary(t), output = path.join(directory, 'downloads'); await fs.mkdir(output);
   const { createXhsService } = await import('../desktop/xhs/index.mjs');
   let windows = 0;
@@ -21,7 +21,7 @@ async function serviceFixture(t, { fetchImpl = async () => imageResponse(), save
     session: { fromPartition: () => ({}) }, BrowserWindow: class { constructor() { windows++; throw new Error('Unexpected browser creation'); } },
     dialog: { showOpenDialog: openDialog || (async () => ({ canceled: false, filePaths: [output] })),
       showSaveDialog: saveDialog || (async () => ({ canceled: false, filePath: path.join(output, 'archive.zip') })) },
-    clipboard: { readText: () => '' }, shell: { openPath: async () => '' }, fetchImpl, onEvent, clipboardWriters,
+    clipboard: { readText: () => '' }, shell: { openPath: async () => '', openExternal }, fetchImpl, onEvent, clipboardWriters,
   });
   t.after(() => service.close());
   return { service, output, directory, windowCount: () => windows };
@@ -38,6 +38,59 @@ function zipEntries(bytes) {
   }
   assert.equal(bytes.readUInt32LE(offset), 0x02014b50, 'archive has a central directory'); return entries;
 }
+
+test('the original-image browser action opens only a validated HTTPS image source', async t => {
+  const opened = [];
+  const { service } = await serviceFixture(t, { openExternal: async url => opened.push(url) });
+  assert.deepEqual(await service.request('openImage', { url: imageUrl }), { ok: true });
+  for (const url of ['https://example.com/photo.jpg', imageUrl.replace('https:', 'http:'), 'invalid']) {
+    await assert.rejects(service.request('openImage', { url }), /原图链接无效/);
+  }
+  assert.deepEqual(opened, [imageUrl]);
+});
+
+test('desktop single-image save proposes the detected format, writes the chosen file and consumes one response', async t => {
+  let calls = 0, target, options;
+  const f = await serviceFixture(t, {
+    openDialog: async () => assert.fail('single file must not open a directory picker'),
+    fetchImpl: async () => { calls++; return imageResponse(); },
+    saveDialog: async (_win, opts) => { options = opts; return { canceled: false, filePath: target }; },
+  });
+  target = path.join(f.output, '用户命名.png');
+  const result = await f.service.request('saveImages', { singleFile: true, images: [{ index: 7, url: imageUrl }] });
+  assert.equal(options.defaultPath, '07.png'); assert.deepEqual(options.filters[0].extensions, ['png']);
+  assert.equal(result.path, target); assert.equal(result.count, 1); assert.equal(result.bytes, png.length);
+  assert.equal(calls, 1); assert.deepEqual(await fs.readFile(target), png);
+  assert.deepEqual(await fs.readdir(f.output), ['用户命名.png']);
+});
+
+test('single-image cancellation and invalid image data create no output and preserve existing files', async t => {
+  let dialogs = 0, corrupt = false, target;
+  const f = await serviceFixture(t, {
+    fetchImpl: async () => corrupt ? new Response('invalid image', { headers: { 'content-type': 'image/jpeg' } }) : imageResponse(),
+    saveDialog: async () => { dialogs++; return { canceled: true, filePath: target }; },
+  });
+  target = path.join(f.output, '现有.png'); await fs.writeFile(target, '已有文件');
+  const input = { singleFile: true, images: [{ index: 2, url: imageUrl }] };
+  assert.equal((await f.service.request('saveImages', input)).cancelled, true);
+  corrupt = true;
+  await assert.rejects(f.service.request('saveImages', input), /图片格式/);
+  await assert.rejects(f.service.request('saveImages', { singleFile: true, images: [...input.images, { index: 3, url: imageUrl }] }), /一张原图/);
+  assert.equal(dialogs, 1); assert.deepEqual(await fs.readdir(f.output), ['现有.png']);
+  assert.equal(await fs.readFile(target, 'utf8'), '已有文件'); assert.equal(f.service.isBusy(), false);
+});
+
+test('cancelling a pending single-image save dialog discards a later destination choice', async t => {
+  let show, choose;
+  const shown = new Promise(resolve => { show = resolve; });
+  const f = await serviceFixture(t, { saveDialog: () => new Promise(resolve => { choose = resolve; show(); }) });
+  const pending = f.service.request('saveImages', { singleFile: true, requestId: 'one-image', images: [{ index: 1, url: imageUrl }] });
+  await shown; await f.service.request('cancelTransfer', { requestId: 'one-image' });
+  assert.equal((await pending).cancelled, true);
+  choose({ canceled: false, filePath: path.join(f.output, 'late.png') });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(await fs.readdir(f.output), []); assert.equal(f.service.isBusy(), false);
+});
 
 test('XHS native parse returns declared originals without an account gate, and excludes unrelated recommended media', async () => {
   const { createParseHandler } = await import('../desktop/xhs/api/parse.js');

@@ -46,7 +46,8 @@ for(const method of ['writeText','writeImage','writeBuffer','writeHTML','writeRT
 // UI fixture transports are explicit; verify-xhs-redirects.cjs covers real TLS/network.
 const {mockElectronRequest}=require(${JSON.stringify(path.join(root, 'test/electron-update-request-fixture.cjs'))});
 globalThis.fetch=(url,options)=>fixtureResponse({url:String(url),headers:new Headers(options?.headers)});
-net.request=mockElectronRequest(globalThis.fetch);
+global.__nativeRequests=[];
+net.request=mockElectronRequest((url,options)=>{global.__nativeRequests.push(url);return globalThis.fetch(url,options);});
 const fs=require('node:fs');
 app.getAppPath=()=>${JSON.stringify(root)};
 global.__xhsNetwork=[];
@@ -118,6 +119,8 @@ require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
     await expect(page.locator('#xhs-image-grid article')).toHaveCount(2);
     await page.waitForFunction(() => [...document.querySelectorAll('#xhs-image-grid img')].every(image => image.complete && image.naturalWidth > 0));
     assert.match(await page.locator('#xhs-video-select option').first().textContent(), /原视频/);
+    const previewSource = async () => new URL(await page.locator('#xhs-video-preview').getAttribute('src')).searchParams.get('url');
+    assert.equal(await previewSource(), playbackURL);
     await page.locator('#xhs-image-grid input').last().uncheck();
     await page.locator('#xhs-save-images').click();
     await expect(page.locator('#xhs-message')).toContainText('已保存');
@@ -135,13 +138,21 @@ require(${JSON.stringify(path.join(root, 'desktop/main.cjs'))});
       if (await fs.stat(candidate).catch(() => null)) textFile = candidate;
     }
     assert.ok(textFile); assert.match(await fs.readFile(textFile, 'utf8'), /完整中文文案/);
-    await page.locator('#xhs-save-video').click();
-    await expect(page.locator('#xhs-video-status')).toContainText('视频已下载并保存');
     const savedVideo = path.join(output, '原视频.mp4');
+    for (const [expectedURL, destination] of [[playbackURL, path.join(output, '播放视频.mp4')], [videoURL, savedVideo]]) {
+      if (expectedURL === videoURL) await page.locator('#xhs-video-select').selectOption('0');
+      assert.equal(await previewSource(), expectedURL);
+      await app.evaluate((_electron, filename) => { global.__nativeRequests = []; global.__xhsSavePath = filename; }, destination);
+      await page.locator('#xhs-save-video').click();
+      await expect.poll(() => fs.stat(destination).then(() => true, () => false)).toBe(true);
+      await expect(page.locator('#xhs-video-status')).toContainText('视频已下载并保存');
+      assert.deepEqual(await app.evaluate(() => global.__nativeRequests), [expectedURL]);
+      assert.deepEqual(await fs.readFile(destination), await fs.readFile(videoPath));
+    }
     const probe = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', savedVideo], { encoding: 'utf8', timeout: 10000 }));
     assert.ok(probe.streams.some(stream => stream.codec_type === 'video'));
     assert.ok(probe.streams.some(stream => stream.codec_type === 'audio'));
-    report.checks.push('native whole-note media/text save and original-video save with actual H.264/AAC track validation');
+    report.checks.push('native whole-note save, default playback and explicitly selected original use the previewed URL and save the exact media bytes with valid H.264/AAC tracks');
     for (const [button, format] of [['xhs-export-images', 'images'], ['xhs-export-live', 'live'], ['xhs-export-selected', 'selected']]) {
       if (format === 'selected') await page.locator('#xhs-image-grid input').last().check();
       const zipPath = path.join(output, `${format}.zip`);

@@ -86,7 +86,13 @@ try {
         onXhsEvent(callback) { window.__profileEmit = callback; },
         async xhsRequest(action, input = {}) {
           window.__profileCalls.push({ action, input: structuredClone(input) });
-          if (action === 'loginState') return { status: 'unknown' };
+          if (action === 'login') return true;
+          if (action === 'loginState') {
+            if (input.checkWebsite && window.__holdLoginRead) {
+              return new Promise(resolve => { window.__releaseLoginRead = () => resolve({status:'logged-out', loggedIn:false}); });
+            }
+            return input.checkWebsite ? {status:'logged-in', loggedIn:true, nickname:'保存的登录用户'} : { status:'unknown' };
+          }
           if (action === 'profileState') {
             const snapshot = structuredClone(window.__profile);
             if (window.__holdProfileRead) {
@@ -118,7 +124,24 @@ try {
   assert.equal(await page.evaluate(() => window.__profileCalls.length), 0);
   await page.locator('[data-view="xhs"]').first().click();
   await page.waitForFunction(() => window.__profileCalls.some(call => call.action === 'profileState'));
+  assert.equal(await page.evaluate(() => window.__profileCalls.some(call => call.input.checkWebsite)), false);
   await page.locator('#xhs-tab-profile').click();
+  await expect(page.locator('#xhs-login-status')).toContainText('保存的登录用户');
+  await page.locator('#xhs-login').click();
+  await expect(page.locator('#xhs-login-status')).toContainText('保存的登录用户');
+  await page.locator('#xhs-tab-note').click();
+  await page.evaluate(() => { window.__holdLoginRead = true; });
+  await page.locator('#xhs-tab-profile').click();
+  await page.waitForFunction(() => typeof window.__releaseLoginRead === 'function');
+  await page.locator('#xhs-tab-note').click();
+  await page.evaluate(() => {
+    window.__releaseLoginRead();
+    window.__holdLoginRead = false;
+  });
+  await expect(page.locator('#xhs-login-status')).toContainText('保存的登录用户');
+  await page.locator('#xhs-tab-profile').click();
+  await expect(page.locator('#xhs-login-status')).toContainText('保存的登录用户');
+  report.checks.push('An explicit profile visit restores the saved website login; a boolean login-window receipt and a delayed reply from a previous tab visit cannot replace it. Single-note entry does not open a website session.');
   await page.locator('#xhs-profile-url').fill(profileUrl);
 
   await page.locator('#xhs-profile-start').click();

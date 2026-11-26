@@ -77,6 +77,13 @@ async function main() {
       const url = new URL(request.url, `https://${request.headers.host}`);
       requests.push({ host: url.hostname, path: url.pathname, cursor: url.searchParams.get('cursor'), afterExplicitEnd: explicitEndResponded });
       response.setHeader('cache-control', 'no-store');
+      if (url.hostname === 'www.xiaohongshu.com' && url.pathname === '/explore') {
+        const signedIn = (request.headers.cookie || '').split('; ').includes('brclio_test_session=local');
+        const user = { loggedIn: signedIn, currentUser: { userId:'f'.repeat(24), nickname:'夹具账号' } };
+        response.writeHead(200, { 'content-type':'text/html;charset=utf-8' });
+        response.end('<!doctype html><script>window.__INITIAL_STATE__=' + JSON.stringify({user}) + '</script>');
+        return;
+      }
       if (url.hostname === 'www.xiaohongshu.com' && url.pathname === `/user/profile/${profileId}`) {
         response.writeHead(200, { 'content-type': 'text/html;charset=utf-8' }); response.end(profileHTML()); return;
       }
@@ -138,6 +145,24 @@ app.on('window-all-closed',()=>{});`);
         if (!permitted) forbidden.push(request.url);
         callback({ cancel: !permitted });
       });
+      // Restore a synthetic site session through the actual desktop service. An
+      // ordinary status read must not create windows or contact the fixture.
+      const { createXhsService } = load('./desktop/xhs/index.mjs');
+      await nativeSession.cookies.set({ url:'https://www.xiaohongshu.com', name:'brclio_test_session', value:'local', secure:true, httpOnly:true });
+      const service = await createXhsService({
+        app:{ getPath:() => fixture.stateDirectory, getAppPath:() => fixture.root, isPackaged:false },
+        BrowserWindow, session, net, dialog:{}, clipboard:{}, shell:{}
+      });
+      let login;
+      try {
+        const count = BrowserWindow.getAllWindows().length;
+        const passive = await service.request('loginState');
+        if (passive.status !== 'unknown' || BrowserWindow.getAllWindows().length !== count) throw Error('Passive site check created a window.');
+        const restored = await service.request('loginState', {checkWebsite:true});
+        const window = BrowserWindow.getAllWindows().find(win => win.webContents.session === nativeSession);
+        if (!window || window.isVisible() || !restored.loggedIn || restored.nickname !== '夹具账号') throw Error('Stored website session was not restored in a hidden window.');
+        login = { passive:passive.status, restored:restored.status, hidden:true };
+      } finally { await service.close(); }
       let clock = Date.now();
       const diagnostics = [], updates = [];
       // Only pacing is accelerated; DOM, navigation, TLS, CDP and disk I/O are real.
@@ -160,10 +185,13 @@ app.on('window-all-closed',()=>{});`);
         await manager.start({ profileUrl: fixture.profileURL, directory: fixture.output, intervalSeconds: 3, jitterSeconds: 0 });
         await Promise.race([manager._runTask, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Profile integration timed out')), 45000); })]);
         const page = await browser.profileWindow.webContents.executeJavaScript('JSON.parse(JSON.stringify(window.fixtureState))');
-        return { snapshot: manager.snapshot(), diagnostics, updates, page, forbidden, tls: trust.snapshot() };
+        return { login, snapshot: manager.snapshot(), diagnostics, updates, page, forbidden, tls: trust.snapshot() };
       } finally { clearTimeout(timer); await manager.shutdown(); browser.close(); }
     }, { root, certPath, hosts, profileURL, output, stateDirectory: path.join(temporary, 'state') });
     report.actual = actual;
+    assert.deepEqual(actual.login, {passive:'unknown', restored:'logged-in', hidden:true});
+    assert.equal(requests.filter(request => request.path === '/explore').length, 1);
+    report.checks.push('passive status reads create no window; an explicit profile login check opens one hidden local TLS page using the existing site session');
     assert.equal(actual.snapshot.status, 'completed', actual.snapshot.message);
     assert.equal(actual.snapshot.discoveryComplete, true);
     assert.equal(actual.snapshot.discovered, 3);

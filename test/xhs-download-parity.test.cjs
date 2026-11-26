@@ -138,6 +138,29 @@ test('source image API binary MIME fallback works for previews, original saving 
   assert.equal(archive.ok, true); assert.equal(archive.count, 1); assert.equal(archive.failedCount, 0);
 });
 
+test('preview metadata follows validated redirects with HEAD and only falls back to GET if HEAD is unsupported', async t => {
+  const methods = [];
+  let unsupported = false, cancelled = false;
+  const final = 'https://sns-webpic-qc.xhscdn.com/metadata';
+  const f = await serviceFixture(t, async (url, options) => {
+    methods.push(options.method);
+    if (url !== final) return Response.redirect(final);
+    if (unsupported && options.method === 'HEAD') return new Response(null, { status: 405 });
+    const body = options.method === 'HEAD' ? null : new ReadableStream({ cancel() { cancelled = true; } });
+    return new Response(body, { headers: { 'content-type': 'application/octet-stream', 'content-length': '8000000' } });
+  });
+  const request = () => f.service.handleProtocol(new Request(`brclio-xhs://local/api/image?url=${encodeURIComponent(imageUrl)}`, { method: 'HEAD' }));
+  const head = await request();
+  assert.equal(head.status, 200); assert.equal(head.body, null);
+  assert.equal(head.headers.get('content-length'), '8000000');
+  assert.deepEqual(methods, ['HEAD', 'HEAD']);
+  methods.length = 0; unsupported = true;
+  const fallback = await request();
+  assert.equal(fallback.status, 200); assert.equal(fallback.body, null);
+  assert.deepEqual(methods, ['HEAD', 'HEAD', 'GET']);
+  assert.equal(cancelled, true);
+});
+
 test('binary image MIME fallback never saves or previews non-image bytes', async t => {
   const f = await serviceFixture(t, async () => response(Buffer.from('<html>not an image</html>'), 'application/octet-stream'));
   const preview = await f.service.handleProtocol(new Request(`brclio-xhs://local/api/image?url=${encodeURIComponent(imageUrl)}`));

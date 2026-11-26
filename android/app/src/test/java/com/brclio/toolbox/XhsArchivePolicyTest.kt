@@ -44,4 +44,15 @@ class XhsArchivePolicyTest {
         val yes = JSONObject().put("hasAudio", true)
         assertSame(yes, XhsArchivePolicy.video(JSONArray().put(yes)))
     }
+    @Test fun wholeNoteRequiresVideoWhenParserDeclaredOne() {
+        for (declaration in listOf(JSONObject().put("type", "mixed"), JSONObject().put("type", "video"),
+            JSONObject().put("hasOriginalVideo", true), JSONObject().put("originalVideoUnavailable", true),
+            JSONObject().put("originalVideoCount", 1), JSONObject().put("videoCount", 2))) {
+            assertThrows(IllegalArgumentException::class.java) { XhsArchivePolicy.videoForWholeNote(declaration) }
+        }
+        assertNull(XhsArchivePolicy.videoForWholeNote(JSONObject().put("type", "image")))
+        val playback = JSONObject().put("url", "https://sns-video.xhscdn.com/stream/ordinary")
+        val note = JSONObject().put("originalVideoUnavailable", true).put("videos", JSONArray().put(playback))
+        assertSame(playback, XhsArchivePolicy.videoForWholeNote(note))
+    }
 }

@@ -284,9 +284,11 @@ try {
       window.brclio={...window.BrclioHost,copyText:async text=>{window.__copied=text},onXhsEvent(callback){window.__xhsEmit=callback},async xhsRequest(action,input){
         window.__xhsCalls.push({action,input});
         if(action==='loginState') return {status:'logged-in',loggedIn:true,nickname:'测试小红书账号'};
+        if(action==='info') return {pythonAvailable:!window.__pythonMissing};
         if(action==='profileState') return structuredClone(window.__profile);
         if(action==='parse' && window.__onlyOriginalHint)return {title:'仅声明原视频',hasOriginalVideo:true,images:[],videos:[],originalVideos:[]};
-        if(action==='parse') return {noteId:'a'.repeat(24),title:'测试笔记',content:'完整的笔记文案',images:[{url:'https://fixture/x.jpg',index:1},{url:'https://fixture/y.jpg',index:2,liveVideo:{url:'https://fixture/live.mp4'}}],videos:[{label:'720P',url:'https://fixture/play.mp4'}],originalVideos:[{label:'平台原文件',url:'https://fixture/original.mp4'},{label:'原视频备用线路',url:'https://fixture/original-backup.mp4'}]};
+        if(action==='parse' && window.__onlyOriginal)return {title:'仅有原视频',images:[],videos:[],originalVideos:[{url:'https://fixture/only-original.mp4'}]};
+        if(action==='parse') return {noteId:'a'.repeat(24),title:'测试笔记',content:'完整的笔记文案',images:[{url:'https://fixture/x.jpg',index:1},{url:'https://fixture/y.jpg',index:2,liveVideo:{url:'https://fixture/live.mp4'}}],videos:[{label:'480P',url:'https://fixture/low.mp4'},{label:'720P',url:'https://fixture/play.mp4',isDefault:true}],originalVideos:[{label:'平台原文件',url:'https://fixture/original.mp4',isDefault:true},{label:'原视频备用线路',url:'https://fixture/original-backup.mp4'}]};
         if(action==='chooseDirectory') return '/tmp/Brclio-XHS';
         if(action==='readClipboard') return window.__clipboard;
         if(action==='startProfile') return window.__profile={...input,status:'downloading',items:[{id:'a'.repeat(24),title:'待下载笔记',status:'pending'}]};
@@ -313,12 +315,18 @@ try {
   report.nativeUI.push('No XHS calls occur before opening the tool; restored timing settings populate while unsaved edits remain intact.');
   await nativePage.locator('#xhs-tab-note').click(); await nativePage.locator('#xhs-share').fill('https://www.xiaohongshu.com/explore/' + 'a'.repeat(24)); await nativePage.locator('#xhs-parse').click();
   await nativePage.locator('#xhs-note-title').filter({ hasText: '测试笔记' }).waitFor(); assert.equal(await nativePage.locator('#xhs-share-images').isHidden(),true);
-  assert.equal(await nativePage.locator('#xhs-video-select option').count(), 3); assert.match(await nativePage.locator('#xhs-video-select option').first().textContent(), /原视频/);
+  assert.equal(await nativePage.locator('#xhs-video-select option').count(), 4); assert.match(await nativePage.locator('#xhs-video-select option').first().textContent(), /原视频/);
+  async function previewSource() { return new URL(await nativePage.locator('#xhs-video-preview').getAttribute('src')).searchParams.get('url'); }
+  assert.equal(await previewSource(), 'https://fixture/play.mp4');
+  assert.equal(await nativePage.locator('#xhs-video-select option:checked').innerText(), '720P');
   await nativePage.locator('.xhs-image-card').first().getByRole('button',{name:'打开原图',exact:true}).click();
   assert.equal(await nativePage.locator('#xhs-image-dialog').isVisible(),true);assert.match(await nativePage.locator('#xhs-image-original').getAttribute('src'),/^brclio-xhs:\/\/local\/api\/image/);
+  await nativePage.getByRole('button', { name: '在浏览器打开原图' }).click();
+  assert.equal(await nativePage.evaluate(() => window.__xhsCalls.find(call => call.action === 'openImage').input.url), 'https://fixture/x.jpg');
   await nativePage.keyboard.press('Escape');await nativePage.waitForFunction(()=>document.getElementById('xhs-image-original').getAttribute('src')===null);
-  await nativePage.locator('#xhs-video-select').selectOption('2');await nativePage.locator('#xhs-copy-video-link').click();assert.equal(await nativePage.evaluate(()=>window.__copied),'https://fixture/play.mp4');
+  await nativePage.locator('#xhs-copy-video-link').click();assert.equal(await nativePage.evaluate(()=>window.__copied),'https://fixture/play.mp4');
   await nativePage.locator('#xhs-open-video-link').click();assert.equal(await nativePage.evaluate(()=>window.__xhsCalls.find(call=>call.action==='openVideo').input.url),'https://fixture/play.mp4');await nativePage.locator('#xhs-video-select').selectOption('0');
+  assert.equal(await previewSource(), 'https://fixture/original.mp4');
   report.nativeUI.push('Original-image viewing opens a local dialog and releases its source on Escape; video link copy/open follows the chosen candidate.');
   await nativePage.locator('#xhs-copy-content').click();assert.equal(await nativePage.evaluate(()=>window.__copied),'测试笔记\n\n完整的笔记文案');
   const captionPending=nativePage.waitForEvent('download');await nativePage.locator('#xhs-export-content').click();const caption=await captionPending;
@@ -382,11 +390,20 @@ try {
   await nativePage.evaluate(() => {window.__videoFailure=true;window.__saveImagesCancel=true});
   await nativePage.locator('#xhs-save-video').click(); await nativePage.locator('#xhs-message').filter({hasText:'测试下载失败'}).waitFor(); assert.equal(await nativePage.locator('#xhs-video-status').innerText(),'测试下载失败');
   await nativePage.locator('.xhs-image-card').first().getByRole('button',{name:'保存原图',exact:true}).click(); await nativePage.locator('#xhs-message').filter({hasText:'已取消保存'}).waitFor();
+  assert.equal(await nativePage.evaluate(() => window.__xhsCalls.filter(call => call.action === 'saveImages').at(-1).input.singleFile), true);
   await nativePage.locator('#xhs-tab-profile').click(); await nativePage.locator('#xhs-clear-login').click(); await nativePage.locator('#xhs-message').filter({hasText:'已取消清除'}).waitFor(); assert.match(await nativePage.locator('#xhs-login-status').innerText(),/已登录小红书.*测试小红书账号/);
   await nativePage.evaluate(() => window.__clearCancel=false); await nativePage.locator('#xhs-clear-login').click(); assert.match(await nativePage.locator('#xhs-login-status').innerText(),/尚未登录/);
   report.nativeUI.push('Failed video downloads and cancelled single-image saves never claim success; cancelled session cleanup preserves login, and successful nested loginState updates correctly.');
 
-  await nativePage.locator('#xhs-tab-note').click(); await nativePage.evaluate(()=>window.__onlyOriginalHint=true); await nativePage.locator('#xhs-parse').click();
+  await nativePage.locator('#xhs-tab-note').click();
+  await nativePage.evaluate(() => { window.__onlyOriginal = true; window.__videoFailure = false; });
+  await nativePage.locator('#xhs-parse').click(); await nativePage.locator('#xhs-note-title').filter({hasText:'仅有原视频'}).waitFor();
+  assert.equal(await previewSource(), 'https://fixture/only-original.mp4');
+  await nativePage.locator('#xhs-save-video').click();
+  assert.equal(await nativePage.evaluate(() => window.__xhsCalls.filter(call => call.action === 'saveVideo').at(-1).input.video.url), 'https://fixture/only-original.mp4');
+  await nativePage.evaluate(() => window.__finishVideo({ok:true}));
+  await nativePage.locator('#xhs-video-status').filter({hasText:'视频已下载并保存'}).waitFor();
+  await nativePage.evaluate(()=>window.__onlyOriginalHint=true); await nativePage.locator('#xhs-parse').click();
   await nativePage.locator('#xhs-note-title').filter({hasText:'仅声明原视频'}).waitFor();
   assert.equal(await nativePage.locator('#xhs-videos-section').isVisible(),true);assert.match(await nativePage.locator('#xhs-original-status').innerText(),/暂未取得可下载地址/);assert.equal(await nativePage.locator('#xhs-save-video').isDisabled(),true);assert.equal(await nativePage.locator('#xhs-open-video-link').isDisabled(),true);
   report.nativeUI.push('A page declaration without a resolved original-video URL is reported accurately and never exposes an empty download action.');
@@ -407,7 +424,27 @@ try {
   await nativePage.evaluate(() => window.__xhsEmit({type:'profile',state:{status:'paused',failed:2,items:[{id:'a'.repeat(24),url:'https://www.xiaohongshu.com/explore/'+'a'.repeat(24),title:'失败笔记一',status:'failed',error:'测试错误'},{id:'c'.repeat(24),url:'https://www.xiaohongshu.com/explore/'+'c'.repeat(24),title:'失败笔记二',status:'failed'}]}}));
   await nativePage.locator('#xhs-copy-failed').click(); assert.equal((await nativePage.evaluate(() => window.__copied)).split('\n').length,2);
   await nativePage.locator('#xhs-profile-items li').last().getByRole('button',{name:'复制链接',exact:true}).click(); assert.match(await nativePage.evaluate(() => window.__copied), /cccccccccccccccccccccccc/);
-  await nativePage.locator('#xhs-profile-items li').last().getByRole('button',{name:'转单篇',exact:true}).click(); assert.equal(await nativePage.locator('#xhs-panel-note').isVisible(),true); assert.match(await nativePage.locator('#xhs-share').inputValue(), /cccccccccccccccccccccccc/);
+  // Keep the prior note and active download intact when a failed profile item
+  // is opened from another tab. Once idle, clear that old note before reuse.
+  await nativePage.locator('#xhs-tab-note').click();
+  await nativePage.evaluate(() => { window.__onlyOriginal = false; window.__onlyOriginalHint = false; window.__deferTransfer = true; window.__finishTransfer = null; });
+  const previousShare = 'https://www.xiaohongshu.com/explore/' + 'a'.repeat(24);
+  await nativePage.locator('#xhs-share').fill(previousShare); await nativePage.locator('#xhs-parse').click();
+  await nativePage.locator('#xhs-note-title').filter({hasText:'测试笔记'}).waitFor();
+  await nativePage.locator('#xhs-save-images').click();
+  await nativePage.waitForFunction(() => typeof window.__finishTransfer === 'function');
+  await nativePage.locator('#xhs-tab-profile').click();
+  const openFailed = nativePage.locator('#xhs-profile-items li').last().getByRole('button',{name:'转单篇',exact:true});
+  await openFailed.click(); await nativePage.locator('#xhs-message').filter({hasText:'单篇下载正在处理'}).waitFor();
+  assert.equal(await nativePage.locator('#xhs-panel-profile').isVisible(),true);
+  assert.equal(await nativePage.locator('#xhs-share').inputValue(),previousShare);
+  await nativePage.evaluate(() => {window.__deferTransfer = false; window.__finishTransfer({ok:true,count:2});});
+  await nativePage.waitForFunction(() => !document.getElementById('xhs-parse').disabled);
+  const parsesBeforeTransfer = await nativePage.evaluate(() => window.__xhsCalls.filter(call => call.action === 'parse').length);
+  await openFailed.click(); assert.equal(await nativePage.locator('#xhs-panel-note').isVisible(),true); assert.match(await nativePage.locator('#xhs-share').inputValue(), /cccccccccccccccccccccccc/);
+  assert.equal(await nativePage.locator('#xhs-note-result').isHidden(),true);
+  assert.equal(await nativePage.locator('#xhs-image-grid img').count(),0);
+  assert.equal(await nativePage.evaluate(() => window.__xhsCalls.filter(call => call.action === 'parse').length),parsesBeforeTransfer);
   report.nativeUI.push('Profile start/pause and event updates work; individual/all failed links copy correctly and transfer to single-note input without automatic parsing.');
   const callsBefore = await nativePage.evaluate(() => window.__xhsCalls.filter(call=>call.action==='readClipboard').length);
   await nativePage.evaluate(() => {window.__clipboard='https://xhslink.cn/o/new-note';window.dispatchEvent(new Event('focus'))});
@@ -425,6 +462,12 @@ try {
   await nativePage.screenshot({ path:path.join(output,'xhs-ui-profile-contract.png'),fullPage:true }); report.screenshots.push('artifacts/xhs-ui-profile-contract.png');
   await nativePage.locator('#xhs-tab-note').click();await nativePage.locator('#xhs-engine').selectOption('python');await nativePage.reload();await nativePage.waitForFunction(()=>document.body.dataset.ready==='true');assert.equal(await nativePage.locator('#xhs-engine').inputValue(),'python');
   report.nativeUI.push('The parser engine preference survives reload in its own local key without initializing XHS or changing account/path settings.');
+  await nativePage.evaluate(() => { window.__pythonMissing = true; });
+  await nativePage.locator('[data-view="xhs"]').first().click();
+  await nativePage.waitForFunction(() => document.querySelector('#xhs-engine option[value="python"]').disabled);
+  assert.equal(await nativePage.locator('#xhs-engine').inputValue(), 'node');
+  assert.equal(await nativePage.evaluate(() => localStorage.getItem('brclio.xhs.parse-engine.v1')), 'node');
+  report.nativeUI.push('Opening the desktop downloader with Python unavailable disables that engine and restores the native Node preference.');
   await nativeContext.close();
 
   const androidContext = await browser.newContext({viewport:{width:390,height:1000}});
@@ -435,7 +478,10 @@ try {
       window.__androidCalls=[];window.__generated=[];window.__androidEmit=null;
       window.BrclioHost={...window.BrclioHost,getPlatform:async()=>({platform:'android',version:'0.1.15',capabilities:{filePicker:true,folderPicker:true,systemIntegration:false,globalShortcut:false}}),onXhsEvent(callback){window.__androidEmit=callback},async saveGenerated(blob,filename,options){window.__generated.push({filename,mime:blob.type,size:blob.size,requestId:options?.requestId});return {ok:true}},async xhsRequest(action,input){
         window.__androidCalls.push({action,input});
-        if(action==='parse')return {title:'安卓测试笔记',content:'安卓完整文案',images:[{index:1,url:'https://fixture/android.jpg'}],videos:[{url:'https://fixture/android.mp4',label:'原视频'}]};
+        if(action==='copyImages' && window.__holdCopy) return await new Promise(resolve=>{window.__finishCopy=resolve});
+        if(action==='parse' && window.__holdParse) return await new Promise((resolve,reject)=>{window.__oldParse={resolve,reject}});
+        if(action==='parse')return {title:'安卓测试笔记',content:'安卓完整文案',images:[{index:1,url:'https://fixture/android.jpg'}],
+          videos:Array.from({length:10},(_,i)=>({url:'https://fixture/rendition-'+i,label:'清晰度 '+i,hasAudio:i!==0,isDefault:i===0,backupUrls:Array.from({length:12},(_,b)=>'https://fixture/backup-'+i+'-'+b)}))};
         return {ok:true};
       }};`});
   });
@@ -449,6 +495,42 @@ try {
   assert.equal(await androidPage.locator('#xhs-share-images').isVisible(),true); await androidPage.locator('#xhs-share-images').click(); assert.deepEqual(await androidPage.evaluate(()=>window.__androidCalls.find(call=>call.action==='shareImages').input.images.map(image=>image.index)),[1]); await androidPage.locator('.xhs-image-select').uncheck();assert.equal(await androidPage.locator('#xhs-share-images').isDisabled(),true);await androidPage.locator('.xhs-image-select').check();
   assert.match(await androidPage.locator('.xhs-image-card img').getAttribute('src'),/^https:\/\/appassets\.androidplatform\.net\/xhs-media\?url=.*kind=image$/);
   assert.match(await androidPage.locator('#xhs-video-preview').getAttribute('src'),/kind=video$/);
+  await androidPage.locator('#xhs-transfer-dismiss').click();
+  await androidPage.locator('#xhs-save-video').click();
+  await androidPage.locator('#xhs-transfer-dismiss').click();
+  const androidVideo = await androidPage.evaluate(() => window.__androidCalls.find(call => call.action === 'saveVideo').input.video);
+  assert.equal(androidVideo.url, 'https://fixture/rendition-1');
+  assert.deepEqual(androidVideo.backupUrls, Array.from({length: 8}, (_, i) => 'https://fixture/backup-1-' + i));
+  await androidPage.evaluate(() => { window.__holdCopy = true; });
+  await androidPage.locator('#xhs-copy-images').click(); await androidPage.waitForFunction(() => Boolean(window.__finishCopy));
+  await androidPage.evaluate(() => {
+    for (const text of ['https://xhslink.com/a/queued','https://xhslink.com/a/latest']) {
+      window.dispatchEvent(new CustomEvent('brclio:xhs-share',{detail:{text}}));
+    }
+  });
+  assert.equal(await androidPage.locator('#xhs-share').inputValue(), 'https://xhslink.com/a/android-share');
+  assert.equal(await androidPage.locator('#xhs-parse').isDisabled(), true);
+  assert.equal(await androidPage.evaluate(() => window.__androidCalls.some(call => call.action === 'cancelTransfer')), false);
+  await androidPage.evaluate(() => window.__finishCopy({ok:true,count:1}));
+  await androidPage.waitForFunction(() => document.querySelector('#xhs-share').value === 'https://xhslink.com/a/latest');
+  assert.equal(await androidPage.locator('#xhs-note-result').isHidden(), true);
+  await androidPage.locator('#xhs-transfer-dismiss').click();
+  for (const outcome of ['resolve','reject']) {
+    await androidPage.evaluate(() => { window.__holdParse = true; window.__oldParse = null; });
+    await androidPage.locator('#xhs-parse').click();
+    await androidPage.waitForFunction(() => Boolean(window.__oldParse));
+    await androidPage.evaluate(outcome => {
+      window.dispatchEvent(new CustomEvent('brclio:xhs-share',{detail:{text:'https://xhslink.com/a/new-' + outcome}}));
+      if (outcome === 'resolve') window.__oldParse.resolve({title:'过期笔记',images:[],videos:[]});
+      else window.__oldParse.reject(new Error('过期错误'));
+      window.__holdParse = false;
+    }, outcome);
+    await androidPage.waitForFunction(() => document.querySelector('#xhs-parse-form').getAttribute('aria-busy') === 'false');
+    assert.equal(await androidPage.locator('#xhs-share').inputValue(), 'https://xhslink.com/a/new-' + outcome);
+    assert.equal(await androidPage.locator('#xhs-note-result').isHidden(), true);
+    assert.match(await androidPage.locator('#xhs-message').innerText(), /链接已填入/);
+  }
+  report.androidUI.push('New shares keep stale parse successes and errors out of the UI; a selected video downloads with up to eight of its own backup addresses.');
   await androidPage.locator('#xhs-engine').selectOption('python'); await androidPage.locator('#xhs-parse').click();
   assert.equal(await androidPage.evaluate(()=>window.__androidCalls.filter(call=>call.action==='parse').at(-1).input.engine),'python');await androidPage.locator('#xhs-engine').selectOption('node');
   await androidPage.locator('#xhs-save-images').click();await androidPage.locator('#xhs-export-content').click();

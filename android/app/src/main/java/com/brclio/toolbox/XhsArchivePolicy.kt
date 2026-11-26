@@ -27,6 +27,14 @@ object XhsArchivePolicy {
         return records
     }
     fun video(candidates: JSONArray): JSONObject? = video(null, candidates)
+    fun videoForWholeNote(note: JSONObject): JSONObject? {
+        val selection = video(note.optJSONArray("originalVideos"), note.optJSONArray("videos"))
+        val expectsVideo = note.optBoolean("hasOriginalVideo") || note.optBoolean("originalVideoUnavailable") ||
+            note.optInt("originalVideoCount") > 0 || note.optInt("videoCount") > 0 ||
+            note.optString("type") in setOf("video", "mixed")
+        require(selection != null || !expectsVideo) { "未取得这篇笔记的视频地址，请重新解析或单独保存文案和图片。" }
+        return selection
+    }
     fun video(originals: JSONArray?, ordinary: JSONArray?): JSONObject? {
         fun available(items: JSONArray?): List<JSONObject> = if (items == null) emptyList() else
             (0 until items.length()).map { items.getJSONObject(it) }.filter { it.opt("hasAudio") != false }

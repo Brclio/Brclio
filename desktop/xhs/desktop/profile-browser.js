@@ -189,7 +189,14 @@ export class XhsBrowser {
     }
     win.show();
     win.focus();
-    if (!allowedNavigation(win.webContents.getURL())) await this.navigate(win, value ? parseProfileUrl(value).url : `${ORIGIN}/explore`);
+    if (!allowedNavigation(win.webContents.getURL())) {
+      let target = `${ORIGIN}/explore`;
+      if (value) {
+        try { target = parseProfileUrl(value).url; }
+        catch (error) { if (error.code !== 'INVALID_PROFILE') throw error; }
+      }
+      await this.navigate(win, target);
+    }
     return true;
   }
 
@@ -280,6 +287,7 @@ export class XhsBrowser {
     let apiHasMore = null;
     const seenCursors = new Set();
     let fetchingSince = null;
+    let nextScrollAt = null;
     const matchesProfile = value => {
       const url = new URL(value);
       return allowedNavigation(url.href) && POSTED.test(url.pathname) && url.searchParams.get('user_id') === profile.id;
@@ -291,6 +299,14 @@ export class XhsBrowser {
       if (networkError) this.block(win, networkError.code, networkError.message);
       if ([...pending.values(), ...readingResponses.values()].some(request => this.now() - request.startedAt >= 45000)) {
         throw profileError('DISCOVERY_INCOMPLETE', '主页翻页请求超过 45 秒仍未完成，已保留当前笔记，可稍后继续补全。');
+      }
+    };
+    const snapshotScript = '(' + readProfileSnapshot.toString() + ')(' + JSON.stringify(profile.id);
+    const checkPage = snap => {
+      if (snap.challenge) this.block(win, 'RATE_LIMITED', '需要安全验证，任务已暂停。请在内置浏览器完成验证后继续。');
+      if (snap.login) this.block(win, 'AUTH_REQUIRED', '需要登录小红书，任务已暂停。登录后点击“继续任务”。');
+      if (snap.wrongTab || new URL(win.webContents.getURL()).pathname.replace(/\/$/, '') !== `/user/profile/${profile.id}`) {
+        throw profileError('DISCOVERY_INCOMPLETE', '浏览器已离开该主页的笔记列表，请继续任务重新加载。');
       }
     };
     const accessCheck = () => {
@@ -350,14 +366,10 @@ export class XhsBrowser {
         signal?.throwIfAborted();
         checkNetwork();
         if (win.isDestroyed()) throw profileError('DISCOVERY_INCOMPLETE', '内置浏览器已关闭，请继续任务。');
-        const snap = await this.execute(win, `(${readProfileSnapshot.toString()})(${JSON.stringify(profile.id)})`, signal);
+        const snap = await this.execute(win, snapshotScript + ')', signal);
         // CDP responses can arrive while executeJavaScript is awaiting the page.
         checkNetwork();
-        if (snap.challenge) this.block(win, 'RATE_LIMITED', '需要安全验证，任务已暂停。请在内置浏览器完成验证后继续。');
-        if (snap.login) this.block(win, 'AUTH_REQUIRED', '需要登录小红书，任务已暂停。登录后点击“继续任务”。');
-        if (snap.wrongTab || new URL(win.webContents.getURL()).pathname.replace(/\/$/, '') !== `/user/profile/${profile.id}`) {
-          throw profileError('DISCOVERY_INCOMPLETE', '浏览器已离开该主页的笔记列表，请继续任务重新加载。');
-        }
+        checkPage(snap);
         const incoming = batches.splice(0);
         if (snap.list.some(raw => !normalizeProfileNote(raw, profile.id))) {
           throw profileError('DISCOVERY_INCOMPLETE', '主页列表中有无法完整识别的帖子，任务已暂停，尚未确认全部抓取。');
@@ -408,28 +420,55 @@ export class XhsBrowser {
             seen.set(note.id, note);
           }
         }
-        this.diagnostic('discovery.snapshot', { discovered: seen.size, newCount, pending: pending.size,
-          reading: readingResponses.size, fetching: Boolean(snap.fetching), done, stale });
-        yield { notes, done, profileName: snap.profileName };
+        if (nextScrollAt === null || notes.length || incoming.length || done) {
+          this.diagnostic('discovery.snapshot', { discovered: seen.size, newCount, pending: pending.size,
+            reading: readingResponses.size, fetching: Boolean(snap.fetching), done, stale });
+          yield { notes, done, profileName: snap.profileName };
+        }
         if (done) return;
-        stale = newCount || cursorAdvanced ? 0 : busy ? stale : stale + 1;
+        if (newCount || cursorAdvanced) stale = 0;
+        else if (!busy && nextScrollAt === null) stale++;
         if (stale >= 5) {
           if (!seen.size && /登录|扫码/.test(snap.pageText)) this.block(win, 'AUTH_REQUIRED', '主页需要登录才能加载帖子，请登录后继续。');
           throw profileError('DISCOVERY_INCOMPLETE', '列表连续多次没有加载新帖子，且未收到结束标记。任务已暂停，可稍后继续。');
         }
-        const wait = Math.max(3, Number(intervalSeconds) || 10) + Math.random() * Math.max(0, Number(jitterSeconds) || 0);
-        this.onStatus(`已发现 ${seen.size} 篇，${Math.ceil(wait)} 秒后加载下一页。`);
-        await this.wait(wait * 1000, undefined, { signal });
-        // An in-flight page is still progress. Do not issue repeated bottom
-        // scrolls while it is loading; the bounded timeout above handles hangs.
-        if (busy) continue;
+        if (nextScrollAt === null) {
+          const wait = Math.max(3, Number(intervalSeconds) || 10) + Math.random() * Math.max(0, Number(jitterSeconds) || 0);
+          nextScrollAt = this.now() + wait * 1000;
+          this.onStatus(`已发现 ${seen.size} 篇，${Math.ceil(wait)} 秒后加载下一页。`);
+        }
+        // The pacing deadline belongs to a scroll. Passive observations of an
+        // in-flight page must neither initiate another request nor restart the clock.
+        let remaining = Math.max(0, nextScrollAt - this.now());
+        if (busy || remaining > 0) {
+          // While idle, observe network errors and navigation without repeatedly
+          // copying the entire profile DOM during a long configured interval.
+          do {
+            await this.wait(Math.min(3000, remaining || 3000), undefined, { signal });
+            if (win.isDestroyed()) throw profileError('DISCOVERY_INCOMPLETE', '内置浏览器已关闭，请继续任务。');
+            checkNetwork();
+            remaining = Math.max(0, nextScrollAt - this.now());
+            if (busy || !remaining || pending.size || readingResponses.size || batches.length) break;
+            const status = await this.execute(win, snapshotScript + ', true)', signal);
+            checkNetwork();
+            checkPage(status);
+            if (status.fetching || (status.done && apiHasMore !== true) || batches.length) break;
+          } while (remaining > 0);
+          continue;
+        }
+        // The consumer may have persisted a yielded page while CDP events arrived.
+        checkNetwork();
+        if (pending.size || readingResponses.size || batches.length) continue;
         if (stale > 0) {
           await this.execute(win, `(${scrollProfileList.toString()})(true)`, signal);
           // Keep the recovery delay in the host so pausing cancels it before
           // another bottom crossing can trigger a late list request.
           await this.wait(150, undefined, { signal });
+          checkNetwork();
+          if (pending.size || readingResponses.size || batches.length) continue;
         }
         await this.execute(win, `(${scrollProfileList.toString()})(false)`, signal);
+        nextScrollAt = null;
         await this.wait(1000, undefined, { signal });
       }
     } finally {

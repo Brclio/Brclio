@@ -60,6 +60,9 @@ test('XHS uses its own direct session and reports byte and file progress through
   const states = f.events.filter(event => event.type === 'archive').map(event => event.state);
   assert.ok(states.some(state => state.completed === 1 && state.loadedBytes === 24 && state.receivedBytes === png.length + 24));
   assert.ok(states.findIndex(state => state.phase === 'archiving') < states.findIndex(state => state.phase === 'saved'));
+  const folderBytes = f.events.filter(event => event.type === 'transfer' && Number.isFinite(event.state.receivedBytes))
+    .map(event => event.state.receivedBytes);
+  assert.deepEqual(folderBytes, [...folderBytes].sort((a, b) => a - b), 'writing received images must not restart byte progress');
 });
 
 test('video, ZIP and folder downloads emit preparing while their save dialogs are open, then cancelled without network traffic', async t => {

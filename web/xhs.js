@@ -4,7 +4,10 @@
   const $ = id => document.getElementById('xhs-' + id);
   const host = window.BrclioHost;
   const native = host?.xhsRequest;
-  let profileRevision = 0, nativeRefreshRevision = 0;
+  let profileRevision = 0, nativeRefreshRevision = 0, sharedNoteRevision = 0;
+  let loginRevision = 0;
+  let pendingSharedText = '';
+  let videoTiming;
   const state = { hostPlatform: 'browser', note: null, parseBusy: false, selected: new Set(), directory: '', profile: null, videoRequest: null, archiveRequest: null, transferRequest: null, profileFilter: 'all', profileVisible: 100, profileRowsKey: '', profileDirty: new Set(), clipboardSeen: '', clipboardPending: '', clipboardChecking: false, previewController: null, fileController: null, liveBusy: false, files: [], fileInfo: null, liveResult: null, liveController: null, previewUrls: [], previewTimer: null, fileRevision: 0 };
   const labels = { idle: '尚未开始', discovering: '正在发现笔记', downloading: '正在下载', waiting: '等待下一次请求', paused: '已暂停', completed: '已完成', canceled: '已停止', cancelled: '已停止', error: '任务出错', pending: '等待中', skipped: '已跳过', failed: '失败' };
   const isNative = typeof native === 'function';
@@ -13,7 +16,19 @@
   }
   function message(text, failed = false, reason = '') { $('report-error').hidden = !failed || !text; $('message').textContent = String(text || '').replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''); $('message').hidden = !text; $('message').classList.toggle('error', failed); $('message').dataset.reason = reason; }
   async function request(action, input = {}) { if (!isNative) throw new Error('请在 Brclio 桌面客户端中使用此功能。'); if (['saveImages', 'saveNote', 'exportArchive'].includes(action)) input = { ...input, engine: $('engine').value }; const result = await native(action, input); if (result?.ok === false) throw new Error(typeof result.error === 'string' ? result.error : result.error?.message || result.message || '操作未完成，请重试。'); return result; }
-  async function run(button, task) { const old = button?.disabled; if (button) button.disabled = true; try { return await task(); } catch (error) { message(error.message || '操作未完成，请重试。', true, error.reason); } finally { if (button) button.disabled = old; if ((button?.id?.startsWith('xhs-profile-') || button?.id === 'xhs-choose-directory') && state.profile) renderProfile(state.profile); if (button?.id === 'xhs-live-generate' || button?.id === 'xhs-live-preview') syncLiveControls(); if (button?.closest('#xhs-panel-note') || button?.closest('#xhs-live-result')) syncNativeBusy(); } }
+  async function run(button, task) {
+    const old = button?.disabled;
+    if (button) button.disabled = true;
+    try { return await task(); }
+    catch (error) { message(error.message || '操作未完成，请重试。', true, error.reason); }
+    finally {
+      if (button) button.disabled = old;
+      if ((button?.id?.startsWith('xhs-profile-') || button?.id === 'xhs-choose-directory') && state.profile) renderProfile(state.profile);
+      if (button?.id === 'xhs-live-generate' || button?.id === 'xhs-live-preview') syncLiveControls();
+      if (button?.closest('#xhs-panel-note') || button?.closest('#xhs-live-result')) syncNativeBusy();
+      if (pendingSharedText && !nativeBusy()) receiveSharedNote(pendingSharedText);
+    }
+  }
   function click(id, task) {
     $(id).addEventListener('click', event => { void run(event.currentTarget, async () => {
       if (!id.startsWith('live-export-')) return task();
@@ -47,7 +62,17 @@
       return { ok: true, handedOff: true };
     }, false);
   }
-  function setTab(name) { if (name === 'profile' && state.hostPlatform === 'android') { message('主页批量下载在 macOS 或 Windows 桌面客户端中使用。'); return; } for (const tab of document.querySelectorAll('[data-xhs-tab]')) { const active = tab.dataset.xhsTab === name; tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1; $('panel-' + tab.dataset.xhsTab).hidden = !active; } if (name === 'live') void loadLiveSupport(); }
+  function setTab(name) {
+    if (name === 'profile' && state.hostPlatform === 'android') { message('主页批量下载在 macOS 或 Windows 桌面客户端中使用。'); return; }
+    const wasProfile = !$('panel-profile').hidden;
+    for (const tab of document.querySelectorAll('[data-xhs-tab]')) {
+      const active = tab.dataset.xhsTab === name;
+      tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1; $('panel-' + tab.dataset.xhsTab).hidden = !active;
+    }
+    if (name === 'profile' && !wasProfile) void refreshLoginState(true);
+    if (name !== 'profile' && wasProfile) loginRevision++;
+    if (name === 'live') void loadLiveSupport();
+  }
   const tabs = [...document.querySelectorAll('[data-xhs-tab]')];
   for (const tab of tabs) { tab.addEventListener('click', () => setTab(tab.dataset.xhsTab)); tab.addEventListener('keydown', event => { const available = tabs.filter(item => !item.disabled), index = available.indexOf(tab); let next; if (event.key === 'ArrowRight') next = available[(index + 1) % available.length]; if (event.key === 'ArrowLeft') next = available[(index + available.length - 1) % available.length]; if (event.key === 'Home') next = available[0]; if (event.key === 'End') next = available.at(-1); if (next) { event.preventDefault(); setTab(next.dataset.xhsTab); next.focus(); } }); }
   function renderSelection() { const count = selectedImages().length, total = state.note?.images?.length || 0, blocked = nativeBusy(); $('selection-count').textContent = `${count} / ${total} 张`; $('select-all').checked = total > 0 && count === total; $('select-all').indeterminate = count > 0 && count < total; $('copy-images').disabled = !isNative || blocked || count === 0; $('share-images').hidden = state.hostPlatform !== 'android'; $('share-images').disabled = !isNative || blocked || count === 0; $('save-images').disabled = !isNative || blocked || count === 0; $('export-images').disabled = !isNative || blocked || count === 0; $('export-selected').disabled = !isNative || blocked || count === 0; $('copy-image-links').disabled = blocked || count === 0; $('save-live').hidden = !selectedImages().some(image => image.liveVideo?.url); $('export-live').hidden = $('save-live').hidden; }
@@ -74,7 +99,13 @@
   function finishDownloadProgress(kind, description, cancelled = false) {
     $(kind + '-status').textContent = description; $(kind + '-progress').hidden = cancelled;
     if (!cancelled) $(kind + '-progress').value = 100;
-    $('download-detail').textContent = cancelled ? '' : '100%';
+    const details = cancelled ? [] : ['100%'];
+    if (kind === 'video' && videoTiming) {
+      details.push(videoElapsed());
+      clearInterval(videoTiming.timer);
+      videoTiming = undefined;
+    }
+    $('download-detail').textContent = details.join(' · ');
     $('transfer-panel').setAttribute('aria-busy', 'false'); $('transfer-dismiss').hidden = false;
   }
   click('transfer-dismiss', () => { if (!nativeBusy()) $('transfer-panel').hidden = true; });
@@ -91,14 +122,23 @@
     finally { state.transferRequest = null; $('transfer-cancel').hidden = true; syncNativeBusy(); }
   }
   click('transfer-cancel', async () => { $('transfer-status').textContent = '正在取消素材处理…'; await request('cancelTransfer', { requestId: state.transferRequest }); });
+  async function copyOriginalImages(images, multipleSelection = false) {
+    const result = await performTransfer('copyImages', { images, title: title() }, '正在复制原图…');
+    if (result?.cancelled || result?.canceled) return message('已取消复制。');
+    if (result?.kind === 'files') return message(`已复制 ${result.count} 个独立图片文件，可粘贴到文件夹或支持粘贴文件的应用。`);
+    message(multipleSelection ? '所选原图已复制。' : '原图已复制。');
+  }
   function openOriginal(image, index) {
     if (!isNative) throw new Error('请在客户端中打开原图。');
     $('image-original').src = mediaURL(image.url); $('image-original').alt = `${state.note?.title || '笔记'} · 第 ${index} 张原图`;
     $('image-caption').textContent = `${state.note?.title || '小红书笔记'} · 第 ${index} 张原图`;
+    $('image-external').hidden = state.hostPlatform === 'android';
+    $('image-external').dataset.url = image.url;
     if (!$('image-dialog').open) $('image-dialog').showModal();
   }
   $('image-close').addEventListener('click', () => $('image-dialog').close());
-  $('image-dialog').addEventListener('close', () => $('image-original').removeAttribute('src'));
+  click('image-external', () => request('openImage', { url: $('image-external').dataset.url }));
+  $('image-dialog').addEventListener('close', () => { $('image-original').removeAttribute('src'); delete $('image-external').dataset.url; });
   function renderNote(note) {
     state.note = { ...note, images: note.images || [], videos: note.videos || [] }; state.selected = new Set(state.note.images.map((image, i) => image.index ?? i + 1));
     $('note-result').hidden = false; $('note-title').textContent = note.title || '小红书笔记'; $('note-content').textContent = note.content || '这篇笔记没有文案。';
@@ -109,14 +149,33 @@
       const index = image.index ?? i + 1, card = element('article', 'xhs-image-card'), label = element('label'), checkbox = element('input', 'xhs-image-select'); checkbox.type = 'checkbox'; checkbox.checked = true; checkbox.setAttribute('aria-label', `选择第 ${index} 张图片`); label.append(checkbox, document.createTextNode(`第 ${index} 张${isLiveImage(image) ? ' · 实况' : ''}`));
       checkbox.addEventListener('change', () => { if (checkbox.checked) state.selected.add(index); else state.selected.delete(index); renderSelection(); });
       const img = element('img'); img.src = mediaURL(image.url); img.alt = `${note.title || '笔记'} 第 ${index} 张原图`; img.loading = 'lazy';
-      const actions = element('div', 'xhs-image-actions'); actions.append(actionButton('保存原图', async () => { const result = await performTransfer('saveImages', { images: [image], title: title() }, '正在保存原图…'); message(result?.cancelled || result?.canceled ? '已取消保存。' : '原图已保存。'); }), actionButton('复制原图', async () => { const result = await performTransfer('copyImages', { images: [image], title: title() }, '正在复制原图…'); message(result?.cancelled || result?.canceled ? '已取消复制。' : '原图已复制。'); }), actionButton('复制链接', () => copyText(image.url), false), actionButton('打开原图', () => openOriginal(image,index), false));
+      const actions = element('div', 'xhs-image-actions'); actions.append(actionButton('保存原图', async () => {
+        try {
+          const singleFile = state.hostPlatform !== 'android';
+          const result = await performTransfer('saveImages', { images: [image], title: title(), singleFile }, '正在保存原图…');
+          message(result?.cancelled || result?.canceled ? '已取消保存。' : '原图已保存。');
+        } catch (error) {
+          if (state.hostPlatform !== 'android') throw new Error(`${error.message} 可点击“打开原图”，在浏览器中保存。`);
+          throw error;
+        }
+      }), actionButton('复制原图', () => copyOriginalImages([image])), actionButton('复制链接', () => copyText(image.url), false), actionButton('打开原图', () => openOriginal(image,index), false));
       if (image.liveVideo?.url) actions.append(actionButton('实况 MP4', () => saveVideo(image.liveVideo, `${title()}-${index}-live.mp4`, false)), actionButton('实况素材', () => saveNote('live', [image])), actionButton('实况 ZIP', () => exportArchive('live', [image])));
       card.append(label, img);
       if (isLiveImage(image) && !image.liveVideo?.url) card.append(element('p', 'field-hint', '实况源暂不可用，请重新解析或单独保存原图。'));
       card.append(actions); $('image-grid').append(card);
     });
-    $('videos-section').hidden = videoCandidates().length === 0 && note.hasOriginalVideo !== true; $('video-select').replaceChildren();
-    videoCandidates().forEach((video, index) => { const option = element('option', '', videoLabel(video, index)); option.value = String(index); $('video-select').append(option); });
+    const candidates = videoCandidates();
+    const playback = candidates.filter(video => !video.isOriginal);
+    const defaultFamily = playback.length ? playback : candidates;
+    const preferred = defaultFamily.find(video => video.isDefault && video.hasAudio !== false)
+      || defaultFamily.find(video => video.hasAudio !== false) || defaultFamily[0];
+    $('videos-section').hidden = candidates.length === 0 && note.hasOriginalVideo !== true; $('video-select').replaceChildren();
+    candidates.forEach((video, index) => {
+      const option = element('option', '', videoLabel(video, index));
+      option.value = String(index);
+      option.selected = video === preferred;
+      $('video-select').append(option);
+    });
     $('original-status').textContent = !state.note.originalVideos?.length && note.hasOriginalVideo === true ? '页面声明有原视频，但暂未取得可下载地址' : note.hasOriginalVideo === false ? '未提供原视频' : state.note.originalVideos?.length ? '含原视频候选' : '按可用清晰度保存';
     renderVideo(); renderSelection(); syncNativeBusy(); message('笔记已解析，可以选择媒体并保存。');
   }
@@ -136,7 +195,7 @@
     if (nativeBusy()) throw new Error('已有素材正在处理，请完成或取消后重试。');
     const requestId = `archive-${crypto.randomUUID()}`; state.archiveRequest = requestId; syncNativeBusy(); showDownloadProgress('archive', '正在准备下载素材并打包 ZIP…');
     try {
-      const result = await request('exportArchive', { requestId, note: state.note, images, format });
+      const result = await request('exportArchive', { requestId, note: state.note, images, format, deviceMemory: navigator.deviceMemory });
       const cancelled = Boolean(result?.canceled || result?.cancelled), failedCount = result?.failedCount || result?.failures?.length || 0;
       const details = (result?.failures || []).map(failure => `第 ${failure.index} 张${failure.kind === 'video' ? '实况视频' : '原图'}：${failure.message}`).join('；');
       const description = cancelled ? 'ZIP 导出已取消。' : failedCount ? `ZIP 已保存：${result.count} 个素材成功，${failedCount} 个未加入。${details}` : 'ZIP 已保存，内含所选素材与笔记文案。';
@@ -148,6 +207,8 @@
   async function saveVideo(video, filename, requireAudio = true) {
     if (nativeBusy()) throw new Error('已有素材正在处理，请完成或取消后重试。');
     const requestId = crypto.randomUUID(); state.videoRequest = requestId; syncNativeBusy(); showDownloadProgress('video', '准备下载，请选择保存位置…');
+    videoTiming = { started: performance.now(), last: { phase: 'preparing' }, transferStart: null, attempt: null };
+    videoTiming.timer = setInterval(() => updateDownloadProgress('video', videoTiming.last), 1000);
     try { const result = await request('saveVideo', { requestId, video, filename, requireAudio }); const cancelled = Boolean(result?.canceled || result?.cancelled); finishDownloadProgress('video', cancelled ? '已取消下载。' : '视频已下载并保存。', cancelled); message($('video-status').textContent); }
     catch (error) { finishDownloadProgress('video', error.message, true); throw error; }
     finally { state.videoRequest = null; $('cancel-video').hidden = true; syncNativeBusy(); }
@@ -156,11 +217,17 @@
     event.preventDefault(); if (nativeBusy()) return;
     void run($('parse'), async () => {
       const text = $('share').value.trim(); if (!text) throw new Error('请先粘贴笔记链接或分享文案。');
+      const revision = sharedNoteRevision;
       state.parseBusy = true; $('parse-form').setAttribute('aria-busy', 'true'); syncNativeBusy(); $('video-preview').pause();
       state.clipboardSeen = text; $('clipboard-notice').hidden = true; message('正在解析笔记…');
       try {
+        if ($('engine').value === 'python' && state.hostPlatform !== 'android') await checkPythonAvailability();
+        if (revision !== sharedNoteRevision) return;
         const result = await request('parse', { text, engine: $('engine').value });
-        renderNote({ ...(result.note || result), sourceUrl: (result.note || result).sourceUrl || text.match(/https?:\/\/[^\s<>]+/)?.[0] || '' });
+        if (revision !== sharedNoteRevision) return;
+        renderNote({ ...(result.note || result), sourceUrl: (result.note || result).sourceUrl ?? (text.match(/https?:\/\/[^\s<>]+/)?.[0] || '') });
+      } catch (error) {
+        if (revision === sharedNoteRevision) throw error;
       } finally { state.parseBusy = false; $('parse-form').setAttribute('aria-busy', 'false'); syncNativeBusy(); }
     });
   });
@@ -170,13 +237,37 @@
   click('export-selected', () => exportArchive('selected')); click('export-images', () => exportArchive('images')); click('export-live', () => exportArchive('live', selectedImages().filter(image => image.liveVideo?.url))); click('cancel-archive', () => request('cancelArchive', { requestId: state.archiveRequest })); click('copy-image-links', () => copyText(selectedImages().map(image => image.url).join('\n')));
   click('invert-selection', () => { state.selected = new Set((state.note?.images || []).map((image, i) => image.index ?? i + 1).filter(index => !state.selected.has(index))); for (const [i, checkbox] of [...$('image-grid').querySelectorAll('input')].entries()) checkbox.checked = state.selected.has(state.note.images[i].index ?? i + 1); renderSelection(); });
   click('share-images', async () => { const result = await performTransfer('shareImages', {images:selectedImages(),title:title()}, '正在准备原图分享…'); message(result?.cancelled || result?.canceled ? '已取消分享。' : '已打开系统分享，请选择接收应用。'); });
-  click('copy-images', async () => { const result = await performTransfer('copyImages', { images: selectedImages(), title: title() }, '正在复制所选原图…'); message(result?.cancelled || result?.canceled ? '已取消复制。' : '所选原图已复制。'); }); click('save-live', () => saveNote('live', selectedImages().filter(image => image.liveVideo?.url)));
+  click('copy-images', () => copyOriginalImages(selectedImages(), true)); click('save-live', () => saveNote('live', selectedImages().filter(image => image.liveVideo?.url)));
   $('select-all').addEventListener('change', event => { state.selected = new Set(event.target.checked ? state.note.images.map((image, i) => image.index ?? i + 1) : []); for (const checkbox of $('image-grid').querySelectorAll('input')) checkbox.checked = event.target.checked; renderSelection(); });
-  $('video-select').addEventListener('change', renderVideo); click('save-video', () => { const video = videoCandidates()[Number($('video-select').value || 0)]; if (!video) throw new Error('没有可下载的视频。'); const family = video.isOriginal ? state.note.originalVideos || [] : state.note.videos || [], alternatives = family.filter(item => item.url !== video.url && item.hasAudio !== false); const sources = [...new Set([video.url, ...alternatives.map(item => item.url), ...(video.backupUrls || []), ...alternatives.flatMap(item => item.backupUrls || [])].filter(Boolean))].slice(0,20); return saveVideo({ ...video, backupUrls: sources.filter(url => url !== video.url) }, `${title()}${video.isOriginal ? '-原视频' : ''}.mp4`); }); click('cancel-video', () => request('cancelVideo', { requestId: state.videoRequest }));
+  $('video-select').addEventListener('change', renderVideo);
+  click('save-video', () => {
+    const video = videoCandidates()[Number($('video-select').value || 0)];
+    if (!video) throw new Error('没有可下载的视频。');
+    const family = video.isOriginal ? state.note.originalVideos || [] : state.note.videos || [];
+    const alternatives = family.filter(item => item.url !== video.url && item.hasAudio !== false);
+    const backups = state.hostPlatform === 'android' ? video.backupUrls || []
+      : [...alternatives.map(item => item.url), ...(video.backupUrls || []), ...alternatives.flatMap(item => item.backupUrls || [])];
+    const backupUrls = [...new Set(backups.filter(url => url && url !== video.url))].slice(0, state.hostPlatform === 'android' ? 8 : 19);
+    return saveVideo({ ...video, backupUrls }, `${title()}${video.isOriginal ? '-原视频' : ''}.mp4`);
+  });
+  click('cancel-video', () => request('cancelVideo', { requestId: state.videoRequest }));
   click('copy-video-link', () => { const video = videoCandidates()[Number($('video-select').value || 0)]; if (!video?.url) throw new Error('没有可复制的视频链接。'); return copyText(video.url); });
   click('open-video-link', () => { const video = videoCandidates()[Number($('video-select').value || 0)]; if (!video?.url) throw new Error('没有可打开的视频链接。'); return request('openVideo', { url: video.url }); });
-  function renderLogin(login = {}) { $('login-status').textContent = login.loggedIn || login.status === 'logged-in' ? `已登录小红书${login.nickname ? ' · ' + login.nickname : ''}` : login.status === 'unknown' ? '暂未确认小红书会话，请打开登录窗口检查。' : '尚未登录小红书；需要时打开登录窗口。'; }
-  click('login', async () => { const result = await request('login', { profileUrl: $('profile-url').value.trim() }); if (result) renderLogin(result); });
+  function renderLogin(login) {
+    if (!login || typeof login.status !== 'string') return;
+    loginRevision++;
+    $('login-status').textContent = login.loggedIn || login.status === 'logged-in' ? `已登录小红书${login.nickname ? ' · ' + login.nickname : ''}` : login.status === 'unknown' ? '暂未确认小红书会话，请打开登录窗口检查。' : '尚未登录小红书；需要时打开登录窗口。';
+  }
+  async function refreshLoginState(checkWebsite) {
+    const revision = ++loginRevision;
+    await platformReady;
+    if (revision !== loginRevision || !isNative || state.hostPlatform === 'android' || !xhsVisible() || (checkWebsite && $('panel-profile').hidden)) return;
+    try {
+      const login = await request('loginState', checkWebsite ? { checkWebsite: true } : {});
+      if (revision === loginRevision) renderLogin(login);
+    } catch { /* The user can still open the login window when the site is unavailable. */ }
+  }
+  click('login', () => request('login', { profileUrl: $('profile-url').value.trim() }));
   click('clear-login', async () => { const result = await request('clearLogin'); if (result?.cancelled || result?.canceled) { message('已取消清除小红书会话。'); return; } renderLogin(result?.loginState || result); if (result?.profileState) renderProfile(result.profileState); message(result?.message || '小红书网页会话已清除。'); });
   function setProfileDirectory(directory) {
     state.directory = directory; $('directory').textContent = directory;
@@ -247,7 +338,17 @@
   $('queue-filter').addEventListener('change', event => { state.profileFilter = event.target.value; state.profileVisible = 100; renderProfile(state.profile || {}); });
   click('queue-more', () => { state.profileVisible += 100; renderProfile(state.profile || {}); });
   function failedURL(item) { return item.url || `https://www.xiaohongshu.com/explore/${item.id}`; }
-  function transferToNote(text) { setTab('note'); $('share').value = text; $('share').focus(); $('share').scrollIntoView({ block: 'center', behavior: 'instant' }); message('链接已填入单篇下载，点击“解析笔记”继续。'); }
+  function transferToNote(text) {
+    if (nativeBusy()) { message('单篇下载正在处理，请完成后再打开另一篇笔记。'); return false; }
+    state.note = null; state.selected.clear();
+    $('note-result').hidden = true; $('image-grid').replaceChildren(); $('video-select').replaceChildren();
+    if ($('image-dialog').open) $('image-dialog').close();
+    renderVideo(); renderSelection();
+    setTab('note'); $('share').value = text; $('share').focus();
+    $('share').scrollIntoView({ block: 'center', behavior: 'instant' });
+    message('链接已填入单篇下载，点击“解析笔记”继续。');
+    return true;
+  }
   click('copy-failed', () => copyText((state.profile?.items || []).filter(item => item.status === 'failed').map(failedURL).join('\n')));
   for (const id of ['profile-url', 'interval', 'jitter']) $(id).addEventListener('input', () => state.profileDirty.add(id));
   $('profile-form').addEventListener('submit', event => { event.preventDefault(); void run($('profile-start'), async () => { if (!state.directory) throw Object.assign(new Error('请先选择保存目录。'), { reason: 'directory' }); profileRevision++; message(''); const profile = await request('startProfile', { profileUrl: $('profile-url').value.trim(), directory: state.directory, intervalSeconds: Number($('interval').value), jitterSeconds: Number($('jitter').value) }); state.profileDirty.clear(); state.profileFilter = 'all'; state.profileVisible = 100; state.profileRowsKey = ''; renderProfile(profile); }); });
@@ -578,6 +679,22 @@
     if (value < 1073741824) return `${(value / 1048576).toFixed(1)} MB`;
     return `${(value / 1073741824).toFixed(2)} GB`;
   }
+  function videoElapsed() {
+    const seconds = Math.floor((performance.now() - videoTiming.started) / 1000);
+    return `已耗时 ${seconds >= 60 ? Math.floor(seconds / 60) + ' 分 ' : ''}${seconds % 60} 秒`;
+  }
+  function reportVideoProgress(value) {
+    const phase = value.phase || value.stage || 'downloading';
+    if (phase === 'downloading' && (videoTiming.transferStart === null || (value.attempt != null && value.attempt !== videoTiming.attempt))) {
+      videoTiming.transferStart = performance.now();
+      videoTiming.attempt = value.attempt;
+    }
+    videoTiming.last = value;
+    updateDownloadProgress('video', value);
+    const stages = { checking: '正在检查视频文件与音轨…', saving: '正在保存视频…', saved: '正在确认保存结果…' };
+    const percent = nativeProgressPercent(value);
+    $('video-status').textContent = value.message || stages[phase] || (percent === null ? `下载中 · 已接收 ${value.receivedBytes ?? value.loadedBytes ?? 0} 字节` : `下载中 · ${percent.toFixed(1)}%`);
+  }
   function updateDownloadProgress(kind, value, batch = false) {
     const percent = nativeProgressPercent(value, batch), parts = [];
     applyNativeProgress($(kind + '-progress'), percent);
@@ -588,13 +705,18 @@
     const phase = value.phase || value.stage;
     if (phase === 'archiving') parts.push('正在打包 ZIP');
     else if (['verifying','validating','saving','saved'].includes(phase)) parts.push('正在校验并保存');
-    else if (percent === null && Number.isFinite(received)) parts.push('等待总大小');
+    else if (percent === null && Number.isFinite(received) && phase !== 'preparing') parts.push('等待总大小');
+    if (kind === 'video' && videoTiming) {
+      const seconds = videoTiming.transferStart === null ? 0 : (performance.now() - videoTiming.transferStart) / 1000;
+      if ((!phase || phase === 'downloading') && received > 0 && seconds >= 1) parts.push(`平均 ${readableBytes(Math.round(received / seconds))}/秒`);
+      parts.push(videoElapsed());
+    }
     $('download-detail').textContent = parts.join(' · ');
   }
   host?.onXhsEvent?.(event => {
     const value = event.state || event;
     if (event.type === 'profile') renderProfile(value); if (event.type === 'login') renderLogin(value);
-    if (event.type === 'video' && state.videoRequest && (!value.requestId || value.requestId === state.videoRequest)) { updateDownloadProgress('video', value); const percent = nativeProgressPercent(value); $('video-status').textContent = value.message || (percent === null ? `下载中 · 已接收 ${value.receivedBytes ?? value.loadedBytes ?? 0} 字节` : `下载中 · ${percent.toFixed(1)}%`); }
+    if (event.type === 'video' && videoTiming && state.videoRequest && (!value.requestId || value.requestId === state.videoRequest)) reportVideoProgress(value);
     if (event.type === 'archive' && state.archiveRequest && (!value.requestId || value.requestId === state.archiveRequest)) { updateDownloadProgress('archive', value, true); $('archive-status').textContent = value.message || (value.phase === 'archiving' || value.stage === 'archiving' ? '素材已下载，正在打包 ZIP…' : '正在下载 ZIP 素材…'); }
     if (['transfer','clipboard'].includes(event.type) && state.transferRequest && (!value.requestId || value.requestId === state.transferRequest)) {
       updateDownloadProgress('transfer', value, true);
@@ -602,6 +724,18 @@
     }
   });
   const engineStore = 'brclio.xhs.parse-engine.v1';
+  let pythonAvailability;
+  function checkPythonAvailability() {
+    return pythonAvailability ||= request('info').then(info => {
+      if (info?.pythonAvailable !== false) return;
+      const python = $('engine').querySelector('[value="python"]');
+      python.disabled = true; python.textContent = 'Python（当前安装不可用）';
+      if ($('engine').value === 'python') {
+        $('engine').value = 'node';
+        try { localStorage.setItem(engineStore, 'node'); } catch { /* Optional local preference. */ }
+      }
+    }).catch(() => { pythonAvailability = undefined; });
+  }
   try { const saved = localStorage.getItem(engineStore); if (saved === 'node' || saved === 'python') $('engine').value = saved; } catch { /* Local parser preference is optional. */ }
   $('engine').addEventListener('change', () => { try { localStorage.setItem(engineStore, $('engine').value); } catch { /* Local parser preference is optional. */ } });
   const clipboardStore = 'brclio.xhs.clipboard-detection.v1';
@@ -622,20 +756,21 @@
   }
   $('watch-clipboard').disabled = !isNative;
   $('watch-clipboard').addEventListener('change', () => { try { localStorage.setItem(clipboardStore, String($('watch-clipboard').checked)); } catch { /* Optional local preference. */ } if ($('watch-clipboard').checked) void checkClipboard(); else { $('clipboard-notice').hidden = true; state.clipboardPending = ''; } });
-  click('use-clipboard', () => { if (state.clipboardPending) transferToNote(state.clipboardPending); $('clipboard-notice').hidden = true; state.clipboardPending = ''; });
+  click('use-clipboard', () => { if (state.clipboardPending && !transferToNote(state.clipboardPending)) return; $('clipboard-notice').hidden = true; state.clipboardPending = ''; });
   click('dismiss-clipboard', () => { $('clipboard-notice').hidden = true; state.clipboardPending = ''; });
   window.addEventListener('focus', () => { void checkClipboard(); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void checkClipboard(); updateProfileCountdown(); });
   async function refreshNativeState() {
     await platformReady; if (!isNative || state.hostPlatform === 'android') return;
+    void checkPythonAvailability();
     const revision = profileRevision, refresh = ++nativeRefreshRevision;
-    const results = await Promise.allSettled([request('loginState'), request('profileState')]);
-    if (refresh !== nativeRefreshRevision) return;
-    if (results[0].status === 'fulfilled') renderLogin(results[0].value);
-    // A task event or local action is newer than the snapshot read it overtook.
-    if (results[1].status === 'fulfilled' && revision === profileRevision) renderProfile(results[1].value);
+    void refreshLoginState(!$('panel-profile').hidden);
+    try {
+      const profile = await request('profileState');
+      if (refresh === nativeRefreshRevision && revision === profileRevision) renderProfile(profile);
+    } catch { /* An unavailable profile queue does not block single-note operations. */ }
   }
-  window.addEventListener('brclio:view', event => { if (event.detail?.name === 'xhs') { void refreshNativeState(); void checkClipboard(); updateProfileCountdown(); } else { $('video-preview').pause(); $('live-preview-video').pause(); cancelAnimationFrame(state.previewTimer); updateProfileCountdown(); } });
+  window.addEventListener('brclio:view', event => { if (event.detail?.name === 'xhs') { void refreshNativeState(); void checkClipboard(); updateProfileCountdown(); } else { loginRevision++; $('video-preview').pause(); $('live-preview-video').pause(); cancelAnimationFrame(state.previewTimer); updateProfileCountdown(); } });
   window.addEventListener('beforeunload', () => { state.liveController?.abort(); state.fileController?.abort(); livePlanController?.abort(); liveSupportController?.abort(); imageEditorController?.abort(); clearInterval(profileCountdownTimer); clearPreview(); });
   const platformReady = Promise.resolve(host?.getPlatform?.()).then(info => {
     state.hostPlatform = info?.platform || 'browser';
@@ -646,7 +781,21 @@
       renderProfile(state.profile || {status:'idle',items:[]});
     }
   }).catch(() => {});
-  window.addEventListener('brclio:xhs-share', event => { const text = event.detail?.text; if (typeof text !== 'string' || !text.trim()) return; window.dispatchEvent(new CustomEvent('brclio:navigate', {detail:{name:'xhs'}})); transferToNote(text.trim().slice(0,20000)); });
+  function receiveSharedNote(text) {
+    sharedNoteRevision++;
+    if (nativeBusy()) {
+      pendingSharedText = text;
+      message('已收到新分享，当前操作结束后会填入。');
+      return;
+    }
+    pendingSharedText = '';
+    window.dispatchEvent(new CustomEvent('brclio:navigate', {detail:{name:'xhs'}}));
+    transferToNote(text);
+  }
+  window.addEventListener('brclio:xhs-share', event => {
+    const text = event.detail?.text;
+    if (typeof text === 'string' && text.trim()) receiveSharedNote(text.trim().slice(0,3000));
+  });
   $('availability').hidden = isNative; if (!isNative) { for (const button of document.querySelectorAll('[data-xhs-native]')) button.disabled = true; $('login-status').textContent = '小红书网页会话在桌面客户端中管理。'; }
   renderProfile({ status: 'idle', message: '选择目录并粘贴主页链接，开始保存。', items: [] }); syncLiveControls(); syncNativeBusy();
 })();

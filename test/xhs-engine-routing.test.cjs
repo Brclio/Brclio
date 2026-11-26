@@ -24,7 +24,8 @@ async function fixture(t, { fetchImpl = async () => { throw new Error('Unexpecte
     app: { getPath: name => name === 'downloads' ? output : directory, getAppPath: () => path.resolve(__dirname, '..'), isPackaged: true },
     session: { fromPartition: () => ({}) }, BrowserWindow: class { constructor() { throw new Error('Download must not reparse or open a browser'); } },
     dialog: { showOpenDialog: async () => { dialogCalls++; return { canceled: false, filePaths: [output] }; },
-      showSaveDialog: async () => { dialogCalls++; return { canceled: false, filePath: archive }; } }, fetchImpl,
+      showSaveDialog: async (_window, options) => { dialogCalls++; return { canceled: false,
+        filePath: options.title === '保存原图' ? path.join(output, options.defaultPath) : archive }; } }, fetchImpl,
   });
   t.after(async () => {
     await service.close(); PythonBackend.prototype.initialize = originalInitialize; PythonBackend.prototype.request = originalRequest;
@@ -86,6 +87,16 @@ test('single Python image falls back directly only for HTTP 413', async t => {
   assert.equal(directCalls, 1);
 });
 
+test('single-file image save uses the selected Python engine for a format-correct user-named file', async t => {
+  let requests = 0;
+  const f = await fixture(t, { pythonRequest: async request => {
+    assert.equal(request.path, '/api/python_image?token=engine-routing'); requests++; return imageResponse();
+  } });
+  const saved = await f.service.request('saveImages', { singleFile: true, images: [image], engine: 'python' });
+  assert.equal(requests, 1); assert.equal(saved.path, path.join(f.output, '01.png'));
+  assert.deepEqual(await fs.readFile(saved.path), png);
+});
+
 test('cancelling during optional Python initialization returns immediately and releases the transfer guard', async t => {
   let start, complete, requests = 0;
   const started = new Promise(resolve => { start = resolve; });
@@ -116,4 +127,16 @@ test('invalid current download engine is rejected before dialogs or media reques
   await assert.rejects(f.service.request('saveImages', { images: [image], engine: 'unsupported' }), /下载引擎无效/);
   await assert.rejects(f.service.request('exportArchive', { note: {}, images: [image], format: 'images', engine: 'unsupported' }), /下载引擎无效/);
   assert.equal(f.dialogCalls(), 0); assert.equal(f.service.isBusy(), false);
+});
+
+test('desktop Node and Python keep the accepted source link in parsed metadata for direct images and shared notes', async t => {
+  const shared = 'https://xhslink.com/a/Fixture';
+  const f = await fixture(t, { pythonRequest: async request => {
+    assert.equal(request.path, '/api/python_parse');
+    return Response.json({ success: true, engine: 'python', images: [image] });
+  } });
+  for (const [engine, source] of [['node', imageUrl], ['python', imageUrl], ['python', shared]]) {
+    const note = await f.service.request('parse', { engine, text: `参考 https://example.com/misc 实际分享 ${source}。` });
+    assert.equal(note.sourceUrl, source);
+  }
 });
