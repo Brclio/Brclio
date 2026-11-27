@@ -39,7 +39,10 @@ async function main() {
     const rows = pane => pane.locator('.xterm-rows');
     const initialized = new Set();
     const command = async line => {
-      await expect(active).toHaveAttribute('data-state', 'running', { timeout: 15000 });
+      await expect.poll(async () => {
+        const state = await active.getAttribute('data-state');
+        return state === 'error' ? await active.locator('.pane-message').innerText() : state;
+      }, { timeout: 15000, message: 'The local shell must start successfully' }).toBe('running');
       const id = await active.getAttribute('data-id');
       if (windows && !initialized.has(id)) {
         await expect(rows(active)).toContainText(/PS [^>]*>/, { timeout: 20000 });

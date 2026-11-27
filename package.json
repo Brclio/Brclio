@@ -64,7 +64,7 @@
       "web/**",
       "package.json",
       "!desktop/xhs/test/**",
-      "!node_modules/node-pty/{src,typings,scripts,third_party,prebuilds}/**",
+      "!node_modules/node-pty/{build,src,typings,scripts,third_party,prebuilds}/**",
       "!node_modules/@xterm/*/{src,typings}/**",
       "!node_modules/{node-pty,@xterm/*}/**/*.map"
     ],
