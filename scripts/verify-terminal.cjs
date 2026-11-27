@@ -12,20 +12,26 @@ async function main() {
   assert.ok(windows || process.platform === 'darwin', 'Use Windows or macOS for the native terminal test.');
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-terminal-'));
   const executable = process.env.BRCLIO_SMOKE_EXECUTABLE;
+  const env = { ...process.env, BRCLIO_USER_DATA: temporary };
+  if (windows) {
+    // Model an Explorer launch. A CI PowerShell 7 parent exports its own module
+    // search path; Windows PowerShell 5 must discover its inbox modules.
+    delete env.PSModulePath;
+  } else {
+    Object.assign(env, { SHELL: '/bin/zsh', ZDOTDIR: temporary, HISTFILE: path.join(temporary, 'history') });
+  }
   let app;
   try {
     app = await electron.launch({
       cwd: root, args: executable ? [] : [root], ...(executable ? { executablePath: path.resolve(executable) } : {}),
-      env: { ...process.env, BRCLIO_USER_DATA: temporary,
-        ...(!windows && { SHELL: '/bin/zsh', ZDOTDIR: temporary, HISTFILE: path.join(temporary, 'history') }) },
-      timeout: 45000,
+      env, timeout: 45000,
     });
     const home = await app.firstWindow();
     await home.waitForURL('file://**/web/index.html', { waitUntil: 'domcontentloaded', timeout: 60000 });
     // Cold Windows runners may still be querying Explorer integration and shortcut state.
     await home.locator('body[data-ready="true"]').waitFor({ state: 'attached', timeout: 90000 });
     assert.equal(await home.locator('body').getAttribute('data-initialized'), 'true',
-      'Brclio initialization: ' + await home.locator('#platform-label').innerText());
+      'Brclio initialization: ' + await home.locator('#toast span').textContent());
     if (executable) assert.equal((await home.evaluate(() => window.brclio.getPlatform())).packaged, true);
     assert.equal(await home.evaluate(() => typeof window.brclioTerminal), 'undefined');
     await home.locator('#manual-paths').fill('Brclio terminal smoke');

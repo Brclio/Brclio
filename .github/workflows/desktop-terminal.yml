@@ -55,8 +55,6 @@ jobs:
           python-version: '3.12'
       - run: npm ci
       - run: npm run sync
-      - run: node scripts/verify-terminal.cjs
-        timeout-minutes: 3
       - run: node --test desktop/terminal-host.test.cjs desktop/terminal-pty.test.cjs
         timeout-minutes: 3
       - run: npm run prepare:xhs
@@ -68,6 +66,9 @@ jobs:
         timeout-minutes: 3
         env:
           BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
+        run: node scripts/verify-terminal.cjs
+      - name: Verify the development build
+        timeout-minutes: 3
         run: node scripts/verify-terminal.cjs
       - name: Save the verified test installer
         uses: actions/upload-artifact@v4
