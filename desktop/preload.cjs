@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('brclio', Object.freeze({
     return () => ipcRenderer.removeListener('brclio:xhs:event', listener);
   },
   accountRequest: input => ipcRenderer.invoke('brclio:account:request', input),
+  accountOAuth: provider => ipcRenderer.invoke('brclio:account:oauth', provider),
+  accountCancelOAuth: () => ipcRenderer.invoke('brclio:account:oauth:cancel'),
   accountGoogle: () => ipcRenderer.invoke('brclio:account:google'),
   accountCancelGoogle: () => ipcRenderer.invoke('brclio:account:google:cancel'),
   getSoftwareLogs: () => ipcRenderer.invoke('brclio:logs:get'),

@@ -24,7 +24,7 @@ class AccountPolicyTest {
             val body = JSONObject().put("fixture", "value")
             val request = AccountPolicy.validate(JSONObject().put("path", path).put("method", method).put("body", body))
             assertEquals(body.toString(), request.body)
-            assertTrue(request.cancelsGoogle)
+            assertTrue(request.cancelsBrowserLogin)
             assertFalse(request.changesAuth)
             for (invalidMethod in listOf("GET", "DELETE", "PATCH", method.lowercase(), if (method == "PUT") "POST" else "PUT")) {
                 assertThrows(IllegalArgumentException::class.java) {
@@ -43,20 +43,28 @@ class AccountPolicyTest {
             }
         }
         val session = AccountPolicy.validate(JSONObject().put("path", "/api/account/session"))
-        assertFalse(session.cancelsGoogle)
+        assertFalse(session.cancelsBrowserLogin)
         assertFalse(session.changesAuth)
         for (path in listOf("/api/account/login", "/api/account/register", "/api/account/logout")) {
             val request = AccountPolicy.validate(JSONObject().put("path", path).put("method", "POST"))
-            assertTrue(request.cancelsGoogle)
+            assertTrue(request.cancelsBrowserLogin)
             assertTrue(request.changesAuth)
         }
     }
     @Test fun oauthUrlAndProofAreBoundToTrustedDeviceHandoff() {
         val id = "fixture_device_0123456789"
-        assertTrue(AccountPolicy.validGoogleUrl("${AccountPolicy.ORIGIN}/api/account/google/start?device=$id", id))
-        for (url in listOf("https://evil.example/api/account/google/start?device=$id", "https://user@tools.brclio.com/api/account/google/start?device=$id", "${AccountPolicy.ORIGIN}:443/api/account/google/start?device=$id", "${AccountPolicy.ORIGIN}/api/account/google/start?device=other", "${AccountPolicy.ORIGIN}/api/account/google/start?device=$id&device=$id")) {
-            assertFalse(url, AccountPolicy.validGoogleUrl(url, id))
+        for (provider in listOf("google", "github")) {
+            val url = "${AccountPolicy.ORIGIN}/api/account/$provider/start?device=$id"
+            val other = if (provider == "google") "github" else "google"
+            assertTrue(AccountPolicy.validOAuthUrl(url, id, provider))
+            for (invalid in listOf(
+                url.replace("tools.brclio.com", "example.org"), url.replace("tools.", "user@tools."),
+                url.replace("tools.brclio.com", "tools.brclio.com:443"), url.replace(id, "other"),
+                "$url&device=$id", "$url&next=/", "$url#fragment", url.replace("/$provider/", "/$other/"),
+            )) assertFalse(invalid, AccountPolicy.validOAuthUrl(invalid, id, provider))
         }
+        assertFalse(AccountPolicy.validOAuthUrl("${AccountPolicy.ORIGIN}/api/account/custom/start?device=$id", id, "custom"))
+        assertFalse(AccountPolicy.validOAuthUrl("${AccountPolicy.ORIGIN}/api/account/github/start?device=a&next=b", "a&next=b", "github"))
         assertEquals("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", AccountPolicy.challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"))
         assertTrue(AccountPolicy.verifier().matches(Regex("[A-Za-z0-9_-]{43}")))
         assertFalse(AccountPolicy.validToken("invalid\ntoken"))

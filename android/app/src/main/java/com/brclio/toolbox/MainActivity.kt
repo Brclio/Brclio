@@ -165,8 +165,9 @@ class MainActivity : Activity() {
             when (request.optString("method")) {
                 "xhsRequest" -> xhs().request(payload.optString("action"), payload.optJSONObject("input") ?: JSONObject()) { result, error -> resolve(id, result, error) }
                 "accountRequest" -> account().request(payload) { result, error -> resolve(id, result, error) }
-                "accountGoogle" -> account().google { result, error -> resolve(id, result, error) }
-                "accountCancelGoogle" -> resolve(id, account().cancelGoogle())
+                "accountGoogle" -> account().oauth("google") { result, error -> resolve(id, result, error) }
+                "accountOAuth" -> account().oauth(payload.optString("provider")) { result, error -> resolve(id, result, error) }
+                "accountCancelGoogle", "accountCancelOAuth" -> resolve(id, account().cancelOAuth())
                 "getPlatform" -> resolve(id, JSONObject()
                     .put("platform", "android")
                     .put("version", BuildConfig.VERSION_NAME)

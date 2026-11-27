@@ -54,7 +54,7 @@ function createAccountStore(directory) {
   };
 }
 
-function abortError() { return new Error('谷歌登录已取消，请重新登录。'); }
+function abortError() { return new Error('浏览器登录已取消，请重新登录。'); }
 function createAccountClient({ directory, fetch = globalThis.fetch, openExternal, store = createAccountStore(directory),
   randomBytes = crypto.randomBytes, now = Date.now, delay = (ms, signal) => new Promise((resolve, reject) => {
     const finish = () => { signal?.removeEventListener('abort', abort); resolve(); };
@@ -62,8 +62,8 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
     const abort = () => { clearTimeout(timer); reject(abortError()); };
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
-  }), pollInterval = 2000, googleTimeout = 300000 } = {}) {
-  let google, csrf = '', authVersion = 0;
+  }), pollInterval = 2000, googleTimeout = 300000, browserLoginTimeout = googleTimeout } = {}) {
+  let pendingLogin, csrf = '', authVersion = 0;
   const controllers = new Set();
   async function requestRaw(target, method, body, outerSignal) {
     if (controllers.size >= 8) throw new Error('账号操作繁忙，请稍后重试。');
@@ -110,12 +110,12 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
     if (typeof value.csrf === 'string') csrf = value.csrf;
     return value;
   }
-  function cancelGoogle() { google?.controller.abort(); return { canceled: true }; }
+  function cancelOAuth() { pendingLogin?.abort(); return { canceled: true }; }
   async function request(input) {
     const next = validateAccountRequest(input);
     const authChange = ['/api/account/login', '/api/account/register', '/api/account/logout'].includes(next.path);
     // Settings retain the current bearer, but a pending browser login must not replace it.
-    if (authChange || ['/api/account/profile', '/api/account/password'].includes(next.path)) cancelGoogle();
+    if (authChange || ['/api/account/profile', '/api/account/password'].includes(next.path)) cancelOAuth();
     const version = authChange ? ++authVersion : authVersion;
     try {
       const value = await requestRaw(next.path, next.method, next.body);
@@ -124,37 +124,40 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
       if (next.path === '/api/account/logout' && version === authVersion) { await store.write(null); csrf = ''; }
     }
   }
-  async function googleLogin() {
-    if (google) throw new Error('请先完成或取消当前谷歌登录。');
-    const operation = { controller: new AbortController() }; google = operation;
+  async function oauth(provider) {
+    if (provider !== 'google' && provider !== 'github') throw new Error('不支持此登录方式。');
+    if (pendingLogin) throw new Error('请先完成或取消当前浏览器登录。');
+    const controller = new AbortController();
+    pendingLogin = controller;
     const version = ++authVersion;
     let timedOut = false;
-    const timeout = setTimeout(() => { timedOut = true; operation.controller.abort(); }, googleTimeout);
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, browserLoginTimeout);
     try {
       const verifier = randomBytes(32).toString('base64url');
       const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
       const started = now();
-      const session = await requestRaw('/api/account/device/start', 'POST', JSON.stringify({ challenge }), operation.controller.signal);
-      if (typeof session.id !== 'string' || !/^[a-zA-Z0-9_-]{16,128}$/.test(session.id) || typeof session.url !== 'string') throw new Error('谷歌登录链接无效。');
-      const url = new URL(session.url);
-      if (url.origin !== ORIGIN || url.username || url.password || url.hash || url.pathname !== '/api/account/google/start' || url.searchParams.get('device') !== session.id) throw new Error('谷歌登录链接无效。');
-      if (operation.controller.signal.aborted) throw abortError();
-      await openExternal(url.href);
-      while (now() - started < googleTimeout) {
-        await delay(pollInterval, operation.controller.signal);
-        const result = await requestRaw(`/api/account/device/poll?id=${encodeURIComponent(session.id)}&verifier=${encodeURIComponent(verifier)}`, 'GET', undefined, operation.controller.signal);
-        if (operation.controller.signal.aborted) throw abortError();
+      const body = provider === 'google' ? { challenge } : { challenge, provider };
+      const session = await requestRaw('/api/account/device/start', 'POST', JSON.stringify(body), controller.signal);
+      if (typeof session.id !== 'string' || !/^[a-zA-Z0-9_-]{16,128}$/.test(session.id) ||
+          session.url !== `${ORIGIN}/api/account/${provider}/start?device=${session.id}`) throw new Error('浏览器登录链接无效。');
+      if (controller.signal.aborted) throw abortError();
+      await openExternal(session.url);
+      while (now() - started < browserLoginTimeout) {
+        await delay(pollInterval, controller.signal);
+        const result = await requestRaw(`/api/account/device/poll?id=${encodeURIComponent(session.id)}&verifier=${encodeURIComponent(verifier)}`, 'GET', undefined, controller.signal);
+        if (controller.signal.aborted) throw abortError();
         if (result.pending === true) continue;
-        if (typeof result.token !== 'string' || !result.user) throw new Error('谷歌登录尚未完成，请重试。');
+        if (typeof result.token !== 'string' || !result.user) throw new Error('浏览器登录尚未完成，请重试。');
         return await accept(result, version);
       }
-      throw new Error('谷歌登录已超时，请重新登录。');
+      throw new Error('浏览器登录已超时，请重新登录。');
     } catch (error) {
-      if (timedOut) throw new Error('谷歌登录已超时，请重新登录。');
+      if (timedOut) throw new Error('浏览器登录已超时，请重新登录。');
       throw error;
-    } finally { clearTimeout(timeout); if (google === operation) google = null; }
+    } finally { clearTimeout(timeout); if (pendingLogin === controller) pendingLogin = null; }
   }
-  return { request, google: googleLogin, cancelGoogle, close() { cancelGoogle(); for (const controller of controllers) controller.abort(); } };
+  return { request, oauth, cancelOAuth, google: () => oauth('google'), cancelGoogle: cancelOAuth,
+    close() { cancelOAuth(); for (const controller of controllers) controller.abort(); } };
 }
 
 module.exports = { createAccountClient, createAccountStore, validateAccountRequest, ORIGIN, MAX_BYTES };

@@ -194,7 +194,7 @@ function createWindow() {
     softwareLogs.record('app.renderer', 'ERROR');
     resumeRecordingShortcut();
   });
-  mainWindow.on('closed', () => { account.cancelGoogle(); mainWindow = null; rendererReady = false; resumeRecordingShortcut(); });
+  mainWindow.on('closed', () => { account.cancelOAuth(); mainWindow = null; rendererReady = false; resumeRecordingShortcut(); });
   mainWindow.loadFile(indexPath);
   return mainWindow;
 }
@@ -217,6 +217,8 @@ function registerIPC() {
   handle('brclio:logs:event', (action, outcome) => softwareLogs.recordUI(action, outcome));
   handle('brclio:xhs:request', async (action, input) => (await getXhsService()).request(action, input));
   handle('brclio:account:request', input => account.request(input));
+  handle('brclio:account:oauth', provider => account.oauth(provider));
+  handle('brclio:account:oauth:cancel', () => account.cancelOAuth());
   handle('brclio:account:google', () => account.google());
   handle('brclio:account:google:cancel', () => account.cancelGoogle());
   handle('brclio:ready', () => { rendererReady = true; void acknowledgeUpdate(); return { ready: true }; });

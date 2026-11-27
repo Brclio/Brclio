@@ -1,7 +1,6 @@
 package com.brclio.toolbox
 
 import org.json.JSONObject
-import java.net.URI
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
@@ -29,13 +28,10 @@ object AccountPolicy {
         return AccountRequest(path, method, body)
     }
     fun validToken(token: String): Boolean = token.length in 16..4096 && token.all { it.code in 33..126 }
-    fun validDevice(id: String): Boolean = id.matches(Regex("[A-Za-z0-9_-]{16,128}"))
-    fun validGoogleUrl(value: String, id: String): Boolean = runCatching {
-        val uri = URI(value)
-        uri.scheme == "https" && uri.rawAuthority == "tools.brclio.com" &&
-            uri.path == "/api/account/google/start" && uri.rawFragment == null &&
-            uri.rawQuery?.split('&')?.filter { it.substringBefore('=') == "device" } == listOf("device=$id")
-    }.getOrDefault(false)
+    fun supportsProvider(provider: String): Boolean = provider == "google" || provider == "github"
+    fun validOAuthUrl(value: String, id: String, provider: String): Boolean =
+        supportsProvider(provider) && id.matches(Regex("[A-Za-z0-9_-]{16,128}")) &&
+            value == "$ORIGIN/api/account/$provider/start?device=$id"
     fun verifier(): String = base64(ByteArray(32).also { SecureRandom().nextBytes(it) })
     fun challenge(verifier: String): String = base64(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)))
     private fun base64(bytes: ByteArray) = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
@@ -44,5 +40,5 @@ object AccountPolicy {
 data class AccountRequest(val path: String, val method: String, val body: String?) {
     val changesAuth: Boolean get() = path in setOf("/api/account/login", "/api/account/register", "/api/account/logout")
     // Profile/password updates keep this session while canceling another account's pending handoff.
-    val cancelsGoogle: Boolean get() = changesAuth || path in setOf("/api/account/profile", "/api/account/password")
+    val cancelsBrowserLogin: Boolean get() = changesAuth || path in setOf("/api/account/profile", "/api/account/password")
 }

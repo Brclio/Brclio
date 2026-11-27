@@ -30,7 +30,9 @@ const allow = {limit: async () => ({success: true})};
 function fixture() {
   const store = memoryStore(), sent = [];
   const env = {SESSION_SECRET: 'test-account-secret-of-at-least-32-characters', SMTP_EMAIL: 'sender@example.com', SMTP_APP_PASSWORD: 'test-app-password', GOOGLE_CLIENT_ID: 'client', GOOGLE_CLIENT_SECRET: 'secret', ACCOUNT_LIMITER: allow, ACCOUNT_AUTH_LIMITER: allow, ACCOUNT_EMAIL_LIMITER: allow, ACCOUNT_EMAIL_GLOBAL_LIMITER: allow};
-  const dependencies = {accountDiagnostic: () => {}, accountStore: store, sendRegistrationCode: async (_env, email, code) => sent.push({email, code}), googleIdentity: async () => ({sub: 'google-test-sub', email: 'google@example.com', name: 'Google User'})};
+  env.GITHUB_OAUTH_CLIENT_ID = 'github-client';
+  env.GITHUB_OAUTH_CLIENT_SECRET = 'github-secret';
+  const dependencies = {accountDiagnostic: () => {}, accountStore: store, sendRegistrationCode: async (_env, email, code) => sent.push({email, code}), googleIdentity: async () => ({sub: 'google-test-sub', email: 'google@example.com', name: 'Google User'}), githubIdentity: async () => ({sub: '42', email: 'github@example.com'})};
   async function call(path, method = 'GET', body, options = {}) {
     const headers = {...(method !== 'GET' ? {'Content-Type': 'application/json', Origin: 'https://tools.brclio.com'} : {}), ...(options.native ? {'X-Brclio-Client': 'native'} : {}), ...options.headers};
     if (options.native) delete headers.Origin;
@@ -52,6 +54,15 @@ function fixture() {
     return {...session, cookie};
   }
   return {store, env, dependencies, sent, call, register, googleSignIn};
+}
+
+async function githubCallback(f, device) {
+  const start = await f.call('github/start' + (device ? '?device=' + device : ''));
+  assert.equal(start.status, 302);
+  const state = new URL(start.headers.get('Location')).searchParams.get('state');
+  return f.call('github/callback?state=' + state + '&code=valid', 'GET', undefined, {
+    headers: {Cookie: start.headers.get('Set-Cookie').split(';')[0]}
+  });
 }
 
 test('registration persists independent readable user folders, plaintext password and hash, consumes code, and signs cookie', async () => {
@@ -320,6 +331,110 @@ test('verified Google email links the existing password account and preserves it
   assert.deepEqual(f.store.files.get(credentialsPath).password, originalPassword);
   assert.equal(f.store.files.get(credentialsPath).googleSub, 'google-test-sub');
   assert.equal((await f.call('login', 'POST', {identifier:'google@example.com', password:'my correct password'})).status, 200);
+});
+
+test('GitHub configuration is independent of Google and repository access credentials', async () => {
+  const f = fixture(), challenge = await digest(random());
+  f.env.GITHUB_APP_ID = 'repository-app';
+  delete f.env.GITHUB_OAUTH_CLIENT_SECRET;
+  assert.equal((await (await f.call('session')).json()).githubEnabled, false);
+  assert.equal((await f.call('github/start')).status, 503);
+  assert.equal((await f.call('device/start', 'POST', {provider: 'github', challenge}, {native: true})).status, 503);
+  const legacy = await (await f.call('device/start', 'POST', {challenge}, {native: true})).json();
+  assert.equal(new URL(legacy.url).pathname, '/api/account/google/start');
+  assert.equal((await f.call('device/start', 'POST', {provider: 'unsupported', challenge}, {native: true})).status, 400);
+  delete f.env.GOOGLE_CLIENT_SECRET;
+  f.env.GITHUB_OAUTH_CLIENT_SECRET = 'github-secret';
+  const available = await (await f.call('session')).json();
+  assert.equal(available.githubEnabled, true);
+  assert.equal(available.googleEnabled, false);
+});
+
+test('GitHub OAuth uses provider-bound state, PKCE and verified-email access', async () => {
+  const f = fixture(), github = await f.call('github/start'), google = await f.call('google/start');
+  const location = new URL(github.headers.get('Location'));
+  assert.equal(location.origin + location.pathname, 'https://github.com/login/oauth/authorize');
+  assert.equal(location.searchParams.get('scope'), 'user:email');
+  assert.equal(location.searchParams.get('client_id'), 'github-client');
+  assert.equal(location.searchParams.get('code_challenge_method'), 'S256');
+  assert.equal(location.searchParams.get('redirect_uri'), 'https://tools.brclio.com/api/account/github/callback');
+  const state = location.searchParams.get('state');
+  const githubCookie = github.headers.get('Set-Cookie').split(';')[0];
+  const googleCookie = google.headers.get('Set-Cookie').split(';')[0];
+  let exchanges = 0;
+  f.dependencies.githubIdentity = async (code, verifier, redirectUri) => {
+    exchanges++;
+    assert.equal(code, 'valid'); assert.equal(await digest(verifier), location.searchParams.get('code_challenge'));
+    assert.equal(redirectUri, location.searchParams.get('redirect_uri'));
+    return {sub: '42', email: 'github@example.com'};
+  };
+  const callback = (params, cookie) => f.call('github/callback?' + params, 'GET', undefined, {headers: {Cookie: cookie}});
+  const wrongProvider = googleCookie.replace('__Host-brclio_oauth=', '__Host-brclio_github_oauth=');
+  for (const [params, cookie] of [
+    ['state=' + state + '&code=valid', googleCookie],
+    ['state=' + new URL(google.headers.get('Location')).searchParams.get('state') + '&code=valid', wrongProvider],
+    ['state=other&code=valid', githubCookie],
+    ['state=' + state + '&error=access_denied', githubCookie]
+  ]) {
+    assert.equal((await callback(params, cookie)).headers.get('Location'), '/account?error=github');
+  }
+  assert.equal(exchanges, 0);
+  const complete = await callback('state=' + state + '&code=valid', githubCookie);
+  assert.equal(complete.headers.get('Location'), '/account');
+  assert.equal(exchanges, 1);
+  assert.match(complete.headers.get('Set-Cookie'), /__Host-brclio_github_oauth=; Path=\/; Max-Age=0/);
+  const id = f.store.files.get('users/_index.json').github['42'];
+  assert.deepEqual(f.store.files.get('users/' + id + '/profile.json').providers, ['github']);
+  assert.equal(f.store.files.get('users/' + id + '/credentials.json').githubSub, '42');
+  assert.ok(f.store.files.has('users/' + id + '/apps/brclio/data.json'));
+});
+
+test('GitHub links a verified legacy account once and preserves its identity when the primary email changes', async () => {
+  const f = fixture(), existing = await f.register(), other = await f.register('bobby', 'bob@example.com');
+  delete f.store.files.get('users/_index.json').github;
+  const github = {sub: '42', email: existing.user.email};
+  f.dependencies.githubIdentity = async () => github;
+  const linked = await githubCallback(f);
+  assert.equal(linked.headers.get('Location'), '/account');
+  const profiles = id => f.store.files.get('users/' + id + '/profile.json');
+  assert.deepEqual(profiles(existing.user.id).providers, ['password', 'github']);
+  assert.equal(f.store.files.get('users/_index.json').github['42'], existing.user.id);
+  assert.equal((await f.call('login', 'POST', {identifier: 'alice', password: 'my correct password'})).status, 200);
+  github.email = other.user.email;
+  const returned = await githubCallback(f);
+  const cookie = returned.headers.getSetCookie().find(value => value.startsWith('__Host-brclio_user=')).split(';')[0];
+  const {user} = await (await f.call('session', 'GET', undefined, {headers: {Cookie: cookie}})).json();
+  assert.equal(user.id, existing.user.id); assert.equal(user.email, existing.user.email);
+  assert.deepEqual(profiles(other.user.id).providers, ['password']);
+  github.email = existing.user.email; github.sub = '43';
+  const before = structuredClone([...f.store.files]);
+  assert.equal((await githubCallback(f)).headers.get('Location'), '/account?error=github');
+  assert.deepEqual([...f.store.files], before);
+});
+
+test('GitHub browser authorization preserves the device and requires explicit approval before native login', async () => {
+  const f = fixture(), verifier = random(), challenge = await digest(verifier);
+  const device = await (await f.call('device/start', 'POST', {provider: 'github', challenge}, {native: true})).json();
+  assert.equal(new URL(device.url).pathname, '/api/account/github/start');
+  assert.equal(new URL(device.url).searchParams.get('device'), device.id);
+  const start = await f.call('github/start?device=' + device.id);
+  const state = new URL(start.headers.get('Location')).searchParams.get('state');
+  const cancel = await f.call('github/callback?state=' + state + '&error=access_denied', 'GET', undefined, {
+    headers: {Cookie: start.headers.get('Set-Cookie').split(';')[0]}
+  });
+  assert.equal(cancel.headers.get('Location'), '/account?error=github&device=' + device.id);
+  const forged = await f.call('github/callback?state=' + state + '&error=access_denied&device=' + device.id);
+  assert.equal(forged.headers.get('Location'), '/account?error=github');
+  const ready = await githubCallback(f, device.id);
+  assert.equal(ready.headers.get('Location'), '/account?device=' + device.id);
+  const poll = () => f.call('device/poll?id=' + device.id + '&verifier=' + verifier, 'GET', undefined, {native: true});
+  assert.deepEqual(await (await poll()).json(), {pending: true});
+  const cookie = ready.headers.getSetCookie().find(value => value.startsWith('__Host-brclio_user=')).split(';')[0];
+  const session = await (await f.call('session', 'GET', undefined, {headers: {Cookie: cookie}})).json();
+  assert.equal((await f.call('device/approve', 'POST', {id: device.id}, {headers: {Cookie: cookie, 'X-CSRF-Token': session.csrf}})).status, 200);
+  const authenticated = await (await poll()).json();
+  assert.ok(authenticated.token); assert.deepEqual(authenticated.user.providers, ['github']);
+  assert.equal((await poll()).status, 400);
 });
 
 test('Google failure diagnostics identify finite phases and never include callback or provider secrets', async () => {

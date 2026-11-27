@@ -138,7 +138,7 @@ test('logout sends the old bearer and clears local state even if server unavaila
   await assert.rejects(f.client.request({ path: '/api/account/logout', method: 'POST' }), /Offline/);
   assert.equal(f.saved(), null);
 });
-test('native handoff opens only trusted browser URL and polls with verifier proof', async () => {
+for (const provider of ['google', 'github']) test(provider + ' handoff opens its trusted browser URL and polls with verifier proof', async () => {
   const id = 'fixture_device_0123456789';
   const bytes = Buffer.alloc(32, 7);
   const verifier = bytes.toString('base64url');
@@ -147,17 +147,19 @@ test('native handoff opens only trusted browser URL and polls with verifier proo
   const f = fixture({ randomBytes: () => bytes, pollInterval: 0, delay: async () => {}, openExternal: async url => opened.push(url),
     fetch: async (url, init) => {
       if (url.endsWith('/device/start')) {
-        assert.deepEqual(JSON.parse(init.body), { challenge: crypto.createHash('sha256').update(verifier).digest('base64url') });
-        return response({ id, url: `${ORIGIN}/api/account/google/start?device=${id}` });
+        const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+        assert.deepEqual(JSON.parse(init.body), provider === 'google' ? { challenge } : { challenge, provider });
+        return response({ id, url: `${ORIGIN}/api/account/${provider}/start?device=${id}` });
       }
       const parsed = new URL(url);
       assert.equal(parsed.searchParams.get('id'), id);
       assert.equal(parsed.searchParams.get('verifier'), verifier);
       return response(++polls === 1 ? { pending: true } : { token, user: { id: 'u2' } });
     } });
-  assert.deepEqual(await f.client.google(), { user: { id: 'u2' } });
+  const handoff = provider === 'google' ? f.client.google() : f.client.oauth(provider);
+  assert.deepEqual(await handoff, { user: { id: 'u2' } });
   assert.equal(f.saved(), token);
-  assert.deepEqual(opened, [`${ORIGIN}/api/account/google/start?device=${id}`]);
+  assert.deepEqual(opened, [`${ORIGIN}/api/account/${provider}/start?device=${id}`]);
   assert.equal(polls, 2);
 });
 test('untrusted OAuth links, redirects, HTML and oversized responses are rejected', async () => {
@@ -173,6 +175,40 @@ test('untrusted OAuth links, redirects, HTML and oversized responses are rejecte
     const f = fixture({ fetch: async () => value });
     await assert.rejects(f.client.request({ path: '/api/account/session' }));
   }
+});
+test('browser handoff binds the selected provider and exact device URL', async () => {
+  const id = 'fixture_device_0123456789';
+  for (const provider of ['github', 'google']) {
+    const url = `${ORIGIN}/api/account/${provider}/start?device=${id}`;
+    const other = provider === 'github' ? 'google' : 'github';
+    for (const invalid of [url.replace(provider, other), url + '&extra=1', url + '&device=' + id, url + '#fragment']) {
+      const f = fixture({ fetch: async () => response({ id, url: invalid }) });
+      await assert.rejects(f.client.oauth(provider), /登录链接无效/);
+      assert.deepEqual(f.opened, []);
+    }
+  }
+  const f = fixture();
+  await assert.rejects(f.client.oauth('unsupported'), /不支持/);
+  assert.equal(f.calls.length, 0);
+});
+test('a pending GitHub handoff blocks Google and rejects a poll arriving after cancellation', async () => {
+  const id = 'fixture_device_0123456789';
+  const started = deferred(), pendingPoll = deferred();
+  let signal;
+  const f = fixture({ delay: async () => {}, fetch: async (url, init) => {
+    if (url.endsWith('/device/start')) return response({ id, url: `${ORIGIN}/api/account/github/start?device=${id}` });
+    signal = init.signal;
+    started.resolve();
+    return pendingPoll.promise;
+  } });
+  const handoff = assert.rejects(f.client.oauth('github'), /取消/);
+  await started.promise;
+  await assert.rejects(f.client.google(), /当前浏览器登录/);
+  f.client.cancelOAuth();
+  assert.equal(signal.aborted, true);
+  pendingPoll.resolve(response({ token, user: { id: 'u2' } }));
+  await handoff;
+  assert.equal(f.saved(), null);
 });
 test('cancelling a pending browser handoff rejects and does not persist a token', async () => {
   const id = 'fixture_device_0123456789';

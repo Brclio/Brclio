@@ -4,23 +4,24 @@ import {createAccountStore, emptyAccountIndex, userPath, appDataPath} from './ac
 import {handleAccountData} from './account-data.js';
 import {random, digest, seal, unseal, hashPassword, checkPassword} from './accounts-crypto.js';
 import {googleIdentity} from './accounts-google.js';
+import {githubIdentity} from './accounts-github.js';
 import {sendRegistrationCode} from './mail.js';
 import {handleAccountSettings} from './account-settings.js';
 import {submitFeedback} from './modules/feedback.js';
 
-const COOKIE = '__Host-brclio_user', OAUTH_COOKIE = '__Host-brclio_oauth';
+const COOKIE = '__Host-brclio_user';
 const WEB_LIFETIME = 7 * 86400, NATIVE_LIFETIME = 30 * 86400;
 const CODE_LIFETIME = 600000, DEVICE_LIFETIME = 300000;
-const GOOGLE_DIAGNOSTIC_STAGES = new Set([
+const OAUTH_DIAGNOSTIC_STAGES = new Set([
   'not_configured', 'state_cookie_missing', 'state_cookie_invalid', 'state_type', 'state_mismatch', 'provider_denied', 'missing_code',
   'identity_exchange', 'token_exchange', 'token_invalid_grant', 'token_invalid_client', 'token_unauthorized_client', 'token_invalid_request', 'token_redirect_mismatch', 'token_rejected', 'token_response',
   'identity_header', 'identity_keys', 'identity_signature', 'identity_issuer', 'identity_audience', 'identity_nonce', 'identity_expiration', 'identity_subject', 'identity_email', 'identity_profile',
   'storage_transaction', 'storage_identity_conflict', 'storage_commit', 'session_cookie', 'unknown'
 ]);
-function googleDiagnostic(dependencies, stage) {
+function oauthDiagnostic(dependencies, provider, stage) {
   // Only locally defined finite stages can reach logs. Never include request URLs,
   // provider bodies, exception messages, identity claims, cookies, or credentials.
-  const event = {event: 'account_google_callback_failed', stage: GOOGLE_DIAGNOSTIC_STAGES.has(stage) ? stage : 'unknown'};
+  const event = {event: 'account_' + provider + '_callback_failed', stage: OAUTH_DIAGNOSTIC_STAGES.has(stage) ? stage : 'unknown'};
   try { (dependencies.accountDiagnostic || (value => console.warn(JSON.stringify(value))))(event); } catch {}
 }
 const own = (object, key) => Object.hasOwn(object, key) ? object[key] : undefined;
@@ -101,78 +102,106 @@ export async function handleAccount(request, env, dependencies = {}) {
   const store = dependencies.accountStore || createAccountStore(env, fetchImpl);
   const ip = request.headers.get('CF-Connecting-IP') || 'development';
   const googleEnabled = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+  const githubEnabled = Boolean(env.GITHUB_OAUTH_CLIENT_ID && env.GITHUB_OAUTH_CLIENT_SECRET);
   const limit = async (name, key, count) => rateLimit(env, name, key, count);
   if (!await limit('ACCOUNT_LIMITER', ip, 120)) return json({error: '请求过于频繁，请稍后重试'}, 429, {'Retry-After': '60'});
 
   if (path === '/api/account/session' && request.method === 'GET') {
     const session = await authenticate(request, env, store);
-    return json({user: session ? publicUser(session.profile) : null, csrf: session?.csrf || null, passwordEnabled: session?.passwordEnabled || false, googleEnabled, emailEnabled: Boolean(env.SMTP_EMAIL && env.SMTP_APP_PASSWORD)});
+    return json({user: session ? publicUser(session.profile) : null, csrf: session?.csrf || null, passwordEnabled: session?.passwordEnabled || false, googleEnabled, githubEnabled, emailEnabled: Boolean(env.SMTP_EMAIL && env.SMTP_APP_PASSWORD)});
   }
 
-  if (path === '/api/account/google/start' && request.method === 'GET') {
-    if (!googleEnabled) return json({error: '谷歌登录尚未配置'}, 503);
-    if (!await limit('ACCOUNT_AUTH_LIMITER', ip, 10)) return json({error: '请求过于频繁'}, 429);
-    const device = url.searchParams.get('device');
-    if (device) {
-      const state = await store.snapshot(), index = await state.read('users/_index.json', emptyAccountIndex());
-      if (!/^[A-Za-z0-9_-]{32,64}$/.test(device) || !own(index.devices, device) || index.devices[device].expiresAt <= Date.now()) return json({error: '客户端登录请求已过期'}, 400);
+  const oauth = request.method === 'GET' && /^\/api\/account\/(google|github)\/(start|callback)$/.exec(path);
+  if (oauth) {
+    const [, provider, action] = oauth;
+    const isGitHub = provider === 'github';
+    const enabled = isGitHub ? githubEnabled : googleEnabled;
+    const cookieName = isGitHub ? '__Host-brclio_github_oauth' : '__Host-brclio_oauth';
+    if (action === 'start') {
+      if (!enabled) return json({error: isGitHub ? 'GitHub 登录尚未配置' : '谷歌登录尚未配置'}, 503);
+      if (!await limit('ACCOUNT_AUTH_LIMITER', ip, 10)) return json({error: '请求过于频繁'}, 429);
+      const device = url.searchParams.get('device');
+      if (device) {
+        const state = await store.snapshot(), index = await state.read('users/_index.json', emptyAccountIndex());
+        if (!/^[A-Za-z0-9_-]{32,64}$/.test(device) || !own(index.devices, device) || index.devices[device].expiresAt <= Date.now()) return json({error: '客户端登录请求已过期'}, 400);
+      }
+      const verifier = random(), state = random(), nonce = isGitHub ? undefined : random();
+      // Only the opaque state identifier enters the redirect URL. The PKCE
+      // verifier remains in an HttpOnly cookie until the server exchanges code.
+      const oauthCookie = await seal({typ: provider, state, nonce, verifier, device: device || null, exp: seconds() + 600}, env.SESSION_SECRET);
+      const target = new URL(isGitHub ? 'https://github.com/login/oauth/authorize' : 'https://accounts.google.com/o/oauth2/v2/auth');
+      target.search = new URLSearchParams({
+        client_id: isGitHub ? env.GITHUB_OAUTH_CLIENT_ID : env.GOOGLE_CLIENT_ID,
+        redirect_uri: url.origin + '/api/account/' + provider + '/callback',
+        scope: isGitHub ? 'user:email' : 'openid email profile',
+        state, code_challenge: await digest(verifier), code_challenge_method: 'S256',
+        ...(isGitHub ? {} : {response_type: 'code', nonce, prompt: 'select_account'})
+      }).toString();
+      return new Response(null, {status: 302, headers: {'Location': target.href, 'Set-Cookie': cookie(cookieName, oauthCookie, 600), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}});
     }
-    const verifier = random(), nonce = random(), state = random();
-    // Only the opaque state identifier enters the redirect URL. The PKCE
-    // verifier remains in an HttpOnly cookie until the server exchanges code.
-    const oauthCookie = await seal({typ: 'google', state, nonce, verifier, device: device || null, exp: seconds() + 600}, env.SESSION_SECRET);
-    const target = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    target.search = new URLSearchParams({client_id: env.GOOGLE_CLIENT_ID, redirect_uri: url.origin + '/api/account/google/callback', response_type: 'code', scope: 'openid email profile', state, nonce, code_challenge: await digest(verifier), code_challenge_method: 'S256', prompt: 'select_account'}).toString();
-    return new Response(null, {status: 302, headers: {'Location': target.href, 'Set-Cookie': cookie(OAUTH_COOKIE, oauthCookie, 600), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}});
-  }
 
-  if (path === '/api/account/google/callback' && request.method === 'GET') {
-    const stateText = url.searchParams.get('state'), stateCookie = cookieValue(request, OAUTH_COOKIE), state = await unseal(stateCookie, env.SESSION_SECRET);
-    const clear = cookie(OAUTH_COOKIE, '', 0);
+    const stateText = url.searchParams.get('state'), stateCookie = cookieValue(request, cookieName), state = await unseal(stateCookie, env.SESSION_SECRET);
+    const clear = cookie(cookieName, '', 0);
     const failure = stage => {
-      googleDiagnostic(dependencies, stage);
+      oauthDiagnostic(dependencies, provider, stage);
       // Preserve only the device bound to our signed OAuth cookie. This lets a
-      // canceled Google flow fall back to password login and client approval.
-      const query = new URLSearchParams({error: 'google'});
-      if (state?.typ === 'google' && /^[A-Za-z0-9_-]{32,64}$/.test(state.device || '')) query.set('device', state.device);
+      // canceled browser flow fall back to password login and client approval.
+      const query = new URLSearchParams({error: provider});
+      if (state?.typ === provider && /^[A-Za-z0-9_-]{32,64}$/.test(state.device || '')) query.set('device', state.device);
       return new Response(null, {status: 302, headers: {'Location': '/account?' + query, 'Set-Cookie': clear, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}});
     };
-    if (!googleEnabled) return failure('not_configured');
+    if (!enabled) return failure('not_configured');
     if (!state) return failure(stateCookie ? 'state_cookie_invalid' : 'state_cookie_missing');
-    if (state.typ !== 'google') return failure('state_type');
+    if (state.typ !== provider) return failure('state_type');
     if (!await safeEqual(stateText || '', state.state)) return failure('state_mismatch');
     if (url.searchParams.has('error')) return failure('provider_denied');
     if (!url.searchParams.get('code')) return failure('missing_code');
     let stage = 'identity_exchange';
     try {
-      const identity = await (dependencies.googleIdentity || googleIdentity)(url.searchParams.get('code'), state.verifier, state.nonce, url.origin + path, env, fetchImpl, value => {
-        if (GOOGLE_DIAGNOSTIC_STAGES.has(value)) stage = value;
-      });
+      const code = url.searchParams.get('code'), redirectUri = url.origin + path;
+      const identity = isGitHub
+        ? await (dependencies.githubIdentity || githubIdentity)(code, state.verifier, redirectUri, env, fetchImpl)
+        : await (dependencies.googleIdentity || googleIdentity)(code, state.verifier, state.nonce, redirectUri, env, fetchImpl, value => {
+          if (OAUTH_DIAGNOSTIC_STAGES.has(value)) stage = value;
+        });
       stage = 'identity_profile';
       const email = emailValue(identity.email);
-      if (!email || typeof identity.sub !== 'string' || !/^[A-Za-z0-9_-]{1,255}$/.test(identity.sub)) return failure(stage);
+      const validSubject = isGitHub ? /^[1-9]\d{0,19}$/ : /^[A-Za-z0-9_-]{1,255}$/;
+      if (!email || typeof identity.sub !== 'string' || !validSubject.test(identity.sub)) return failure(stage);
       const grant = await makeGrant('web'), newId = crypto.randomUUID();
       stage = 'storage_transaction';
       const profile = await store.transaction(async tx => {
         const index = cleanIndex(await tx.read('users/_index.json', emptyAccountIndex()));
-        const existing = own(index.google, identity.sub) || own(index.emails, email);
+        // Indexes created before GitHub support have no GitHub identity map.
+        if (isGitHub && !Object.hasOwn(index, 'github')) index.github = {};
+        const bySubject = own(index[provider], identity.sub);
+        const existing = bySubject || own(index.emails, email);
+        const credentialKey = isGitHub ? 'githubSub' : 'googleSub';
         let profile, credentials;
         if (existing) {
           profile = await tx.read(userPath(existing, 'profile'));
           credentials = await tx.read(userPath(existing, 'credentials'));
-          if (!profile || !credentials || profile.email !== email || (credentials.googleSub && credentials.googleSub !== identity.sub)) { stage = 'storage_identity_conflict'; throw new Error('Google identity conflict'); }
-          profile.providers = Array.from(new Set([...(profile.providers || []), 'google']));
-          credentials.googleSub = identity.sub;
+          // GitHub's immutable ID keeps a returning user in their original
+          // account even if the new primary email belongs to another account.
+          const matches = isGitHub && bySubject
+            ? credentials?.githubSub === identity.sub
+            : profile?.email === email && (!isGitHub || profile.emailVerified === true);
+          if (!profile || profile.id !== existing || !credentials || !matches || (credentials[credentialKey] && credentials[credentialKey] !== identity.sub)) {
+            stage = 'storage_identity_conflict';
+            throw new Error('Account identity conflict');
+          }
+          profile.providers = Array.from(new Set([...(profile.providers || []), provider]));
+          credentials[credentialKey] = identity.sub;
         } else {
           const base = [...(usernameValue(identity.name) || usernameValue(email.split('@')[0]) || 'user')].slice(0, 20).join('');
           let username = base, suffix = 0;
           while (own(index.usernames, username.toLowerCase())) username = base + '-' + newId.slice(0, 6) + (++suffix);
-          profile = {version: 1, id: newId, username, email, emailVerified: true, avatarUrl: identity.picture || null, providers: ['google'], createdAt: new Date().toISOString()};
-          credentials = {version: 1, password: null, googleSub: identity.sub, sessions: {}};
+          profile = {version: 1, id: newId, username, email, emailVerified: true, avatarUrl: identity.picture || null, providers: [provider], createdAt: new Date().toISOString()};
+          credentials = {version: 1, password: null, [credentialKey]: identity.sub, sessions: {}};
           index.usernames[username.toLowerCase()] = newId; index.emails[email] = newId;
           tx.write(appDataPath(newId, 'brclio'), {version: 1, revision: 0, preferences: {}, updatedAt: new Date().toISOString()});
         }
-        index.google[identity.sub] = profile.id;
+        index[provider][identity.sub] = profile.id;
         addGrant(credentials, grant);
         tx.write('users/_index.json', index); tx.write(userPath(profile.id, 'profile'), profile); tx.write(userPath(profile.id, 'credentials'), credentials);
         stage = 'storage_commit';
@@ -213,7 +242,10 @@ export async function handleAccount(request, env, dependencies = {}) {
 
   if (path === '/api/account/device/start' && request.method === 'POST') {
     if (!isNative || !/^[A-Za-z0-9_-]{43}$/.test(input.challenge || '')) return json({error: '客户端登录请求无效'}, 400);
-    if (!googleEnabled) return json({error: '谷歌登录尚未配置'}, 503);
+    const provider = input.provider === undefined ? 'google' : input.provider;
+    if (provider !== 'google' && provider !== 'github') return json({error: '不支持的登录方式'}, 400);
+    if (provider === 'github' && !githubEnabled) return json({error: 'GitHub 登录尚未配置'}, 503);
+    if (provider === 'google' && !googleEnabled) return json({error: '谷歌登录尚未配置'}, 503);
     if (!await limit('ACCOUNT_AUTH_LIMITER', ip, 10)) return json({error: '请求过于频繁'}, 429);
     const id = random(24);
     await store.transaction(async tx => {
@@ -221,7 +253,7 @@ export async function handleAccount(request, env, dependencies = {}) {
       index.devices[id] = {challenge: input.challenge, expiresAt: Date.now() + DEVICE_LIFETIME};
       tx.write('users/_index.json', index);
     });
-    return json({id, url: url.origin + '/api/account/google/start?device=' + id});
+    return json({id, url: url.origin + '/api/account/' + provider + '/start?device=' + id});
   }
 
   if (path === '/api/account/code' && request.method === 'POST') {

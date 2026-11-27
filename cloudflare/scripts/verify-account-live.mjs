@@ -41,6 +41,7 @@ try {
   await check('session', '/api/account/session', {inspect(value, response) {
     if (value.user !== null || value.csrf !== null || typeof value.googleEnabled !== 'boolean' || response.headers.get('Access-Control-Allow-Origin')) throw new Error('invalid_anonymous_session');
     results.session.googleEnabled = value.googleEnabled;
+    if (typeof value.githubEnabled === 'boolean') results.session.githubEnabled = value.githubEnabled;
     if (typeof value.emailEnabled === 'boolean') results.session.emailEnabled = value.emailEnabled;
     if (args.includes('--ready') && (!value.googleEnabled || !value.emailEnabled)) throw new Error('providers_not_configured');
   }});

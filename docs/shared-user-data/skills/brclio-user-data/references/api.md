@@ -19,7 +19,7 @@
 | `POST /code` | `{email}`，注册验证码，邮箱 trim 后小写 | `{ok,retryAfter,...}`；已注册邮箱可返回 `409 EMAIL_EXISTS` |
 | `POST /register` | `{username,email,password,code}` | `{user,csrf,token?}`；native 返回 token |
 | `POST /login` | `{identifier,password}`，identifier 为账号或邮箱 | `{user,csrf,token?}` |
-| `GET /session` | Cookie 或 Bearer | `{user,csrf,passwordEnabled,googleEnabled,emailEnabled}`；未登录 user 为 null |
+| `GET /session` | Cookie 或 Bearer | `{user,csrf,passwordEnabled,googleEnabled,githubEnabled,emailEnabled}`；未登录 user 为 null |
 | `POST /logout` | `{}`，当前用户会话 | `{ok:true}`，撤销当前会话 |
 | `PUT /profile` | `{username,nickname}` | `{user}`；用户名冲突返回 409 |
 | `POST /password` | `{currentPassword?,newPassword}`；已有密码必须校验 currentPassword | `{ok:true,passwordEnabled:true}`；撤销其他会话 |
@@ -28,7 +28,13 @@
 
 `user` 是 `{id,username,nickname,email,avatarUrl,providers}` 的公开资料投影；不含密码、密码派生记录或 sessions。普通客户端不能通过邮箱读取其他用户的资料。需要扩展资料或邮箱变更时，在中央身份服务增加原子索引更新，不在业务数据中另建身份。
 
-Google 网页登录保留既有 `/google/start` 与 `/google/callback` 流程。桌面 Google 登录保留 `/device/start`、`/device/poll`、`/device/approve` 的设备授权协议与现有客户端实现，不能把网页 Cookie 直接当 native Bearer。新应用没有实现该流程时先使用已支持的密码登录，不声称 Google 原生授权已接通。
+### 第三方登录与客户端授权
+
+网页根据 `GET /session` 返回的 `googleEnabled` 和 `githubEnabled` 显示入口。浏览器访问 `GET /github/start` 后，Worker 用独立签名 Cookie 绑定 state 和 PKCE 验证值，以 `user:email` 权限发起授权。`GET /github/callback` 用授权码读取 GitHub 用户 ID 与已验证的主邮箱。首次可以关联同邮箱且已验证的现有账号，或创建新账号。之后按 GitHub 用户 ID 登录，GitHub 邮箱变更时保持原 Brclio 身份与资料。Google 网页继续使用 `GET /google/start` 和 `GET /google/callback`。
+
+1. 原生端生成随机 verifier，将其 SHA-256 摘要编码为无填充 base64url，作为 `challenge` 发送至 `POST /device/start`。请求体为 `{challenge,provider}`，其中 `provider` 可以是 `github` 或 `google`，旧客户端省略时沿用 Google。服务器返回 `{id,url}`，请求有效期为五分钟。
+2. 客户端在系统浏览器打开返回的 URL。GitHub 登录成功回到 `/account?device=<id>`，用户在网页明确批准本次设备登录，网页以当前会话和 CSRF 提交 `POST /device/approve`，请求体为 `{id}`。取消或失败回到 `/account?error=github`，若签名 Cookie 绑定了设备，则附上 `device`。
+3. 原生端以 `GET /device/poll?id=<id>&verifier=<verifier>` 轮询。等待授权时返回 `{pending:true}`，批准后返回当前用户与客户端专用的 Brclio Bearer。成功领取一次即消费该设备请求。
 
 ## Brclio 数据兼容接口
 

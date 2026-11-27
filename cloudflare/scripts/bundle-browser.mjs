@@ -55,8 +55,8 @@ const manifest = {
   keepVars: true,
   dashboardVariableType: 'plain_text',
   environmentVariables: ['ADMIN_EMAIL', 'ADMIN_PASSWORD', 'SESSION_SECRET', 'GITHUB_APP_ID', 'GITHUB_APP_INSTALLATION_ID', 'GITHUB_DATA_REPOSITORY', 'GITHUB_PROGRAM_DATA_REPOSITORY', 'PROXY_SUBSCRIPTION_URL'],
-  secretEnvironmentVariables: ['GITHUB_APP_PRIVATE_KEY'],
-  accountEnvironmentVariables: ['SMTP_EMAIL', 'SMTP_APP_PASSWORD', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'],
+  secretEnvironmentVariables: ['GITHUB_APP_PRIVATE_KEY', 'GITHUB_OAUTH_CLIENT_SECRET'],
+  accountEnvironmentVariables: ['SMTP_EMAIL', 'SMTP_APP_PASSWORD', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GITHUB_OAUTH_CLIENT_ID', 'GITHUB_OAUTH_CLIENT_SECRET'],
   rateLimits: [
     {name: 'LOGIN_LIMITER', namespaceId: '1001', limit: 8, period: 60},
     {name: 'LOGIN_GLOBAL_LIMITER', namespaceId: '1002', limit: 30, period: 60},

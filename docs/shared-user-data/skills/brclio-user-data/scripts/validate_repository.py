@@ -203,12 +203,14 @@ class Validator:
         index = self.read("users/_index.json", "user-index")
         if index is None:
             return self.result()
-        maps = ("usernames", "emails", "google", "verifications", "devices")
+        index.setdefault("github", {})  # Indexes created before GitHub login can omit this map.
+        identity_maps = ("usernames", "emails", "google", "github")
+        maps = (*identity_maps, "verifications", "devices")
         if type(index.get("version")) is not int or index["version"] != 1 or any(not isinstance(index.get(key), dict) for key in maps):
             self.fail("user-index:unsupported-version-or-invalid-maps")
             return self.result()
         user_ids = set()
-        for identity_map in maps[:3]:
+        for identity_map in identity_maps:
             for value in index[identity_map].values():
                 if not isinstance(value, str) or not SAFE_ID.fullmatch(value):
                     self.fail("user-index:invalid-user-reference")
@@ -273,9 +275,10 @@ class Validator:
                     for grant in credentials["sessions"].values():
                         if not isinstance(grant, dict) or not integer(grant.get("exp"), 1) or grant.get("mode") not in ("web", "native"):
                             self.fail("credentials:invalid-session-record")
-                sub = credentials.get("googleSub")
-                if sub is not None and (not isinstance(sub, str) or index["google"].get(sub) != user_id):
-                    self.fail("credentials:google-reverse-index-mismatch")
+                for provider in ("google", "github"):
+                    sub = credentials.get(provider + "Sub")
+                    if sub is not None and (not isinstance(sub, str) or index[provider].get(sub) != user_id):
+                        self.fail(f"credentials:{provider}-reverse-index-mismatch")
             app_folder = users_path / user_id / "apps"
             if (users_path / user_id).is_symlink() or app_folder.is_symlink():
                 self.fail("application-directory:symlink-refused")
@@ -291,11 +294,11 @@ class Validator:
             legacy = users_path / user_id / "data.json"
             if legacy.exists() or legacy.is_symlink():
                 self.app_record(legacy, "brclio")
-        for map_name, field, records in (("usernames", "username", profiles), ("emails", "email", profiles), ("google", "googleSub", credentials_by_id)):
+        for map_name, field, records in (("usernames", "username", profiles), ("emails", "email", profiles), ("google", "googleSub", credentials_by_id), ("github", "githubSub", credentials_by_id)):
             for key, user_id in index[map_name].items():
                 record = records.get(user_id) if isinstance(user_id, str) else None
                 value = record.get(field) if record else None
-                expected = value if field == "googleSub" else value.lower() if isinstance(value, str) else None
+                expected = value.lower() if field in ("username", "email") and isinstance(value, str) else value
                 if key != expected:
                     self.fail("user-index:dangling-or-mismatched-identity-reference")
         return self.result()

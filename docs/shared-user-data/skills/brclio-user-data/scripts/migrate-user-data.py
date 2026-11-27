@@ -233,7 +233,7 @@ def load_records(api, state):
             profile = object_record(contents[profile_path])
             require(profile.get("id") == user_id, "User profile ID does not match its folder")
             object_record(contents[credentials_path])
-        for field in ("usernames", "emails", "google"):
+        for field in ("usernames", "emails", "google", "github"):
             references = index.get(field, {})
             require(isinstance(references, dict), "Invalid identity index map")
             require(all(isinstance(user_id, str) and user_id in user_ids for user_id in references.values()), "Identity index references a missing user")
@@ -243,9 +243,11 @@ def load_records(api, state):
                 identifier = profile.get(field)
                 if identifier:
                     require(isinstance(identifier, str) and index.get(key, {}).get(identifier.lower()) == user_id, "User identity does not match the shared index")
-            provider = records[f"users/{user_id}/credentials.json"].get("googleSub")
-            if provider:
-                require(isinstance(provider, str) and index.get("google", {}).get(provider) == user_id, "Google identity does not match the shared index")
+            credentials = records[f"users/{user_id}/credentials.json"]
+            for provider in ("google", "github"):
+                sub = credentials.get(provider + "Sub")
+                if sub is not None:
+                    require(isinstance(sub, str) and index.get(provider, {}).get(sub) == user_id, "Provider identity does not match the shared index")
         devices = index.get("devices", {})
         require(isinstance(devices, dict), "Invalid device index")
         for device in devices.values():

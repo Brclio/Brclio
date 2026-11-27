@@ -24,7 +24,7 @@ export async function handle(request, env, dependencies = {}, ctx) {
   // A short, explicit maintenance window freezes every writer before copying
   // the repository. Reads remain available and clients keep their local data.
   if (env.DATA_MIGRATION_READ_ONLY === 'true' &&
-      ((path.startsWith('/api/account/') && (request.method !== 'GET' || ['/api/account/google/callback', '/api/account/device/poll'].includes(path))) ||
+      ((path.startsWith('/api/account/') && (request.method !== 'GET' || ['/api/account/google/callback', '/api/account/github/callback', '/api/account/device/poll'].includes(path))) ||
        (path === '/api/admin/config' && request.method === 'PUT'))) {
     return json({error: '用户数据正在迁移，请稍后重试；本地数据已保留', code: 'DATA_MIGRATION_READ_ONLY'}, 503, {'Retry-After': '120'});
   }

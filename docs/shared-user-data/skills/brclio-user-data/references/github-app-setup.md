@@ -28,7 +28,7 @@
 | Where can this GitHub App be installed?（组织 `BrclioData` 所有） | **Only on this account** |
 | Where can this GitHub App be installed?（个人账号所有，需装到组织） | **Any account** |
 
-上述 OAuth、Device Flow 和回调配置属于 GitHub App 的用户授权功能，与 Brclio 自身的邮箱/密码、Google 登录、桌面设备授权不是同一流程，不能拿 Brclio 登录回调地址来填此表。权限按 [GitHub 官方最小权限说明](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app) 设置。
+这张表适用于数据存储 GitHub App。Brclio 的 GitHub 用户登录另行注册 OAuth App，其生产回调地址为 `https://tools.brclio.com/api/account/github/callback`，Worker 使用 `GITHUB_OAUTH_CLIENT_ID` 和 `GITHUB_OAUTH_CLIENT_SECRET`。权限按 [GitHub 官方最小权限说明](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app) 设置。
 
 ## 安装范围与单库 token
 

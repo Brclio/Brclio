@@ -18,6 +18,8 @@
     "account.request",
     "account.google",
     "account.google.cancel",
+    "account.oauth",
+    "account.oauth.cancel",
     "account.session",
     "account.code",
     "account.register",

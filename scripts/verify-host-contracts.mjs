@@ -63,6 +63,12 @@ try {
     { path: '/api/account/password', method: 'POST', body: { currentPassword: 'fixture-old', newPassword: 'fixture-new-password' }, csrf: 'browser-account-fixture' },
   ]);
   report.push('browser account settings use the allowed method, same-origin transport and session CSRF; invalid methods and external origins never fetch');
+  assert.equal(await browserAccounts.evaluate(() => window.BrclioHost.accountOAuth('unknown').then(() => false, () => true)), true);
+  await Promise.all([
+    browserAccounts.waitForURL(url + '/api/account/github/start'),
+    browserAccounts.evaluate(() => window.BrclioHost.accountOAuth('github')),
+  ]);
+  report.push('browser GitHub sign-in redirects to the same-origin GitHub start endpoint');
   await browserAccounts.close();
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
   observe(page);
@@ -495,6 +501,8 @@ try {
             else reply(null, `Unhandled account fixture operation: ${request.payload.method} ${request.payload.path}`);
             break;
           case 'getPlatform': reply({ platform: 'android', capabilities: { filePicker: true, folderPicker: true, systemIntegration: false } }); break;
+          case 'accountOAuth': window.__finishOAuth = () => reply(null, '浏览器登录已取消。'); break;
+          case 'accountCancelOAuth': window.__finishOAuth(); reply({ canceled: true }); break;
           case 'getSettings': window.__finishSettings = () => reply(window.__androidSaved); break;
           case 'getIntegrationStatus': reply({ supported: false, installed: false }); break;
           case 'saveSettings': window.__androidSaved = request.payload.settings; reply(window.__androidSaved); break;
@@ -514,6 +522,15 @@ try {
     window.__finishSettings();
   });
   await android.waitForFunction(() => document.body.dataset.ready === 'true');
+  const androidOAuth = await android.evaluate(async () => {
+    const login = window.BrclioHost.accountOAuth('github').then(() => 'unexpected success', error => error.message);
+    const cancel = await window.BrclioHost.accountCancelOAuth();
+    const requests = window.__nativeRequests.filter(request => ['accountOAuth', 'accountCancelOAuth'].includes(request.method));
+    return { login: await login, cancel, requests: requests.map(({ method, payload }) => ({ method, payload })) };
+  });
+  assert.deepEqual(androidOAuth, { login: '浏览器登录已取消。', cancel: { canceled: true },
+    requests: [{ method: 'accountOAuth', payload: { provider: 'github' } }, { method: 'accountCancelOAuth', payload: {} }] });
+  report.push('Android GitHub sign-in and cancellation use the native account bridge');
   assert.equal(await android.locator('#path-preview').innerText(), '我的项目/');
   assert.equal(await android.locator('#sample-count').innerText(), '1 个文件夹');
   await android.locator('#copy-preview').click();

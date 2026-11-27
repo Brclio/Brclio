@@ -6,7 +6,8 @@
   const trigger = document.getElementById('account-button');
   if (!page && !trigger) return;
   const deviceId = page ? new URLSearchParams(location.search).get('device') || '' : '';
-  const state = { user: null, csrf: '', googleEnabled: false, passwordEnabled: false, tab: 'login', busy: false, googlePending: false, cloud: null, cloudLoaded: false, cooldown: 0, deviceApproved: false, existingEmail: '' };
+  const providers = { google: 'Google', github: 'GitHub' };
+  const state = { user: null, csrf: '', enabledProviders: [], passwordEnabled: false, tab: 'login', busy: false, oauthPending: false, cloud: null, cloudLoaded: false, cooldown: 0, deviceApproved: false, existingEmail: '' };
   let profileOwner = null;
   let profileDirty = false;
   const portableKeys = ['pathMode', 'quoteMode', 'separator', 'trailingSlash', 'joinWith'];
@@ -32,12 +33,15 @@
         <div class="account-field"><label for="account-register-password">设置密码</label><input class="account-input" id="account-register-password" name="password" type="password" autocomplete="new-password" placeholder="8–128 位字符" minlength="8" maxlength="128" required><small>建议使用不同于其他网站的密码。</small></div>
         <button class="account-button" type="submit">注册并登录</button>
       </form></section>
-      <div class="account-divider" id="account-google-divider">或使用 Google 账号</div><button class="account-button account-google" id="account-google" type="button" disabled><span class="account-google-mark" aria-hidden="true">G</span><span>使用 Google 继续</span></button><button class="account-cancel" id="account-cancel-google" type="button" hidden>取消浏览器登录</button>
+      <div class="account-divider" id="account-oauth-divider" hidden>或使用第三方账号</div>
+      <button class="account-button account-provider" id="account-google" type="button" hidden disabled><span class="account-google-mark" aria-hidden="true">G</span><span>使用 Google 继续</span></button>
+      <button class="account-button account-provider" id="account-github" type="button" hidden disabled>使用 GitHub 继续</button>
+      <button class="account-cancel" id="account-cancel-oauth" type="button" hidden>取消浏览器登录</button>
       <p class="account-footnote">复制路径无需登录。登录后，可将复制格式偏好保存到你的专属用户目录，并在其他设备手动应用。</p>
     </div>
     <section id="account-signed-in" hidden aria-label="当前账号与云端偏好">
       <div class="account-profile"><span class="account-avatar" id="account-avatar" aria-hidden="true"></span><div class="account-identity"><strong id="account-profile-name"></strong><p id="account-profile-username" hidden></p><p id="account-profile-email"></p></div><button id="account-logout" type="button">退出登录</button></div>
-      <p class="account-onboarding" id="account-google-onboarding" hidden>已通过 Google 注册，可在账号设置中完善昵称、账号和密码。</p>
+      <p class="account-onboarding" id="account-oauth-onboarding" hidden></p>
       <details class="account-settings" id="account-settings">
         <summary><span>账号设置<small>昵称、账号与登录密码</small></span><span class="account-settings-chevron" aria-hidden="true">⌄</span></summary>
         <div class="account-settings-content">
@@ -81,6 +85,8 @@
   const localPreferences = () => window.BrclioPreferences;
   const portable = source => Object.fromEntries(portableKeys.filter(key => source?.[key] !== undefined).map(key => [key, source[key]]));
   const displayName = user => user?.nickname || user?.username || user?.email || 'Brclio 用户';
+  const linkedProviders = () => Object.keys(providers).filter(provider => state.user?.providers?.includes(provider));
+  const providerNames = (ids, separator = ' 或 ') => ids.map(id => providers[id]).join(separator);
 
   async function request(path, method = 'GET', body) {
     let result;
@@ -111,10 +117,13 @@
     }
     $('login-panel').hidden = state.tab !== 'login'; $('register-panel').hidden = state.tab !== 'register';
     for (const button of root.querySelectorAll('button')) button.disabled = state.busy;
-    $('cancel-google').hidden = !state.googlePending; $('cancel-google').disabled = false;
-    $('google').disabled = state.busy || !state.googleEnabled;
-    $('google').hidden = !state.googleEnabled;
-    $('google-divider').hidden = !state.googleEnabled;
+    $('cancel-oauth').hidden = !state.oauthPending; $('cancel-oauth').disabled = false;
+    for (const provider of Object.keys(providers)) {
+      const enabled = state.enabledProviders.includes(provider);
+      $(provider).hidden = !enabled;
+      $(provider).disabled = state.busy || !enabled;
+    }
+    $('oauth-divider').hidden = !state.enabledProviders.length;
     $('send-code').disabled = state.busy || state.cooldown > 0;
     $('send-code').textContent = state.cooldown > 0 ? `${state.cooldown} 秒后重发` : '获取验证码';
     $('existing-login').hidden = signedIn || !state.existingEmail;
@@ -129,12 +138,15 @@
       $('profile-username').textContent = '账号：' + (state.user.username || '');
       $('profile-username').hidden = !state.user.nickname || state.user.nickname === state.user.username;
       $('avatar').textContent = Array.from(name)[0].toUpperCase();
-      $('google-onboarding').hidden = state.passwordEnabled || !state.user.providers?.includes('google');
+      const linked = linkedProviders();
+      $('oauth-onboarding').hidden = state.passwordEnabled || !linked.length;
+      $('oauth-onboarding').textContent = `已关联 ${providerNames(linked, ' 和 ')}，可在账号设置中完善昵称、账号和密码。`;
       $('current-password-field').hidden = !state.passwordEnabled;
       for (const input of root.querySelectorAll('#account-profile-form input, #account-password-form input')) input.disabled = state.busy;
       $('current-password').required = state.passwordEnabled;
       $('current-password').disabled = state.busy || !state.passwordEnabled;
-      $('password-hint').textContent = (state.passwordEnabled ? '修改密码需要验证当前密码。' : '设置密码后，可以使用账号或邮箱加密码登录。') + (state.user.providers?.includes('google') ? 'Google 登录仍然可以使用。' : '');
+      const available = linked.filter(provider => state.enabledProviders.includes(provider));
+      $('password-hint').textContent = (state.passwordEnabled ? '修改密码需要验证当前密码。' : '设置密码后，可以使用账号或邮箱加密码登录。') + (available.length ? `你也可以使用 ${providerNames(available)} 登录。` : '');
       $('save-password').textContent = state.passwordEnabled ? '修改密码' : '设置密码';
       const local = Boolean(localPreferences());
       $('local-sync').hidden = !local; $('cloud-form').hidden = local;
@@ -179,7 +191,7 @@
       clearPasswordFields();
       profileDirty = false;
       profileOwner = owner;
-      $('settings').open = Boolean(state.user?.providers?.includes('google') && !state.passwordEnabled);
+      $('settings').open = Boolean(linkedProviders().length && !state.passwordEnabled);
     }
     if (force || changed || !profileDirty) {
       $('nickname').value = state.user?.nickname || '';
@@ -200,7 +212,10 @@
   async function refreshSession(load = true) {
     const session = await request('/api/account/session');
     const previousId = state.user?.id;
-    state.user = session.user || null; state.googleEnabled = Boolean(session.googleEnabled); state.passwordEnabled = Boolean(session.passwordEnabled);
+    state.user = session.user || null;
+    state.enabledProviders = Object.keys(providers).filter(provider =>
+      session[provider + 'Enabled'] && (!host || host.accountOAuth || (provider === 'google' && host.accountGoogle)));
+    state.passwordEnabled = Boolean(session.passwordEnabled);
     syncProfileFields();
     if (!state.user || state.user.id !== previousId) { state.cloud = null; state.cloudLoaded = false; setCloudFields(); }
     render();
@@ -251,7 +266,8 @@
   $('existing-login').addEventListener('click', () => {
     const email = state.existingEmail;
     state.tab = 'login'; $('identifier').value = email; $('login-password').value = ''; $('register-password').value = ''; $('code').value = '';
-    message('此邮箱已有账号，请使用密码登录，或选择 Google 继续。'); render(); $('login-password').focus();
+    const alternative = state.enabledProviders.length ? `，或使用相同邮箱的 ${providerNames(state.enabledProviders)} 账号继续` : '';
+    message(`此邮箱已有账号，请使用密码登录${alternative}。`); render(); $('login-password').focus();
   });
   for (const tab of root.querySelectorAll('[data-account-tab]')) {
     tab.addEventListener('click', () => { if (!state.busy) { state.tab = tab.dataset.accountTab; render(); message(); } });
@@ -276,13 +292,23 @@
       $('code').focus();
     });
   });
-  $('google').addEventListener('click', () => { void run(async () => {
-    if (host?.accountGoogle) {
-      state.googlePending = true; render(); message('请在系统浏览器中完成登录，完成后回到这里。');
-      try { const result = await host.accountGoogle(); if (!result?.redirecting) await afterSignIn(); } finally { state.googlePending = false; }
-    } else location.assign('/api/account/google/start' + (deviceId ? '?device=' + encodeURIComponent(deviceId) : ''));
-  }); });
-  $('cancel-google').addEventListener('click', () => { void host?.accountCancelGoogle?.(); });
+  for (const provider of Object.keys(providers)) {
+    $(provider).addEventListener('click', () => { void run(async () => {
+      if (!host) {
+        location.assign(`/api/account/${provider}/start` + (deviceId ? '?device=' + encodeURIComponent(deviceId) : ''));
+        return;
+      }
+      state.oauthPending = true; render(); message(`请在系统浏览器中完成 ${providers[provider]} 登录，完成后回到这里。`);
+      try {
+        const result = host.accountOAuth ? await host.accountOAuth(provider) : await host.accountGoogle();
+        if (!result?.redirecting) await afterSignIn();
+      } finally { state.oauthPending = false; }
+    }); });
+  }
+  $('cancel-oauth').addEventListener('click', () => {
+    if (host?.accountCancelOAuth) void host.accountCancelOAuth();
+    else void host?.accountCancelGoogle?.();
+  });
   $('logout').addEventListener('click', () => { void run(async () => {
     await ensureCurrentUser();
     await request('/api/account/logout', 'POST', {}); state.user = null; state.cloud = null; state.cloudLoaded = false;
@@ -325,6 +351,10 @@
     dialog.addEventListener('close', () => { $('login-password').value = ''; $('register-password').value = ''; clearPasswordFields(); });
   }
   render();
-  if (page) void run(async () => { await refreshSession(); if (new URLSearchParams(location.search).has('error')) message('Google 登录未完成，请重试或使用账号和密码登录。', true); });
+  if (page) void run(async () => {
+    await refreshSession();
+    const error = new URLSearchParams(location.search).get('error');
+    if (Object.hasOwn(providers, error)) message(`${providers[error]} 登录未完成，请重试或使用账号和密码登录。`, true);
+  });
   else if (window.brclio || window.AndroidBridge) void refreshSession(false).catch(() => {});
 })();

@@ -32,8 +32,8 @@
 .account-button-secondary {background:transparent;color:var(--account-blue)}
 .account-button-secondary:hover {background:rgba(43,127,216,.07)}
 .account-button-small {font-size:11px;min-height:40px;padding:8px 11px;white-space:nowrap}
-.account-google {width:100%;background:#fffdf8;color:var(--account-ink);border-color:var(--account-border);margin-top:20px}
-.account-google:hover {background:#faf6eb}
+.account-provider {width:100%;background:#fffdf8;color:var(--account-ink);border-color:var(--account-border);margin-top:10px}
+.account-provider:hover {background:#faf6eb}
 .account-google-mark {font-family:Georgia,serif;font-size:20px;font-weight:700;color:var(--account-blue);line-height:1}
 .account-divider {display:flex;align-items:center;gap:13px;font-size:10px;color:var(--account-muted);margin-top:21px}
 .account-divider::before,.account-divider::after {content:"";height:1px;background:var(--account-border);flex:1}

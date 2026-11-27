@@ -23,7 +23,7 @@
 - 默认绝对路径、不带引号；可配置相对路径及基准文件夹、文本引号、分隔符、目录末尾分隔符和多选连接方式。
 - 实时输出预览、桌面拖入文件、手动粘贴多条路径、本机自动保存偏好。
 - 在线检查 GitHub 新版本、下载安装包、显示进度、SHA-256 校验、进入系统安装流程。
-- 网页、Windows、macOS 和 Android 共用账号功能：账号名、邮箱、邮件验证码和密码注册；账号或邮箱加密码登录；Google 注册及登录。
+- 网页、Windows、macOS 和 Android 共用 Brclio 账号。可以用账号名、邮箱、邮件验证码和密码注册，用账号或邮箱加密码登录，也可以选择服务端已启用的 Google 或 GitHub 登录。
 - 登录后可手动上传、读取和应用复制格式偏好；每位用户的数据保存在现有私有 GitHub 数据仓库的独立目录。复制路径与本机偏好继续可离线使用，无需登录。
 
 设置 → 版本更新 → 检查新版本。更新仅从本仓库的稳定版 Release 获取，用户点击下载后才下载；校验未通过的安装包不会进入安装流程。
@@ -36,7 +36,9 @@ v0.1.15 移除下载的 10 分钟总时限：有数据持续到达就继续下�
 
 Brclio 介绍与正式版本下载主页位于 [tools.brclio.com](https://tools.brclio.com)，用户账号位于 [/account](https://tools.brclio.com/account)，管理后台位于 [/admin](https://tools.brclio.com/admin)。`cloudflare/` 提供单一 Worker 的账号与客户端更新服务；服务端凭据留在正确 Cloudflare 账号的环境配置中。账号、昵称、个人设置与用户所属的各程序数据存入 `BrclioData/BrclioUserData`，全局代理配置等程序资料存入 `BrclioData/BrclioData`，详见[客户端服务部署说明](docs/client-services.md)。后端上线、新客户端安装包发布和已安装客户端升级分别验证。
 
-账号注册支持 3–32 位账号名、邮箱验证及 8–128 位密码，验证码 10 分钟有效。Google 已验证邮箱会自动绑定同邮箱的现有账号；首次通过 Google 注册后，可在账号设置中完善昵称、账号和密码。Google 登录在系统浏览器中完成，客户端仅在网页确认授权后取得自己的会话。共享私库目标为 `BrclioData/BrclioUserData`，保持 `users/<用户ID>/profile.json`、`credentials.json` 的统一身份，复制偏好写入 `apps/brclio/data.json`，小程序数据写入 `apps/miniapp/data.json`。旧 `data.json` 保留并仅在新路径缺失时回退读取。按产品所有者要求，账号密码在 `credentials.json` 的 `passwordPlaintext` 字段明文保存，同时保留加盐哈希用于验证；仓库及 Git 历史的读者可直接读取密码。历史账号无法由旧哈希还原密码，将在成功密码登录或设置密码时补写。验证码和会话标识保存摘要。服务端通过 GitHub App 私钥换取单仓库短期安装令牌，不使用个人 Token；App 私钥、安装令牌、邮件和 Google 密钥不进入仓库或安装包。接入规范和可复制 Skill 见 [共享用户数据文档](docs/shared-user-data/README.md)。App 配置、真实数据迁移和生产切换分别验收，不从本地实现推断已上线。
+账号注册支持 3–32 位账号名、邮箱验证及 8–128 位密码，验证码 10 分钟有效。Google 已验证邮箱可关联同邮箱的现有账号。首次使用 GitHub 时，Brclio 读取 GitHub 已验证的主邮箱，关联同邮箱且已验证的 Brclio 账号，或创建新账号。再次使用 GitHub 登录时以 GitHub 用户 ID 识别原账号。两种方式都支持在账号设置中完善昵称、账号和密码。原生客户端使用系统浏览器登录，用户在网页确认授权后，客户端取得自己的 Brclio 会话。GitHub 登录的生产配置见[客户端服务部署说明](docs/client-services.md#github-登录应用)。
+
+共享私库目标为 `BrclioData/BrclioUserData`，保持 `users/<用户ID>/profile.json`、`credentials.json` 的统一身份，复制偏好写入 `apps/brclio/data.json`，小程序数据写入 `apps/miniapp/data.json`。旧 `data.json` 保留并仅在新路径缺失时回退读取。按产品所有者要求，账号密码在 `credentials.json` 的 `passwordPlaintext` 字段明文保存，同时保留加盐哈希用于验证；仓库及 Git 历史的读者可直接读取密码。历史账号无法由旧哈希还原密码，将在成功密码登录或设置密码时补写。验证码和会话标识保存摘要。服务端通过 GitHub App 私钥换取单仓库短期安装令牌，不使用个人 Token；App 私钥、安装令牌、邮件和 OAuth 密钥只在服务端使用。接入规范和可复制 Skill 见 [共享用户数据文档](docs/shared-user-data/README.md)。App 配置、真实数据迁移和生产切换分别验收，不从本地实现推断已上线。
 
 在「通用设置 → 查看日志与反馈」可预览和复制本机最近 7 天的诊断记录。登录后可提交问题或改进建议，按需随反馈附上日志。管理员在[网页后台](https://tools.brclio.com/admin)查看处理记录，并可复制问题链接、AI 维修资料或 [Brclio 维修 Skill](.agents/skills/brclio-feedback-repair/SKILL.md) 指令。反馈专库存储结构见[客户端服务说明](docs/client-services.md#软件反馈与诊断)。
 
@@ -111,12 +113,12 @@ core/       零依赖共享路径格式引擎
 web/        Brclio 品牌界面、工具导航、偏好和平台桥接
 desktop/   Electron 客户端、系统菜单、设置和在线更新
 android/    Kotlin 原生入口、离线 WebView、系统选择器与安装器
-cloudflare/ 账号、验证码邮件、Google 登录、网页和客户端服务
+cloudflare/ 账号、验证码邮件、Google 和 GitHub 登录、网页和客户端服务
 scripts/    资源同步、验证、校验清单
 .github/    持续集成与桌面安装包发布流程
 ```
 
-各平台适配层与路径引擎分离，后续工具可以独立增加。本机配置和更新状态保存在当前设备。客户端启动及用户打开账号界面时读取会话；注册、登录、验证码邮件、Google 授权和手动偏好同步使用账号服务，版本检查与下载使用更新服务。文件内容、实际文件路径、相对路径基准文件夹及设备专属设置不会随偏好同步上传。
+各平台适配层与路径引擎分离，后续工具可以独立增加。本机配置和更新状态保存在当前设备。客户端启动及用户打开账号界面时读取会话；注册、登录、验证码邮件、Google 或 GitHub 授权和手动偏好同步使用账号服务，版本检查与下载使用更新服务。文件内容、实际文件路径、相对路径基准文件夹及设备专属设置不会随偏好同步上传。
 
 ## 设计与署名
 

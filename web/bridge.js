@@ -19,7 +19,7 @@
       const id = String(++nextId);
       const xhsAction = method === 'xhsRequest' ? payload.action : '';
       const unlimited = method === 'downloadUpdate' || ['saveImages', 'saveNote', 'exportArchive', 'saveVideo', 'copyImages', 'shareImages', 'finishGenerated'].includes(xhsAction);
-      const timer = unlimited ? null : setTimeout(() => { pending.delete(id); reject(new Error('系统操作尚未完成，请重试。')); }, method === 'pickPaths' ? 900000 : method === 'accountGoogle' ? 330000 : method === 'accountRequest' && payload.path === '/api/account/feedback' ? 100000 : method === 'checkForUpdates' || ['parsePython', 'fetchNote'].includes(xhsAction) ? 90000 : 60000);
+      const timer = unlimited ? null : setTimeout(() => { pending.delete(id); reject(new Error('系统操作尚未完成，请重试。')); }, method === 'pickPaths' ? 900000 : ['accountGoogle', 'accountOAuth'].includes(method) ? 330000 : method === 'accountRequest' && payload.path === '/api/account/feedback' ? 100000 : method === 'checkForUpdates' || ['parsePython', 'fetchNote'].includes(xhsAction) ? 90000 : 60000);
       pending.set(id, { resolve, reject, timer });
       try { window.AndroidBridge.postMessage(JSON.stringify({ id, method, payload })); }
       catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
@@ -40,7 +40,13 @@
       if (typeof result.csrf === 'string') accountCSRF = result.csrf;
       return result;
     },
-    accountGoogle: async () => { location.assign('/api/account/google/start'); return { redirecting: true }; },
+    accountOAuth: async provider => {
+      if (provider !== 'github' && provider !== 'google') throw new Error('不支持此登录方式。');
+      location.assign('/api/account/' + provider + '/start');
+      return { redirecting: true };
+    },
+    accountCancelOAuth: async () => ({ canceled: true }),
+    accountGoogle: () => browser.accountOAuth('google'),
     accountCancelGoogle: async () => ({ canceled: true }),
     getPlatform: async () => ({ platform: 'browser', version: '0.2.11', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
     getSettings: async () => { const saved = localStorage.getItem(STORE); return saved ? JSON.parse(saved) : {}; },
@@ -148,6 +154,8 @@
     saveGenerated: saveAndroidGenerated,
     onXhsEvent: callback => { const listener = event => callback(event.detail); window.addEventListener('brclio:xhs', listener); return () => window.removeEventListener('brclio:xhs', listener); },
     accountRequest: input => native('accountRequest', input),
+    accountOAuth: provider => native('accountOAuth', { provider }),
+    accountCancelOAuth: () => native('accountCancelOAuth'),
     accountGoogle: () => native('accountGoogle'),
     accountCancelGoogle: () => native('accountCancelGoogle'),
     getPlatform: () => native('getPlatform'),

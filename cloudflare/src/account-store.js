@@ -215,7 +215,7 @@ export function createPrivateRecordStore(env, {repo, validatePath, manifestPath,
   };
 }
 
-export const emptyAccountIndex = () => ({version: 1, usernames: {}, emails: {}, google: {}, verifications: {}, devices: {}});
+export const emptyAccountIndex = () => ({version: 1, usernames: {}, emails: {}, google: {}, github: {}, verifications: {}, devices: {}});
 export const userPath = (id, name) => recordPath(`users/${id}/${name}.json`);
 export function appDataPath(id, appId) {
   if (!validAppId(appId)) throw new AccountStorageError('Invalid application ID');

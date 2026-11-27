@@ -30,7 +30,7 @@ AI 不支持安装技能时，将目录中的 `SKILL.md`、`references/` 和 `sc
 
 ## 数据选择与凭据边界
 
-按仓库所有者的明确要求，业务数据与 `passwordPlaintext` 均以明文 JSON 存储。`credentials.json` 同时保留现有 PBKDF2 密码记录供登录校验使用；不会用明文比较代替现有校验。Google 登录但尚未设置密码的账号可以没有 `passwordPlaintext`，`password` 为 `null`。旧账号缺少明文密码时，不得尝试还原哈希或填造密码；成功登录或设置密码后由账号服务记录。
+按仓库所有者的明确要求，业务数据与 `passwordPlaintext` 均以明文 JSON 存储。`credentials.json` 同时保留现有 PBKDF2 密码记录供登录校验使用；不会用明文比较代替现有校验。使用 Google 或 GitHub 登录且尚未设置密码的账号可以没有 `passwordPlaintext`，`password` 为 `null`。旧账号缺少明文密码时，不得尝试还原哈希或填造密码；成功登录或设置密码后由账号服务记录。
 
 仓库当前内容和 Git 历史均可被具有相应仓库读取权限的人或服务读取；后续删除字段不会清除已有历史。私有仓库及其备份必须保持私有。仓库访问采用统一账号服务持有的 GitHub App，不使用个人 Token 配置。App 私钥、App JWT 与短期 installation token 均不得写入仓库、客户端、安装包、文档示例、日志或前端环境变量。客户端只取得当前用户的会话令牌，不取得任何 GitHub 凭据或其他用户记录。读取接口不返回 `passwordPlaintext`、密码派生值或会话索引。
 
@@ -96,16 +96,17 @@ users/
   "usernames": {},
   "emails": {},
   "google": {},
+  "github": {},
   "verifications": {},
   "devices": {}
 }
 ```
 
-`usernames`、`emails`、`google` 分别将规范化用户名、规范化邮箱、Google `sub` 映射到同一个用户 ID。用户名沿用中央服务的 trim、NFKC 和小写索引规则；邮箱沿用 trim 和小写规则。`verifications` 保留验证码验证记录，`devices` 保留短期设备登录请求，二者不是用户表。设备记录的 `userId` 一经存在，必须指向有效用户。不得在应用端自行按邮箱合并账号或创建第二套索引。
+`usernames`、`emails`、`google` 分别将规范化用户名、规范化邮箱、Google `sub` 映射到同一个用户 ID。`github` 将 GitHub 的数字用户 ID（十进制字符串）映射到 Brclio 用户 ID。旧索引可以缺少 `github`，首次成功写入 GitHub 身份时补建并保留其他索引。用户名沿用中央服务的 trim、NFKC 和小写索引规则；邮箱沿用 trim 和小写规则。`verifications` 保留验证码验证记录，`devices` 保留短期设备登录请求，二者不是用户表。设备记录的 `userId` 一经存在，必须指向有效用户。不得在应用端自行按邮箱合并账号或创建第二套索引。
 
 `profile.json` 沿用 `version:1`、`id`、`username`、`email`、`emailVerified`、`providers`、`createdAt`，以及已有的 `nickname`、`avatarUrl`、`updatedAt` 等字段。`id` 必须与目录 ID 相同。
 
-`credentials.json` 沿用 `version:1`、`password`、`passwordPlaintext`、`googleSub`、`sessions`、`failedAttempts`、`lockedUntil` 等已有字段。`password` 有值时格式为：
+`credentials.json` 沿用 `version:1`、`password`、`passwordPlaintext`、`googleSub`、可选的 `githubSub`、`sessions`、`failedAttempts`、`lockedUntil` 等字段。绑定 GitHub 后，`githubSub` 与索引中的 GitHub 用户 ID 一致，并在 `profile.providers` 中加入 `github`。`password` 有值时格式为：
 
 ```json
 {
@@ -121,6 +122,8 @@ users/
 ## 登录与跨平台访问
 
 中央服务固定为 `https://tools.brclio.com/api/account/*`。注册、邮箱验证码、登录、会话、退出、账号资料和修改密码接口见技能中的 [API 参考](skills/brclio-user-data/references/api.md)。跨程序沿用同一用户身份；各客户端仍独立登录取得自己的会话，不共用浏览器 Cookie 文件。
+
+GitHub 首次登录需有已验证的主邮箱。同邮箱且已验证的 Brclio 账号可复用原 ID、密码和应用数据，后续以已绑定的 GitHub 用户 ID 登录。GitHub 主邮箱发生变化时仍返回原账号，并保留 Brclio 账号邮箱。OAuth App 表单和服务端环境变量见[登录部署说明](../client-services.md#github-登录应用)。
 
 Brclio 网页使用同源 HttpOnly Cookie，写请求同时携带会话返回的 `X-CSRF-Token`。桌面客户端采用原有设备授权流程或密码登录，使用 `Authorization: Bearer <用户会话令牌>`；native 请求必须带 `X-Brclio-Client: native`，且不带 `Origin`。
 

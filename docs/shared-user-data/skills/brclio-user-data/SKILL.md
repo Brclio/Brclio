@@ -13,7 +13,7 @@ description: 将 Brclio、小程序或新应用接入 BrclioData/BrclioUserData 
 
 ## 接入规则
 
-- 私库协议为 `version:1`。共享索引为 `users/_index.json`，包含 `usernames`、`emails`、`google`、`verifications`、`devices`。用户目录为不可变 UUID，含 `profile.json`、`credentials.json` 及 `apps/<appId>/data.json`。既有 ID 必须保留，改名不迁目录。
+- 私库协议为 `version:1`。共享索引为 `users/_index.json`，包含 `usernames`、`emails`、`google`、`verifications`、`devices`。旧索引允许缺少 `github`，首次绑定 GitHub 时补建从 GitHub 数字用户 ID 字符串到 Brclio 用户 ID 的映射，并在凭据保存 `githubSub`。用户目录为不可变 UUID，含 `profile.json`、`credentials.json` 及 `apps/<appId>/data.json`。既有 ID 必须保留，改名不迁目录。
 - 身份只由中央服务管理；所有程序沿用注册、登录、会话、资料与密码接口，不创建另一套密码库或签名密钥。用户路径来自已验证会话，不能来自请求体的 userId。
 - 仓库所有者选择明文 JSON，并要求保留 `credentials.passwordPlaintext`。保留现有 `password:{algorithm:'PBKDF2-SHA256',iterations:100000,salt,hash}`：24 字节随机盐、32 字节派生值、base64url 无填充。不要改变该选择、还原旧哈希或伪造未知明文。客户端 API 不返回这些凭据。
 - 两库分工：`GITHUB_DATA_REPOSITORY=BrclioData/BrclioUserData` 仅供 account store，`GITHUB_PROGRAM_DATA_REPOSITORY=BrclioData/BrclioData` 供全局配置。UserData 的根 `apps/<appId>.json` 是账号数据 schema 注册元数据，README、协议、Skill、迁移审计也是必要账号管理支持材料；它们保留在 UserData。ProgramRepo 的 `apps/<appId>/...` 才是程序全局配置/公共资料。凡关联 userId 或属于用户的业务数据均进 `users/<id>/apps/<appId>/`。

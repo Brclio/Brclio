@@ -109,6 +109,7 @@ export async function verifyDeployment({fetchImpl = globalThis.fetch, attempts =
           let valid; try { valid = endpoint.valid(value); } catch { valid = false; }
           if (!valid) throw failure('invalid_schema');
           if (endpoint.label === 'anonymous_session') {
+            if (typeof value.githubEnabled === 'boolean') last.githubEnabled = value.githubEnabled;
             last.googleEnabled = value.googleEnabled; last.emailEnabled = value.emailEnabled;
             if (!value.googleEnabled || !value.emailEnabled) throw failure('provider_unavailable');
           }

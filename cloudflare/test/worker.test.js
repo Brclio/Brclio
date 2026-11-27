@@ -18,7 +18,7 @@ test('public health and admin shell disclose no credential or subscription value
 });
 test('migration maintenance blocks account and config writers before storage while health stays readable',async()=>{
   const frozen={...env,DATA_MIGRATION_READ_ONLY:'true'};
-  for(const [path,method] of [['/api/account/login','POST'],['/api/account/register','POST'],['/api/account/data','PUT'],['/api/account/apps/miniapp/data','PUT'],['/api/account/google/callback?code=unused','GET'],['/api/account/device/poll?id=unused','GET'],['/api/admin/config','PUT']]) {
+  for(const [path,method] of [['/api/account/login','POST'],['/api/account/register','POST'],['/api/account/data','PUT'],['/api/account/apps/miniapp/data','PUT'],['/api/account/google/callback?code=unused','GET'],['/api/account/github/callback?code=unused','GET'],['/api/account/device/poll?id=unused','GET'],['/api/admin/config','PUT']]) {
     const response=await handle(request(path,{method,...(method!=='GET'?{body:{}}:{})}),frozen);
     assert.equal(response.status,503);assert.equal((await response.json()).code,'DATA_MIGRATION_READ_ONLY');assert.equal(response.headers.get('retry-after'),'120');
   }

@@ -14,6 +14,8 @@ page.on('pageerror', error => errors.push(error.message));
 page.on('console', message => { if (message.type() === 'error' && !expectedNetworkErrorURLs.has(message.location().url)) errors.push(message.text()); });
 let user = null;
 let passwordEnabled = false;
+let googleEnabled = true;
+let githubEnabled = true;
 let mockPassword = 'test-password-123';
 let cloud = { preferences: {}, updatedAt: '2026-10-19T05:00:00Z' };
 const calls = [];
@@ -29,15 +31,15 @@ await context.route('**/api/account/**', async route => {
     expectedNetworkErrorURLs.add(request.url());
     await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ error, ...(code ? { code } : {}) }) });
   }
-  if (pathname.endsWith('/google/start')) {
-    googleStartURL = request.url();
-    await route.fulfill({ status: 200, contentType: 'text/html', body: '<p>Google OAuth provider handoff</p>' });
+  if (pathname.endsWith('/google/start') || pathname.endsWith('/github/start')) {
+    if (pathname.endsWith('/google/start')) googleStartURL = request.url();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: '<p>OAuth redirect fixture</p>' });
     return;
   }
   if ((pathname.endsWith('/code') || pathname.endsWith('/register')) && body?.email === 'exists@example.com') {
     await reject(409, '该邮箱已注册，请登录后在账号设置中设置昵称、账号和密码', pathname.endsWith('/code') ? 'EMAIL_EXISTS' : undefined); return;
   }
-  if (pathname.endsWith('/session')) result = { user, csrf: 'test-csrf', googleEnabled: true, passwordEnabled };
+  if (pathname.endsWith('/session')) result = { user, csrf: 'test-csrf', googleEnabled, githubEnabled, passwordEnabled };
   else if (pathname.endsWith('/register') || pathname.endsWith('/login')) { user = { id: 'test-user', nickname: '', username: 'brclio_test', email: 'test@example.com', providers: ['password'] }; passwordEnabled = true; result = { user }; }
   else if (pathname.endsWith('/profile')) {
     if (body.username === 'occupied_account') { await reject(409, '该账号已被使用，请换一个账号'); return; }
@@ -225,6 +227,58 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, `account page overflow at ${width}`);
   }
   user = null;
+  googleEnabled = false;
+  await page.goto(url + '/account?device=' + device);
+  await page.getByRole('button', { name: '使用 GitHub 继续' }).waitFor();
+  assert.equal(await page.locator('#account-google').isVisible(), false);
+  await page.getByRole('tab', { name: '注册新账号' }).click();
+  await page.getByRole('button', { name: '使用 GitHub 继续' }).click();
+  await page.waitForURL(url + '/api/account/github/start?device=' + device);
+  await page.goto(url + '/account?error=github&device=' + device);
+  await page.locator('#account-message').filter({ hasText: 'GitHub 登录未完成' }).waitFor();
+  githubEnabled = false;
+  await page.goto(url + '/account');
+  await page.locator('.account-root[aria-busy="false"]').waitFor();
+  assert.equal(await page.locator('#account-github').isVisible(), false);
+  assert.equal(await page.locator('#account-oauth-divider').isVisible(), false);
+  googleEnabled = true; githubEnabled = true;
+
+  const nativePage = await context.newPage();
+  await nativePage.addInitScript(() => {
+    const legacy = new URLSearchParams(location.search).has('legacy');
+    let rejectPending;
+    window.BrclioHost = {
+      accountGoogle: async () => { document.body.dataset.called = 'legacy-google'; return { redirecting: true }; },
+      ...(legacy ? {} : {
+        accountOAuth: provider => new Promise((_resolve, reject) => { document.body.dataset.called = provider; rejectPending = reject; }),
+        accountCancelOAuth: () => { rejectPending(new Error('已取消本次登录')); },
+      }),
+    };
+  });
+  await nativePage.goto(url + '/account');
+  await nativePage.getByRole('button', { name: '使用 GitHub 继续' }).click();
+  assert.equal(await nativePage.locator('body').getAttribute('data-called'), 'github');
+  await nativePage.getByRole('button', { name: '取消浏览器登录' }).click();
+  await nativePage.getByRole('status').filter({ hasText: '已取消本次登录' }).waitFor();
+  await nativePage.goto(url + '/account?legacy=1');
+  await nativePage.getByRole('button', { name: '使用 Google 继续' }).click();
+  assert.equal(await nativePage.locator('body').getAttribute('data-called'), 'legacy-google');
+  assert.equal(await nativePage.locator('#account-github').isVisible(), false);
+  await nativePage.close();
+
+  passwordEnabled = false;
+  user = { id: 'github-user', username: 'github_user', email: 'github@example.com', providers: ['github'] };
+  await page.goto(url + '/account?device=' + device);
+  await page.locator('#account-oauth-onboarding').filter({ hasText: 'GitHub' }).waitFor();
+  assert.equal(await page.locator('#account-settings').evaluate(element => element.open), true);
+  assert.equal(await page.locator('#account-current-password-field').isVisible(), false);
+  assert.equal(await page.locator('#account-device-approve').isVisible(), true);
+  assert.match(await page.locator('#account-password-hint').innerText(), /GitHub/);
+  user.providers.push('google');
+  await page.locator('#account-refresh').click();
+  await page.locator('#account-oauth-onboarding').filter({ hasText: '已关联 Google 和 GitHub' }).waitFor();
+  assert.match(await page.locator('#account-password-hint').innerText(), /Google 或 GitHub/);
+  user = null;
   await page.goto(url + '/account?device=' + device);
   await page.locator('#account-google:not(:disabled)').waitFor();
   await page.locator('#account-google').click();
@@ -235,7 +289,7 @@ try {
   await page.locator('#account-profile-name').filter({ hasText: 'Google 用户' }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get('device'), device, 'Google callback must retain device approval context');
   assert.equal(await page.locator('#account-device-approve').isVisible(), true, 'Google callback must still require explicit device approval');
-  assert.equal(await page.locator('#account-google-onboarding').isVisible(), true);
+  assert.equal(await page.locator('#account-oauth-onboarding').isVisible(), true);
   assert.equal(await page.locator('#account-settings').evaluate(element => element.open), true);
   assert.equal(await page.locator('#account-current-password-field').isVisible(), false);
   await page.locator('#account-nickname').fill('我的新昵称');
@@ -265,7 +319,7 @@ try {
   await page.locator('#account-save-password').click();
   await page.locator('#account-message').filter({ hasText: '密码已设置' }).waitFor();
   assert.deepEqual(calls.findLast(call => call.pathname.endsWith('/password')).body, { newPassword: 'google-first-password-123' });
-  assert.equal(await page.locator('#account-google-onboarding').isVisible(), false);
+  assert.equal(await page.locator('#account-oauth-onboarding').isVisible(), false);
   assert.equal(await page.locator('#account-current-password').getAttribute('required'), '');
   assert.equal(await page.locator('#account-current-password-field').isVisible(), true);
   for (const id of ['current-password', 'new-password', 'confirm-password']) assert.equal(await page.locator('#account-' + id).inputValue(), '');
@@ -343,5 +397,5 @@ try {
   await page.locator('#account-device-approve').click();
   await page.locator('#account-device-detail').filter({ hasText: '已确认客户端登录' }).waitFor();
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: ['email code and registration', 'password fields cleared after login', 'email password login and logout', 'portable preference upload and apply preserve local base folder', 'failed cloud apply preserves local memory, controls, preview, copied text and subsequent ordinary saves', 'a local edit after Escape wins over an older pending cloud apply in memory, persisted settings and controls', 'cross-tab account changes and in-flight response identity cannot silently apply another account data', 'CSRF protected mutations', 'standalone account preference editor', 'explicit authenticated device approval', 'Google browser handoff and callback retain device context', 'Google accounts can edit nickname and username with draft preservation', 'first password setup, current password validation, password confirmation and secret field clearing', 'cross-tab identity changes abort profile edits and clear drafts', 'duplicate email gives a prefilled login action', 'nickname preferred in shared app header', 'canceled Google flow can complete client login with password fallback', '1440 / 900 / 390 / 320 settings layout'], consoleErrors: errors }, null, 2));
+  console.log(JSON.stringify({ passed: ['email code and registration', 'password fields cleared after login', 'email password login and logout', 'portable preference upload and apply preserve local base folder', 'failed cloud apply preserves local memory, controls, preview, copied text and subsequent ordinary saves', 'a local edit after Escape wins over an older pending cloud apply in memory, persisted settings and controls', 'cross-tab account changes and in-flight response identity cannot silently apply another account data', 'CSRF protected mutations', 'standalone account preference editor', 'explicit authenticated device approval', 'GitHub availability in login and registration, disabled providers hidden', 'GitHub callback, device approval context and cancellation', 'native GitHub dispatch and legacy Google-only fallback', 'linked Google and GitHub profile settings', 'Google browser handoff and callback retain device context', 'Google accounts can edit nickname and username with draft preservation', 'first password setup, current password validation, password confirmation and secret field clearing', 'cross-tab identity changes abort profile edits and clear drafts', 'duplicate email gives a prefilled login action', 'nickname preferred in shared app header', 'canceled Google flow can complete client login with password fallback', '1440 / 900 / 390 / 320 settings layout'], consoleErrors: errors }, null, 2));
 } finally { await context.close(); await browser.close(); }

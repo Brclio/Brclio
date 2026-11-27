@@ -25,9 +25,9 @@ class AndroidAccount(private val activity: Activity) {
     private val lock = Any()
     @Volatile private var closed = false
     @Volatile private var csrf = ""
-    @Volatile private var google: GoogleOperation? = null
+    @Volatile private var pendingLogin: BrowserLogin? = null
 
-    private class GoogleOperation {
+    private class BrowserLogin {
         @Volatile var canceled = false
         @Volatile var timedOut = false
         @Volatile var connection: HttpsURLConnection? = null
@@ -36,7 +36,7 @@ class AndroidAccount(private val activity: Activity) {
     fun request(input: JSONObject, callback: (JSONObject?, String?) -> Unit) {
         // Reject malformed requests before consuming a native worker thread.
         val request = AccountPolicy.validate(input)
-        if (request.cancelsGoogle) cancelGoogle()
+        if (request.cancelsBrowserLogin) cancelOAuth()
         val version = if (request.changesAuth) authVersion.incrementAndGet() else authVersion.get()
         execute(callback) {
             try { accept(raw(request.path, request.method, request.body), version) }
@@ -49,23 +49,25 @@ class AndroidAccount(private val activity: Activity) {
         }
     }
 
-    fun google(callback: (JSONObject?, String?) -> Unit) {
+    fun oauth(provider: String, callback: (JSONObject?, String?) -> Unit) {
+        require(AccountPolicy.supportsProvider(provider)) { "不支持此登录方式。" }
         val operation = synchronized(lock) {
-            check(google == null) { "请先完成或取消当前谷歌登录。" }
-            GoogleOperation().also { google = it }
+            check(pendingLogin == null) { "请先完成或取消当前浏览器登录。" }
+            BrowserLogin().also { pendingLogin = it }
         }
         val version = authVersion.incrementAndGet()
         val timeout = Runnable { operation.timedOut = true; operation.canceled = true; operation.connection?.disconnect() }
         handler.postDelayed(timeout, TimeUnit.MINUTES.toMillis(5))
-        execute(callback, { handler.removeCallbacks(timeout); synchronized(lock) { if (google === operation) google = null } }) {
+        execute(callback, { handler.removeCallbacks(timeout); synchronized(lock) { if (pendingLogin === operation) pendingLogin = null } }) {
           try {
             val verifier = AccountPolicy.verifier()
             val deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5)
-            val started = raw("/api/account/device/start", "POST", JSONObject()
-                .put("challenge", AccountPolicy.challenge(verifier)).toString(), operation)
+            val body = JSONObject().put("challenge", AccountPolicy.challenge(verifier))
+            if (provider != "google") body.put("provider", provider)
+            val started = raw("/api/account/device/start", "POST", body.toString(), operation)
             val id = started.optString("id")
             val url = started.optString("url")
-            check(AccountPolicy.validDevice(id) && AccountPolicy.validGoogleUrl(url, id)) { "谷歌登录链接无效。" }
+            check(AccountPolicy.validOAuthUrl(url, id, provider)) { "浏览器登录链接无效。" }
             checkActive(operation)
             val opened = CountDownLatch(1)
             var launchError: Exception? = null
@@ -83,32 +85,32 @@ class AndroidAccount(private val activity: Activity) {
                 repeat(20) { checkActive(operation); Thread.sleep(100) }
                 val result = raw("/api/account/device/poll?id=$id&verifier=$verifier", "GET", null, operation)
                 if (result.optBoolean("pending")) continue
-                check(result.opt("token") is String && result.opt("user") is JSONObject) { "谷歌登录尚未完成，请重试。" }
+                check(result.opt("token") is String && result.opt("user") is JSONObject) { "浏览器登录尚未完成，请重试。" }
                 return@execute accept(result, version, operation)
             }
-            error("谷歌登录已超时，请重新登录。")
+            error("浏览器登录已超时，请重新登录。")
           } catch (error: Exception) {
-              if (operation.timedOut) error("谷歌登录已超时，请重新登录。")
-              if (operation.canceled) error("谷歌登录已取消，请重新登录。")
+              if (operation.timedOut) error("浏览器登录已超时，请重新登录。")
+              if (operation.canceled) error("浏览器登录已取消，请重新登录。")
               throw error
           }
         }
     }
 
-    fun cancelGoogle(): JSONObject {
+    fun cancelOAuth(): JSONObject {
         val connection = synchronized(lock) {
-            google?.let { it.canceled = true; it.connection }
+            pendingLogin?.let { it.canceled = true; it.connection }
         }
         connection?.disconnect()
         return JSONObject().put("canceled", true)
     }
 
-    private fun checkActive(operation: GoogleOperation? = null) {
+    private fun checkActive(operation: BrowserLogin? = null) {
         check(!closed && !Thread.currentThread().isInterrupted) { "账号操作已停止。" }
-        check(operation?.canceled != true) { "谷歌登录已取消，请重新登录。" }
+        check(operation?.canceled != true) { "浏览器登录已取消，请重新登录。" }
     }
 
-    private fun accept(result: JSONObject, version: Int, operation: GoogleOperation? = null): JSONObject = synchronized(lock) {
+    private fun accept(result: JSONObject, version: Int, operation: BrowserLogin? = null): JSONObject = synchronized(lock) {
         checkActive(operation)
         check(version == authVersion.get()) { "账号状态已变化，请重新登录。" }
         if (result.has("token")) {
@@ -127,7 +129,7 @@ class AndroidAccount(private val activity: Activity) {
         check(editor.commit()) { "无法保存账号会话，请重试。" }
     }
 
-    private fun raw(path: String, method: String, body: String?, operation: GoogleOperation? = null): JSONObject {
+    private fun raw(path: String, method: String, body: String?, operation: BrowserLogin? = null): JSONObject {
         checkActive(operation)
         val connection = URL(AccountPolicy.ORIGIN + path).openConnection() as HttpsURLConnection
         synchronized(lock) { connections.add(connection) }
@@ -203,7 +205,7 @@ class AndroidAccount(private val activity: Activity) {
 
     fun close() {
         closed = true
-        cancelGoogle()
+        cancelOAuth()
         synchronized(lock) { connections.toList() }.forEach { it.disconnect() }
         worker.shutdownNow()
     }
