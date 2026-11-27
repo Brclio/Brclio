@@ -8,6 +8,15 @@ const { pathToFileURL } = require('node:url');
 const { createTerminalHost } = require('./terminal/host.cjs');
 const { createPtyService, forkService } = require('./terminal/service.cjs');
 
+function fakeChild() {
+  return Object.assign(new EventEmitter(), {
+    connected: true, posted: [],
+    disconnect() { this.connected = false; this.emit('disconnect'); },
+    send(message, callback) { this.posted.push(message); callback(); },
+    respond(result) { this.emit('message', { serial: this.posted.at(-1).serial, result }); },
+  });
+}
+
 test('terminal IPC only accepts the live local main frame of its dedicated window', async () => {
   const windows = [];
   class FakeWindow extends EventEmitter {
@@ -67,12 +76,7 @@ test('a crashed PTY service retires its panes and pending requests, then accepts
   const service = createPtyService({
     home: os.homedir(), send: (...message) => events.push(message),
     launch() {
-      const child = Object.assign(new EventEmitter(), {
-        connected: true, posted: [],
-        disconnect() { this.connected = false; this.emit('disconnect'); },
-        send(message, callback) { this.posted.push(message); callback(); },
-        respond(result) { this.emit('message', { serial: this.posted.at(-1).serial, result }); },
-      });
+      const child = fakeChild();
       children.push(child);
       return child;
     },
@@ -104,6 +108,44 @@ test('a crashed PTY service retires its panes and pending requests, then accepts
   service.closeAll();
   await assert.rejects(close, /终端窗口已关闭/);
   assert.equal(children[1].connected, false);
+});
+
+test('finishing the last pane retires the service after overlapping requests complete, and new panes still start', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let child;
+  const service = createPtyService({
+    home: os.homedir(), send() {}, launch() { child = fakeChild(); return child; },
+  });
+  t.after(() => service.closeAll());
+  const create = service.create({ id: 'first' });
+  const firstChild = child;
+  child.respond({ id: 'first' });
+  await create;
+  const next = service.create({ id: 'next' });
+  child.emit('message', { channel: 'exit', payload: { id: 'first', exitCode: 0 } });
+  t.mock.timers.tick(1000);
+  assert.equal(child.connected, true, 'the in-flight create owns this service');
+  child.respond({ id: 'next' });
+  await next;
+  t.mock.timers.tick(1000);
+  assert.equal(child.connected, true, 'another pane is still running');
+  const close = service.close('next');
+  child.respond();
+  await close;
+  const profiles = service.profiles();
+  t.mock.timers.tick(1000);
+  assert.equal(child.connected, true, 'a queued profile read must finish');
+  child.respond([]);
+  await profiles;
+  t.mock.timers.tick(1000);
+  assert.equal(child.connected, false, 'closing the final pane releases the service');
+  const fresh = service.create({ id: 'fresh' });
+  assert.notEqual(child, firstChild);
+  child.respond({ id: 'fresh' });
+  await fresh;
+  child.emit('message', { channel: 'exit', payload: { id: 'fresh', exitCode: 0 } });
+  t.mock.timers.tick(1000);
+  assert.equal(child.connected, false, 'natural shell exit also releases the service');
 });
 
 test('closing a terminal reaps the real service even when only shell profiles were requested', { timeout: 10000 }, async t => {

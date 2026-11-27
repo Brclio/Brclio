@@ -5,10 +5,10 @@ const path = require('node:path');
 
 const serviceError = '终端服务意外退出，请新建标签页重试。';
 
-function forkService(home) {
+function forkService(home, env = process.env) {
   return fork(path.join(__dirname, 'service-child.cjs'), [home], {
     execPath: process.execPath, execArgv: [], windowsHide: true,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
   });
 }
@@ -20,6 +20,7 @@ function createPtyService({ home, send, launch = forkService }) {
   function retire(state, reason, notify) {
     if (current !== state) return;
     current = undefined;
+    clearTimeout(state.idle);
     for (const request of state.requests.values()) {
       clearTimeout(request.timer);
       request.reject(new Error(reason));
@@ -37,9 +38,17 @@ function createPtyService({ home, send, launch = forkService }) {
     }
   }
 
+  function retireWhenIdle(state) {
+    if (state !== current || state.live.size || state.requests.size || state.idle) return;
+    // Reuse the process when a profile lookup immediately precedes a new tab.
+    // After the last pane exits, native ConPTY workers must not keep it alive.
+    state.idle = setTimeout(() => retire(state, '终端会话已结束。', false), 200);
+    state.idle.unref();
+  }
+
   function start() {
     const child = launch(home);
-    const state = { child, requests: new Map(), live: new Set() };
+    const state = { child, requests: new Map(), live: new Set(), idle: null };
     current = state;
     const lost = () => retire(state, serviceError, true);
     child.on('error', lost);
@@ -50,16 +59,21 @@ function createPtyService({ home, send, launch = forkService }) {
       if (message.channel === 'exit' || message.channel === 'data') {
         if (message.channel === 'exit') state.live.delete(message.payload.id);
         send(message.channel, message.payload);
+        if (message.channel === 'exit') retireWhenIdle(state);
         return;
       }
       const request = state.requests.get(message.serial);
       if (!request) return;
       clearTimeout(request.timer);
       state.requests.delete(message.serial);
-      if (message.error) { request.reject(new Error(message.error)); return; }
-      if (request.method === 'create') state.live.add(message.result.id);
-      if (request.method === 'close') state.live.delete(request.id);
-      request.resolve(message.result);
+      if (message.error) {
+        request.reject(new Error(message.error));
+      } else {
+        if (request.method === 'create') state.live.add(message.result.id);
+        if (request.method === 'close') state.live.delete(request.id);
+        request.resolve(message.result);
+      }
+      retireWhenIdle(state);
     });
     return state;
   }
@@ -77,6 +91,8 @@ function createPtyService({ home, send, launch = forkService }) {
       throw new Error('终端会话已结束。');
     }
     if (state.requests.size >= 512) throw new Error('终端服务繁忙，请稍后重试。');
+    clearTimeout(state.idle);
+    state.idle = null;
     const key = ++serial;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => retire(state, '终端服务无响应，请新建标签页重试。', true), 30000);

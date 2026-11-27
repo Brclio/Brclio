@@ -4,9 +4,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { once } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const { test } = require('node:test');
 const { createPtySessions } = require('./terminal/pty.cjs');
+const { createPtyService, forkService } = require('./terminal/service.cjs');
 
 test('flow control waits for consumed data and releases every explicitly closed session', () => {
   const actions = [];
@@ -58,8 +60,14 @@ test('two native PTYs use independent shells and return the actual exit codes', 
   const outputs = new Map(ids.map(id => [id, '']));
   const ended = new Map();
   const waits = ids.map(id => new Promise(resolve => ended.set(id, resolve)));
-  const sessions = createPtySessions({
-    home, env: { ...process.env, ZDOTDIR: home, HISTFILE: path.join(home, '.history') },
+  let serviceExit;
+  const sessions = createPtyService({
+    home,
+    launch(directory) {
+      const child = forkService(directory, { ...process.env, ZDOTDIR: home, HISTFILE: path.join(home, '.history') });
+      serviceExit = once(child, 'exit');
+      return child;
+    },
     send(type, event) {
       if (type === 'exit') { ended.get(event.id)(event.exitCode); return; }
       outputs.set(event.id, outputs.get(event.id) + event.data);
@@ -68,11 +76,11 @@ test('two native PTYs use independent shells and return the actual exit codes', 
   });
   t.after(() => sessions.closeAll());
   const windows = process.platform === 'win32';
+  await Promise.all(ids.map(id => sessions.create({ id, profile: windows ? 'cmd' : 'zsh', cols: 71, rows: 27 })));
   for (const [index, id] of ids.entries()) {
-    sessions.create({ id, profile: windows ? 'cmd' : 'zsh', cols: 71, rows: 27 });
-    sessions.resize(id, 95, 34);
-    sessions.write(id, windows
-      ? 'set TOKEN=BRCLIO\r\necho %TOKEN%-SESSION-' + index + '\r\nexit ' + (index + 1) + '\r\n'
+    await sessions.resize(id, 95, 34);
+    await sessions.write(id, windows
+      ? 'set TOKEN=BRCLIO\recho %TOKEN%-SESSION-' + index + '\rexit ' + (index + 1) + '\r'
       : 'test -t 0 && test -t 1 && printf "BRCLIO-%s-%d\\n" SESSION ' + index + '; stty size; exit ' + (index + 1) + '\r');
   }
   assert.deepEqual(await Promise.all(waits), [1, 2]);
@@ -81,4 +89,5 @@ test('two native PTYs use independent shells and return the actual exit codes', 
     assert.doesNotMatch(outputs.get(id), new RegExp('BRCLIO-SESSION-' + (1 - index)));
     if (!windows) assert.match(outputs.get(id), /34\s+95/);
   }
+  assert.equal((await serviceExit)[0], 0, 'Last shell exit should release its native service');
 });

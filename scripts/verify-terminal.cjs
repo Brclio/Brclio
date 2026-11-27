@@ -37,8 +37,14 @@ async function main() {
     await expect(tabs).toHaveCount(1);
     assert.equal(await terminal.evaluate(() => typeof window.brclio), 'undefined');
     const rows = pane => pane.locator('.xterm-rows');
+    const initialized = new Set();
     const command = async line => {
       await expect(active).toHaveAttribute('data-state', 'running', { timeout: 15000 });
+      const id = await active.getAttribute('data-id');
+      if (windows && !initialized.has(id)) {
+        await expect(rows(active)).toContainText(/PS [^>]*>/, { timeout: 20000 });
+        initialized.add(id);
+      }
       await active.locator('textarea.xterm-helper-textarea').focus();
       await terminal.keyboard.type(line);
       await terminal.keyboard.press('Enter');
@@ -83,6 +89,8 @@ async function main() {
       : "sh -c 'printf \"WAITING-%s\\n\" READY; exec sleep 90'");
     await expect(rows(active)).toContainText('WAITING-READY', { timeout: 10000 });
     await terminal.keyboard.press('Control+c');
+    await expect.poll(async () => (await rows(active).innerText()).split('WAITING-READY').at(-1).trimEnd(),
+      { timeout: 15000 }).toMatch(windows ? /PS [^>]*>$/ : /[%$#]$/);
     await command(windows ? "[Console]::WriteLine(('INTERRUPT-' + 'OK'))" : "printf 'INTERRUPT-%s\\n' OK");
     await expect(rows(active)).toContainText('INTERRUPT-OK', { timeout: 15000 });
     await terminal.close();
