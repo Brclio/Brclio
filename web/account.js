@@ -5,7 +5,9 @@
   const page = document.querySelector('[data-account-page]');
   const trigger = document.getElementById('account-button');
   if (!page && !trigger) return;
-  const deviceId = page ? new URLSearchParams(location.search).get('device') || '' : '';
+  const pageParams = new URLSearchParams(page ? location.search : '');
+  const deviceId = pageParams.get('device') || '';
+  const oauthError = pageParams.get('error');
   const providers = { google: 'Google', github: 'GitHub' };
   const state = { user: null, csrf: '', enabledProviders: [], passwordEnabled: false, tab: 'login', busy: false, oauthPending: false, cloud: null, cloudLoaded: false, cooldown: 0, deviceApproved: false, existingEmail: '' };
   let profileOwner = null;
@@ -43,7 +45,7 @@
       <div class="account-profile"><span class="account-avatar" id="account-avatar" aria-hidden="true"></span><div class="account-identity"><strong id="account-profile-name"></strong><p id="account-profile-username" hidden></p><p id="account-profile-email"></p></div><button id="account-logout" type="button">退出登录</button></div>
       <p class="account-onboarding" id="account-oauth-onboarding" hidden></p>
       <details class="account-settings" id="account-settings">
-        <summary><span>账号设置<small>昵称、账号与登录密码</small></span><span class="account-settings-chevron" aria-hidden="true">⌄</span></summary>
+        <summary><span>账号设置<small>昵称、账号与登录方式</small></span><span class="account-settings-chevron" aria-hidden="true">⌄</span></summary>
         <div class="account-settings-content">
           <form class="account-form" id="account-profile-form" aria-labelledby="account-profile-title">
             <h3 class="account-form-title" id="account-profile-title">个人资料</h3>
@@ -59,6 +61,11 @@
             <div class="account-field"><label for="account-confirm-password">确认新密码</label><input class="account-input" id="account-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="再次输入新密码" required></div>
             <button class="account-button" id="account-save-password" type="submit">设置密码</button>
           </form>
+          <section id="account-google-link-settings" class="account-form account-password-form" hidden aria-labelledby="account-google-link-title">
+            <h3 class="account-form-title" id="account-google-link-title">Google 登录</h3>
+            <p class="account-note">请选择与此 Brclio 账号邮箱相同的 Google 账号。关联后即可用它登录。</p>
+            <button class="account-button account-button-secondary" id="account-link-google" type="button">关联 Google</button>
+          </section>
         </div>
       </details>
       <div class="account-sync-heading"><h3>我的复制偏好</h3><span class="account-cloud-state" id="account-cloud-state">尚未同步</span></div>
@@ -139,6 +146,8 @@
       $('profile-username').hidden = !state.user.nickname || state.user.nickname === state.user.username;
       $('avatar').textContent = Array.from(name)[0].toUpperCase();
       const linked = linkedProviders();
+      $('google-link-settings').hidden = !page || Boolean(host) || Boolean(deviceId) ||
+        !state.enabledProviders.includes('google') || linked.includes('google');
       $('oauth-onboarding').hidden = state.passwordEnabled || !linked.length;
       $('oauth-onboarding').textContent = `已关联 ${providerNames(linked, ' 和 ')}，可在账号设置中完善昵称、账号和密码。`;
       $('current-password-field').hidden = !state.passwordEnabled;
@@ -232,7 +241,11 @@
   }
   async function afterSignIn() {
     $('login-password').value = ''; $('register-password').value = ''; $('code').value = '';
-    await refreshSession(); message(deviceId ? '登录成功，请确认下方的客户端登录。' : '登录成功，你可以管理自己的云端偏好了。');
+    await refreshSession();
+    if (oauthError === 'google_email_proof' && !$('google-link-settings').hidden) {
+      $('settings').open = true;
+      message('登录成功。请在账号设置中选择「关联 Google」。');
+    } else message(deviceId ? '登录成功，请确认下方的客户端登录。' : '登录成功，你可以管理自己的云端偏好了。');
   }
   for (const id of ['nickname', 'edit-username']) $(id).addEventListener('input', () => { profileDirty = true; });
   for (const id of ['new-password', 'confirm-password']) $(id).addEventListener('input', () => $('confirm-password').setCustomValidity(''));
@@ -266,7 +279,7 @@
   $('existing-login').addEventListener('click', () => {
     const email = state.existingEmail;
     state.tab = 'login'; $('identifier').value = email; $('login-password').value = ''; $('register-password').value = ''; $('code').value = '';
-    const alternative = state.enabledProviders.length ? `，或使用相同邮箱的 ${providerNames(state.enabledProviders)} 账号继续` : '';
+    const alternative = state.enabledProviders.length ? `，也可以使用已关联的 ${providerNames(state.enabledProviders)} 账号` : '';
     message(`此邮箱已有账号，请使用密码登录${alternative}。`); render(); $('login-password').focus();
   });
   for (const tab of root.querySelectorAll('[data-account-tab]')) {
@@ -309,6 +322,10 @@
     if (host?.accountCancelOAuth) void host.accountCancelOAuth();
     else void host?.accountCancelGoogle?.();
   });
+  $('link-google').addEventListener('click', () => { void run(async () => {
+    await ensureCurrentUser();
+    location.assign('/api/account/google/start?link=1');
+  }); });
   $('logout').addEventListener('click', () => { void run(async () => {
     await ensureCurrentUser();
     await request('/api/account/logout', 'POST', {}); state.user = null; state.cloud = null; state.cloudLoaded = false;
@@ -353,8 +370,12 @@
   render();
   if (page) void run(async () => {
     await refreshSession();
-    const error = new URLSearchParams(location.search).get('error');
-    if (Object.hasOwn(providers, error)) message(`${providers[error]} 登录未完成，请重试或使用账号和密码登录。`, true);
+    if (oauthError === 'google_email_proof') {
+      if (state.user && !$('google-link-settings').hidden) $('settings').open = true;
+      const signIn = state.user ? '' : '新用户请在「注册新账号」用该邮箱接收验证码。已有账号请先用原来的方式登录。';
+      const link = deviceId ? '请先在本页确认客户端登录，再打开网页「账号设置」选择「关联 Google」。' : '请在网页「账号设置」选择「关联 Google」。';
+      message(`此 Google 账号使用的邮箱需要验证归属。${signIn}${link}`, true);
+    } else if (Object.hasOwn(providers, oauthError)) message(`${providers[oauthError]} 登录未完成，请重试或使用账号和密码登录。`, true);
   });
   else if (window.brclio || window.AndroidBridge) void refreshSession(false).catch(() => {});
 })();

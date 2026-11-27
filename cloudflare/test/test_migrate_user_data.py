@@ -168,6 +168,27 @@ class MigrationTests(unittest.TestCase):
         for secret in ("do-not-print-secret", "alice@example.test", "private-proxy-token", "中文昵称", "u-1"):
             self.assertNotIn(secret, summary)
 
+    def test_provider_index_keys_must_match_the_referenced_user_credentials(self):
+        for provider in ("github", "google"):
+            files = initial_user()
+            credentials_path = "users/u-1/credentials.json"
+            files[credentials_path] = record({**json.loads(files[credentials_path]), provider + "Sub": "42"})
+            index = json.loads(files["users/_index.json"])
+            index[provider] = {"42": "u-1"}
+            files["users/_index.json"] = record(index)
+            self.assertEqual(m.create_plan(*self.pair(source_files=files)).counts["users"], 1)
+
+            # The valid subject still points to the right user, but this extra
+            # key incorrectly claims that a second identity owns the same user.
+            index[provider]["43"] = "u-1"
+            files["users/_index.json"] = record(index)
+            for side in ("source_files", "target_files"):
+                with self.subTest(provider=provider, side=side):
+                    source, target = self.pair(**{side: files})
+                    with self.assertRaisesRegex(m.MigrationError, "Provider index"):
+                        m.create_plan(source, target)
+                    self.assertTrue(all(method == "GET" for api in (source, target) for method, _, _ in api.calls))
+
     def test_apply_preserves_all_user_bytes_source_and_existing_target_and_creates_backup_manifest(self):
         source, target = self.pair()
         before_source, before_target = source.current_head, target.current_head

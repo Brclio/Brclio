@@ -50,5 +50,9 @@ export async function googleIdentity(code, verifier, nonce, callback, env, fetch
     ['identity_email', claims.email_verified === true && typeof claims.email === 'string']
   ];
   for (const [stage, valid] of checks) if (!valid) { onStage(stage); throw new Error('Invalid Google identity claims'); }
-  return {sub: claims.sub, email: claims.email, name: typeof claims.name === 'string' ? claims.name : '', picture: typeof claims.picture === 'string' && claims.picture.startsWith('https://') ? claims.picture : null};
+  // Google vouches for current mailbox ownership for Gmail and Google Workspace.
+  // Other addresses may have changed owners since Google originally verified them.
+  const emailAuthority = claims.email.trim().toLowerCase().endsWith('@gmail.com') ||
+    (typeof claims.hd === 'string' && claims.hd.trim().length > 0);
+  return {sub: claims.sub, email: claims.email, emailAuthority, name: typeof claims.name === 'string' ? claims.name : '', picture: typeof claims.picture === 'string' && claims.picture.startsWith('https://') ? claims.picture : null};
 }

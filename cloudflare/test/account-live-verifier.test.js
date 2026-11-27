@@ -25,7 +25,7 @@ async function fixture(t, challengePath) {
     }
     response.setHeader('Content-Type', 'application/json; charset=utf-8');
     if (request.url === '/api/account/session') {
-      response.end(JSON.stringify({user: null, csrf: null, googleEnabled: true, emailEnabled: true, passwordEnabled: false}));
+      response.end(JSON.stringify({user: null, csrf: null, githubEnabled: true, googleEnabled: true, emailEnabled: true, passwordEnabled: false}));
     } else if (request.url === '/api/account/data') {
       response.writeHead(401); response.end(JSON.stringify({error: '请先登录'}));
     } else if (request.headers.origin === 'https://invalid.example') {

@@ -36,7 +36,7 @@ v0.1.15 移除下载的 10 分钟总时限：有数据持续到达就继续下�
 
 Brclio 介绍与正式版本下载主页位于 [tools.brclio.com](https://tools.brclio.com)，用户账号位于 [/account](https://tools.brclio.com/account)，管理后台位于 [/admin](https://tools.brclio.com/admin)。`cloudflare/` 提供单一 Worker 的账号与客户端更新服务；服务端凭据留在正确 Cloudflare 账号的环境配置中。账号、昵称、个人设置与用户所属的各程序数据存入 `BrclioData/BrclioUserData`，全局代理配置等程序资料存入 `BrclioData/BrclioData`，详见[客户端服务部署说明](docs/client-services.md)。后端上线、新客户端安装包发布和已安装客户端升级分别验证。
 
-账号注册支持 3–32 位账号名、邮箱验证及 8–128 位密码，验证码 10 分钟有效。Google 已验证邮箱可关联同邮箱的现有账号。首次使用 GitHub 时，Brclio 读取 GitHub 已验证的主邮箱，关联同邮箱且已验证的 Brclio 账号，或创建新账号。再次使用 GitHub 登录时以 GitHub 用户 ID 识别原账号。两种方式都支持在账号设置中完善昵称、账号和密码。原生客户端使用系统浏览器登录，用户在网页确认授权后，客户端取得自己的 Brclio 会话。GitHub 登录的生产配置见[客户端服务部署说明](docs/client-services.md#github-登录应用)。
+账号注册支持 3–32 位账号名、邮箱验证及 8–128 位密码，验证码 10 分钟有效。首次使用 Google 登录时，Gmail 和 Google Workspace 托管的已验证邮箱可自动关联同邮箱的已验证 Brclio 账号。使用其他邮箱的新用户请先用邮件验证码注册。已有账号请用原方式登录，再到网页「账号设置」选择「关联 Google」，并选择同邮箱的 Google 账号。首次使用 GitHub 时，Brclio 读取 GitHub 已验证的主邮箱，关联同邮箱且已验证的 Brclio 账号，或创建新账号。再次使用 GitHub 登录时以 GitHub 用户 ID 识别原账号。两种方式都支持在账号设置中完善昵称、账号和密码。原生客户端使用系统浏览器登录，用户在网页确认授权后，客户端取得自己的 Brclio 会话。GitHub 登录的生产配置见[客户端服务部署说明](docs/client-services.md#github-登录应用)。
 
 共享私库目标为 `BrclioData/BrclioUserData`，保持 `users/<用户ID>/profile.json`、`credentials.json` 的统一身份，复制偏好写入 `apps/brclio/data.json`，小程序数据写入 `apps/miniapp/data.json`。旧 `data.json` 保留并仅在新路径缺失时回退读取。按产品所有者要求，账号密码在 `credentials.json` 的 `passwordPlaintext` 字段明文保存，同时保留加盐哈希用于验证；仓库及 Git 历史的读者可直接读取密码。历史账号无法由旧哈希还原密码，将在成功密码登录或设置密码时补写。验证码和会话标识保存摘要。服务端通过 GitHub App 私钥换取单仓库短期安装令牌，不使用个人 Token；App 私钥、安装令牌、邮件和 OAuth 密钥只在服务端使用。接入规范和可复制 Skill 见 [共享用户数据文档](docs/shared-user-data/README.md)。App 配置、真实数据迁移和生产切换分别验收，不从本地实现推断已上线。
 

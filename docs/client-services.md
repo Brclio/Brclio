@@ -12,7 +12,7 @@ GitHub Builds 构建根目录为 `cloudflare`，构建命令 `npm ci && npm test
 
 Wrangler 在部署前执行 `npm run bundle:browser`，把原 `src/entry.js` 的 JavaScript、HTML/TXT 图预编译为 `dist/browser/brclio-client-services.mjs`。构建检查单输出、默认导出和仅运行时内建依赖；`no_bundle = true`、`find_additional_modules = false`、`upload_source_maps = false` 保证实际只上传这一个产物。真实 CLI 隔离验收中，八模块即使关闭 map 仍在激活后失败；同一业务的单文件连续两次上传与激活均健康，修复候选的新字节产物也通过重复部署。平台内部失效机制尚未确证，不能把 source map 认作唯一原因。该构建配置也适用于直接调用 Wrangler。
 
-`npm run deploy` 的 `postdeploy` 门禁只向正式入口执行五项匿名 GET：首页、健康检查、匿名账号会话、固定客户端配置和正式版本摘要。门禁校验响应大小、内容类型及数据结构，并确认现有 Google/邮箱入口可用。支持 GitHub 登录的 Worker 还会返回 `githubEnabled` 配置标志。门禁不携带 Cookie 或 Authorization，不登录或写入用户数据。五项检查共享 60 秒总时限，每次请求最多 15 秒，暂态失败的接口最多尝试三次；任何必需项仍失败即退出 1。上传先于门禁完成，失败时线上已上传的版本仍需维护者复核和恢复。直接运行 Wrangler 后可在 `cloudflare/` 执行 `npm run verify:deployment` 补做同一门禁。输出仅包含固定接口标签、状态、错误枚举、登录入口可用布尔值及公开版本号，不输出配置节点、URL、响应正文、请求头或凭据。
+`npm run deploy` 的 `postdeploy` 门禁只向正式入口执行五项匿名 GET：首页、健康检查、匿名账号会话、固定客户端配置和正式版本摘要。门禁校验响应大小、内容类型及数据结构，并确认 GitHub、Google 和邮箱入口可用。支持 GitHub 登录的 Worker 还会返回 `githubEnabled` 配置标志。门禁不携带 Cookie 或 Authorization，不登录或写入用户数据。五项检查共享 60 秒总时限，每次请求最多 15 秒，暂态失败的接口最多尝试三次；任何必需项仍失败即退出 1。上传先于门禁完成，失败时线上已上传的版本仍需维护者复核和恢复。直接运行 Wrangler 后可在 `cloudflare/` 执行 `npm run verify:deployment` 补做同一门禁。输出仅包含固定接口标签、状态、错误枚举、登录入口可用布尔值及公开版本号，不输出配置节点、URL、响应正文、请求头或凭据。
 
 同名重建 Worker 后，旧 GitHub Builds 连接及历史属于原 Worker 身份，需重新连接当前身份并核验实际部署；源码修改本身不代表控制台连接已经恢复。
 
@@ -56,7 +56,9 @@ users/
 
 JSON 档案和偏好可在私库中直接阅读。按产品所有者明确要求，应用账号密码以 `passwordPlaintext` 明文保存，注册、成功密码登录和设置密码均同步写入；验证仍使用 PBKDF2-SHA256、100000 次迭代及每用户随机盐。旧哈希无法还原明文，历史账号在下次成功密码登录或设置密码后补写；使用 Google 或 GitHub 的用户首次设置密码时才会写入明文密码。明文密码只写入私库凭据文件，不返回账号 API、日志或客户端。仓库及其 Git 历史的读权限可直接看到密码。验证码摘要绑定邮箱与服务端密钥，会话索引仅保存随机标识摘要。账号索引与个人文件在同一次 Git 提交写入，使用非强制 ref 更新防并发覆盖，冲突时重新读取后重试。
 
-Google 的已验证邮箱与现有账号一致时复用原用户 ID、个人目录和密码，增加 Google 身份关联。GitHub 首次登录按已验证的主邮箱关联同邮箱且已验证的 Brclio 账号，或创建新账号。服务端同时保存 GitHub 的数字用户 ID，再次登录时按该 ID 返回原 Brclio 账号，保留已有资料和邮箱。该 Brclio 账号已关联另一个 GitHub ID 时，本次关联会失败。账号设置允许修改昵称与唯一账号名。已有密码时须提供当前密码，Google 或 GitHub 用户首次设密码可使用当前已登录会话。改密保留当前会话，撤销其他会话及尚未消费的已批准客户端登录请求。
+首次 Google 登录时，Brclio 接受 Gmail（`@gmail.com`）或带有已签名 `hd` 声明的 Google Workspace 已验证邮箱，可以新建账号或关联同邮箱的已验证 Brclio 账号。使用第三方邮箱的新用户先用邮件验证码注册，已有账号则用原方式登录。用户随后在网页「账号设置」选择「关联 Google」，用与当前 Brclio 账号相同的已验证邮箱授权。再次登录时按已绑定的 Google `sub` 识别用户，保留原账号资料。[Google 邮箱验证说明](https://developers.google.com/identity/gsi/web/guides/verify-google-id-token)
+
+GitHub 首次登录按已验证的主邮箱关联同邮箱且已验证的 Brclio 账号，或创建新账号。服务端同时保存 GitHub 的数字用户 ID，再次登录时按该 ID 返回原 Brclio 账号，保留已有资料和邮箱。该 Brclio 账号已关联另一个 GitHub ID 时，本次关联会失败。账号设置允许修改昵称与唯一账号名。已有密码时须提供当前密码，Google 或 GitHub 用户首次设密码可使用当前已登录会话。改密保留当前会话，撤销其他会话及尚未消费的已批准客户端登录请求。
 
 网页登录使用七天 HttpOnly、Secure、SameSite=Lax Cookie，写操作要求同源和 CSRF；原生端使用三十天 Bearer，会话仅保存在应用私有本机配置。原生账号桥仅允许固定 `https://tools.brclio.com/api/account/*` 操作，附加 `X-Brclio-Client: native` 且不发送 Origin。渲染层不能选择远程来源或读取 Bearer。原生客户端的 Google 和 GitHub 登录均交给系统浏览器。账号服务不经过内置更新代理，也不向备用 workers.dev 域名增加账号入口。
 
@@ -93,7 +95,7 @@ Google 的已验证邮箱与现有账号一致时复用原用户 ID、个人目�
 - `GET /api/account/session`：当前用户、CSRF 及 `googleEnabled`、`githubEnabled`、`emailEnabled` 配置状态。
 - `POST /api/account/code`、`POST /api/account/register`、`POST /api/account/login`：发送注册验证码、注册并登录、账号或邮箱加密码登录。
 - `PUT /api/account/profile`：更新昵称和账号名；`POST /api/account/password`：首次设置或修改密码。
-- `GET /api/account/google/start`、`GET /api/account/google/callback`：系统浏览器 Google 授权入口与回调。
+- `GET /api/account/google/start`、`GET /api/account/google/callback`：系统浏览器 Google 授权入口与回调。已登录用户从网页账号设置访问 `/api/account/google/start?link=1` 关联 Google。首次匿名登录需要额外邮箱证明时，回到 `/account?error=google_email_proof`，设备登录保留 `device` 参数。
 - `GET /api/account/github/start`、`GET /api/account/github/callback` 提供 GitHub 授权入口与回调。
 - `POST /api/account/device/start`、`GET /api/account/device/poll`、`POST /api/account/device/approve`：客户端一次性请求、带验证证明的轮询及已登录网页明确授权。开始请求携带 `challenge` 和可选的 `provider`（`google` 或 `github`），省略时沿用 Google。
 - `POST /api/account/logout`：撤销当前会话，网页同时清除 Cookie。

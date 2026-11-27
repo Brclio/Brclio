@@ -11,7 +11,7 @@ const release = {version: '0.1.15', tag: 'v0.1.15', publishedAt: '2026-10-22T00:
 const homepage = '<!doctype html><html><head><title>Brclio · 首页</title></head><body><div id="download-grid"></div><div id="release-fallback"></div></body></html>';
 function documentFor(path) {
   return path === '/api/health' ? {ok: true, service: 'brclio-client-services', proxyProtocol: 'vless-tls-websocket'}
-    : path === '/api/account/session' ? {user: null, csrf: null, passwordEnabled: false, googleEnabled: true, emailEnabled: true}
+    : path === '/api/account/session' ? {user: null, csrf: null, passwordEnabled: false, githubEnabled: true, googleEnabled: true, emailEnabled: true}
     : path === '/api/client/update-proxy' ? {version: 1, ttlSeconds: 600, nodes: [structuredClone(node)]} : structuredClone(release);
 }
 const responseFor = path => path === '/' ? new Response(homepage, {headers: {'Content-Type': 'text/html; charset=utf-8'}}) : Response.json(documentFor(path));
@@ -30,7 +30,7 @@ test('all five fixed GET gates validate contracts without credentials and expose
     assert.deepEqual(Object.keys(options.headers).sort(), ['Accept', 'User-Agent']); assert.ok(options.signal instanceof AbortSignal);
   }), ...fast});
   assert.equal(report.ok, true); assert.deepEqual(calls, paths); assert.equal(report.checks.length, 5);
-  assert.deepEqual(check(report, 'anonymous_session'), {endpoint: 'anonymous_session', status: 200, ok: true, errorEnum: null, googleEnabled: true, emailEnabled: true});
+  assert.deepEqual(check(report, 'anonymous_session'), {endpoint: 'anonymous_session', status: 200, ok: true, errorEnum: null, githubEnabled: true, googleEnabled: true, emailEnabled: true});
   assert.equal(check(report, 'latest_release').version, '0.1.15'); safeOutput(report);
 });
 
@@ -49,6 +49,7 @@ test('wrong health identity, authenticated session and missing existing provider
     ['/api/health','health',d=>{d.service='private-secret'},'invalid_schema'],
     ['/api/account/session','anonymous_session',d=>{d.user={email:'private-secret'}},'invalid_schema'],
     ['/api/account/session','anonymous_session',d=>{d.csrf='private-secret'},'invalid_schema'],
+    ['/api/account/session','anonymous_session',d=>{d.githubEnabled=false},'provider_unavailable'],
     ['/api/account/session','anonymous_session',d=>{d.googleEnabled=false},'provider_unavailable'],
     ['/api/account/session','anonymous_session',d=>{delete d.emailEnabled},'invalid_schema']
   ]) {

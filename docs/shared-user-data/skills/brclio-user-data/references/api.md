@@ -30,7 +30,9 @@
 
 ### 第三方登录与客户端授权
 
-网页根据 `GET /session` 返回的 `googleEnabled` 和 `githubEnabled` 显示入口。浏览器访问 `GET /github/start` 后，Worker 用独立签名 Cookie 绑定 state 和 PKCE 验证值，以 `user:email` 权限发起授权。`GET /github/callback` 用授权码读取 GitHub 用户 ID 与已验证的主邮箱。首次可以关联同邮箱且已验证的现有账号，或创建新账号。之后按 GitHub 用户 ID 登录，GitHub 邮箱变更时保持原 Brclio 身份与资料。Google 网页继续使用 `GET /google/start` 和 `GET /google/callback`。
+网页根据 `GET /session` 返回的 `googleEnabled` 和 `githubEnabled` 显示入口。浏览器访问 `GET /github/start` 后，Worker 用独立签名 Cookie 绑定 state 和 PKCE 验证值，以 `user:email` 权限发起授权。`GET /github/callback` 用授权码读取 GitHub 用户 ID 与已验证的主邮箱。首次可以关联同邮箱且已验证的现有账号，或创建新账号。之后按 GitHub 用户 ID 登录，GitHub 邮箱变更时保持原 Brclio 身份与资料。
+
+Google 网页使用 `GET /google/start` 和 `GET /google/callback`。首次登录可用 Gmail 或 Google Workspace 托管的已验证邮箱自动创建账号或关联同邮箱的已验证 Brclio 账号。第三方邮箱用户收到 `/account?error=google_email_proof` 后，先用邮件验证码注册或用原方式登录，再从独立网页账号设置访问 `GET /google/start?link=1`，选择同邮箱的 Google 账号。设备登录页先确认本次客户端登录。完成关联后，再次登录按 Google `sub` 识别原用户。
 
 1. 原生端生成随机 verifier，将其 SHA-256 摘要编码为无填充 base64url，作为 `challenge` 发送至 `POST /device/start`。请求体为 `{challenge,provider}`，其中 `provider` 可以是 `github` 或 `google`，旧客户端省略时沿用 Google。服务器返回 `{id,url}`，请求有效期为五分钟。
 2. 客户端在系统浏览器打开返回的 URL。GitHub 登录成功回到 `/account?device=<id>`，用户在网页明确批准本次设备登录，网页以当前会话和 CSRF 提交 `POST /device/approve`，请求体为 `{id}`。取消或失败回到 `/account?error=github`，若签名 Cookie 绑定了设备，则附上 `device`。

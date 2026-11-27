@@ -237,6 +237,10 @@ def load_records(api, state):
             references = index.get(field, {})
             require(isinstance(references, dict), "Invalid identity index map")
             require(all(isinstance(user_id, str) and user_id in user_ids for user_id in references.values()), "Identity index references a missing user")
+            if field in ("google", "github"):
+                for subject, user_id in references.items():
+                    credentials = records[f"users/{user_id}/credentials.json"]
+                    require(credentials.get(field + "Sub") == subject, "Provider index does not match user credentials")
         for user_id in user_ids:
             profile = records[f"users/{user_id}/profile.json"]
             for field, key in (("username", "usernames"), ("email", "emails")):

@@ -139,6 +139,7 @@ try {
   assert.equal(afterOrdinarySave.saved.quoteMode, 'single');
   await page.locator('#account-button').click();
   await page.locator('#account-apply:not(:disabled)').waitFor();
+  assert.equal(await page.locator('#account-google-link-settings').evaluate(element => element.hidden), true);
   await page.evaluate(() => { window.__accountDeferNextSave = true; });
   await page.locator('#account-apply').click();
   await page.waitForFunction(() => typeof window.__accountFinishDeferredSave === 'function');
@@ -211,8 +212,20 @@ try {
   const standaloneHTML = await readFile(new URL('../cloudflare/src/account.html', import.meta.url), 'utf8');
   await context.route(target => target.pathname === '/account', route => route.fulfill({ status: 200, contentType: 'text/html', body: standaloneHTML }));
   const device = 'device_fixture_' + 'a'.repeat(32);
+  await page.goto(url + '/account');
+  await page.locator('#account-signed-in').waitFor();
+  await page.locator('#account-settings summary').click();
+  await page.getByRole('button', { name: '关联 Google', exact: true }).click();
+  await page.waitForURL(url + '/api/account/google/start?link=1');
+  googleEnabled = false;
+  await page.goto(url + '/account');
+  await page.locator('#account-signed-in').waitFor();
+  await page.locator('#account-settings summary').click();
+  assert.equal(await page.locator('#account-link-google').isVisible(), false);
+  googleEnabled = true;
   await page.goto(url + '/account?device=' + device);
   await page.locator('#account-device-approve:not(:disabled)').waitFor();
+  assert.equal(await page.locator('#account-google-link-settings').evaluate(element => element.hidden), true);
   await page.locator('#account-pref-quoteMode').selectOption('auto');
   await page.locator('#account-cloud-form button[type="submit"]').click();
   await page.locator('#account-message').filter({ hasText: '云端偏好已保存' }).waitFor();
@@ -226,6 +239,22 @@ try {
     await page.setViewportSize({ width, height: 1000 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false, `account page overflow at ${width}`);
   }
+  user = null;
+  await page.goto(url + '/account?error=google_email_proof&device=' + device);
+  const proofMessage = page.locator('#account-message').filter({ hasText: '用该邮箱接收验证码' });
+  await proofMessage.waitFor();
+  assert.match(await proofMessage.innerText(), /已有账号请先用原来的方式登录/);
+  assert.match(await proofMessage.innerText(), /先在本页确认客户端登录.*关联 Google/);
+  assert.equal(await page.locator('#account-register-tab').isEnabled(), true);
+  await page.goto(url + '/account?error=google_email_proof');
+  await proofMessage.waitFor();
+  assert.match(await proofMessage.innerText(), /网页「账号设置」选择「关联 Google」/);
+  assert.doesNotMatch(await proofMessage.innerText(), /确认客户端登录/);
+  await page.locator('#account-identifier').fill('test@example.com');
+  await page.locator('#account-login-password').fill('test-password-123');
+  await page.locator('#account-login-form button[type="submit"]').click();
+  await page.locator('#account-message').filter({ hasText: '登录成功。请在账号设置中选择「关联 Google」' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '关联 Google', exact: true }).isVisible(), true);
   user = null;
   googleEnabled = false;
   await page.goto(url + '/account?device=' + device);
@@ -278,6 +307,9 @@ try {
   await page.locator('#account-refresh').click();
   await page.locator('#account-oauth-onboarding').filter({ hasText: '已关联 Google 和 GitHub' }).waitFor();
   assert.match(await page.locator('#account-password-hint').innerText(), /Google 或 GitHub/);
+  await page.goto(url + '/account');
+  await page.locator('#account-oauth-onboarding').filter({ hasText: '已关联 Google 和 GitHub' }).waitFor();
+  assert.equal(await page.locator('#account-link-google').isVisible(), false);
   user = null;
   await page.goto(url + '/account?device=' + device);
   await page.locator('#account-google:not(:disabled)').waitFor();
@@ -397,5 +429,5 @@ try {
   await page.locator('#account-device-approve').click();
   await page.locator('#account-device-detail').filter({ hasText: '已确认客户端登录' }).waitFor();
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: ['email code and registration', 'password fields cleared after login', 'email password login and logout', 'portable preference upload and apply preserve local base folder', 'failed cloud apply preserves local memory, controls, preview, copied text and subsequent ordinary saves', 'a local edit after Escape wins over an older pending cloud apply in memory, persisted settings and controls', 'cross-tab account changes and in-flight response identity cannot silently apply another account data', 'CSRF protected mutations', 'standalone account preference editor', 'explicit authenticated device approval', 'GitHub availability in login and registration, disabled providers hidden', 'GitHub callback, device approval context and cancellation', 'native GitHub dispatch and legacy Google-only fallback', 'linked Google and GitHub profile settings', 'Google browser handoff and callback retain device context', 'Google accounts can edit nickname and username with draft preservation', 'first password setup, current password validation, password confirmation and secret field clearing', 'cross-tab identity changes abort profile edits and clear drafts', 'duplicate email gives a prefilled login action', 'nickname preferred in shared app header', 'canceled Google flow can complete client login with password fallback', '1440 / 900 / 390 / 320 settings layout'], consoleErrors: errors }, null, 2));
+  console.log(JSON.stringify({ passed: ['email code and registration', 'password fields cleared after login', 'email password login and logout', 'portable preference upload and apply preserve local base folder', 'failed cloud apply preserves local memory, controls, preview, copied text and subsequent ordinary saves', 'a local edit after Escape wins over an older pending cloud apply in memory, persisted settings and controls', 'cross-tab account changes and in-flight response identity cannot silently apply another account data', 'CSRF protected mutations', 'standalone account preference editor', 'explicit authenticated device approval', 'Google third-party email registration and linking guidance preserves device approval', 'Google linking only in signed-in standalone account settings when available', 'GitHub availability in login and registration, disabled providers hidden', 'GitHub callback, device approval context and cancellation', 'native GitHub dispatch and legacy Google-only fallback', 'linked Google and GitHub profile settings', 'Google browser handoff and callback retain device context', 'Google accounts can edit nickname and username with draft preservation', 'first password setup, current password validation, password confirmation and secret field clearing', 'cross-tab identity changes abort profile edits and clear drafts', 'duplicate email gives a prefilled login action', 'nickname preferred in shared app header', 'canceled Google flow can complete client login with password fallback', '1440 / 900 / 390 / 320 settings layout'], consoleErrors: errors }, null, 2));
 } finally { await context.close(); await browser.close(); }

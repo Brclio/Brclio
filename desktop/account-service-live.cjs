@@ -22,7 +22,7 @@ const expected = {session: 200, anonymous_data: 401, foreign_origin: 403, native
 function ready(value) {
   return value?.ok === true && Object.keys(value.results || {}).length === 5 && Object.entries(expected).every(([name, status]) =>
     value.results[name]?.status === status && value.results[name]?.contentType === 'application/json' && value.results[name]?.cfMitigated === null)
-    && value.results.session.googleEnabled === true && value.results.session.emailEnabled === true;
+    && value.results.session.githubEnabled === true && value.results.session.googleEnabled === true && value.results.session.emailEnabled === true;
 }
 
 async function main() {
@@ -46,7 +46,7 @@ async function main() {
         const text = await response.text();
         if (text.length > 16384) throw Error('response_too_large');
         const value = JSON.parse(text);
-        report.normalClientSession.passed = value.user === null && value.csrf === null && value.googleEnabled === true && value.emailEnabled === true && !response.headers.get('Access-Control-Allow-Origin');
+        report.normalClientSession.passed = value.user === null && value.csrf === null && value.githubEnabled === true && value.googleEnabled === true && value.emailEnabled === true && !response.headers.get('Access-Control-Allow-Origin');
       } else { await response.body?.cancel(); report.normalClientSession.passed = false; }
     } catch { report.normalClientSession = {...report.normalClientSession, passed: false, errorEnum: 'network_or_response_failure'}; }
     const { electronAccountVerifierFetch } = require('./account-verifier-fetch.cjs');

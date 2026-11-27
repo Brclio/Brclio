@@ -16,7 +16,7 @@ const OAUTH_DIAGNOSTIC_STAGES = new Set([
   'not_configured', 'state_cookie_missing', 'state_cookie_invalid', 'state_type', 'state_mismatch', 'provider_denied', 'missing_code',
   'identity_exchange', 'token_exchange', 'token_invalid_grant', 'token_invalid_client', 'token_unauthorized_client', 'token_invalid_request', 'token_redirect_mismatch', 'token_rejected', 'token_response',
   'identity_header', 'identity_keys', 'identity_signature', 'identity_issuer', 'identity_audience', 'identity_nonce', 'identity_expiration', 'identity_subject', 'identity_email', 'identity_profile',
-  'storage_transaction', 'storage_identity_conflict', 'storage_commit', 'session_cookie', 'unknown'
+  'email_proof_required', 'storage_transaction', 'storage_identity_conflict', 'storage_commit', 'session_cookie', 'unknown'
 ]);
 function oauthDiagnostic(dependencies, provider, stage) {
   // Only locally defined finite stages can reach logs. Never include request URLs,
@@ -120,6 +120,17 @@ export async function handleAccount(request, env, dependencies = {}) {
     if (action === 'start') {
       if (!enabled) return json({error: isGitHub ? 'GitHub 登录尚未配置' : '谷歌登录尚未配置'}, 503);
       if (!await limit('ACCOUNT_AUTH_LIMITER', ip, 10)) return json({error: '请求过于频繁'}, 429);
+      let link;
+      if (url.searchParams.has('link')) {
+        if (isGitHub || url.searchParams.get('link') !== '1') return json({error: '不支持的账号关联请求'}, 400);
+        if (['same-site', 'cross-site'].includes(request.headers.get('Sec-Fetch-Site'))) return json({error: '请从账号设置关联 Google'}, 403);
+        if (isNative || request.headers.has('Authorization')) return json({error: '请先在网页登录 Brclio'}, 401);
+        const session = await authenticate(request, env, store);
+        if (!session) return new Response(null, {status: 302, headers: {
+          Location: '/account?error=google_email_proof', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'
+        }});
+        link = {userId: session.id, sessionKey: session.sessionKey};
+      }
       const device = url.searchParams.get('device');
       if (device) {
         const state = await store.snapshot(), index = await state.read('users/_index.json', emptyAccountIndex());
@@ -128,7 +139,7 @@ export async function handleAccount(request, env, dependencies = {}) {
       const verifier = random(), state = random(), nonce = isGitHub ? undefined : random();
       // Only the opaque state identifier enters the redirect URL. The PKCE
       // verifier remains in an HttpOnly cookie until the server exchanges code.
-      const oauthCookie = await seal({typ: provider, state, nonce, verifier, device: device || null, exp: seconds() + 600}, env.SESSION_SECRET);
+      const oauthCookie = await seal({typ: provider, state, nonce, verifier, link, device: device || null, exp: seconds() + 600}, env.SESSION_SECRET);
       const target = new URL(isGitHub ? 'https://github.com/login/oauth/authorize' : 'https://accounts.google.com/o/oauth2/v2/auth');
       target.search = new URLSearchParams({
         client_id: isGitHub ? env.GITHUB_OAUTH_CLIENT_ID : env.GOOGLE_CLIENT_ID,
@@ -146,7 +157,8 @@ export async function handleAccount(request, env, dependencies = {}) {
       oauthDiagnostic(dependencies, provider, stage);
       // Preserve only the device bound to our signed OAuth cookie. This lets a
       // canceled browser flow fall back to password login and client approval.
-      const query = new URLSearchParams({error: provider});
+      const proofRequired = !isGitHub && (stage === 'email_proof_required' || (state?.typ === provider && state.link));
+      const query = new URLSearchParams({error: proofRequired ? 'google_email_proof' : provider});
       if (state?.typ === provider && /^[A-Za-z0-9_-]{32,64}$/.test(state.device || '')) query.set('device', state.device);
       return new Response(null, {status: 302, headers: {'Location': '/account?' + query, 'Set-Cookie': clear, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}});
     };
@@ -158,6 +170,13 @@ export async function handleAccount(request, env, dependencies = {}) {
     if (!url.searchParams.get('code')) return failure('missing_code');
     let stage = 'identity_exchange';
     try {
+      let linkSession;
+      if (state.link) {
+        if (isGitHub) return failure('state_type');
+        linkSession = await authenticate(request, env, store);
+        if (!linkSession || linkSession.isBearer || linkSession.id !== state.link.userId ||
+            linkSession.sessionKey !== state.link.sessionKey) return failure('email_proof_required');
+      }
       const code = url.searchParams.get('code'), redirectUri = url.origin + path;
       const identity = isGitHub
         ? await (dependencies.githubIdentity || githubIdentity)(code, state.verifier, redirectUri, env, fetchImpl)
@@ -168,27 +187,44 @@ export async function handleAccount(request, env, dependencies = {}) {
       const email = emailValue(identity.email);
       const validSubject = isGitHub ? /^[1-9]\d{0,19}$/ : /^[A-Za-z0-9_-]{1,255}$/;
       if (!email || typeof identity.sub !== 'string' || !validSubject.test(identity.sub)) return failure(stage);
-      const grant = await makeGrant('web'), newId = crypto.randomUUID();
+      const grant = linkSession ? null : await makeGrant('web'), newId = crypto.randomUUID();
       stage = 'storage_transaction';
       const profile = await store.transaction(async tx => {
         const index = cleanIndex(await tx.read('users/_index.json', emptyAccountIndex()));
         // Indexes created before GitHub support have no GitHub identity map.
         if (isGitHub && !Object.hasOwn(index, 'github')) index.github = {};
         const bySubject = own(index[provider], identity.sub);
-        const existing = bySubject || own(index.emails, email);
+        const byEmail = own(index.emails, email);
+        if (linkSession) {
+          if (byEmail !== linkSession.id || (bySubject && bySubject !== linkSession.id)) {
+            stage = 'email_proof_required';
+            throw new Error('Account link identity mismatch');
+          }
+        } else if (!isGitHub && !bySubject && identity.emailAuthority !== true) {
+          stage = 'email_proof_required';
+          throw new Error('Current mailbox ownership required');
+        }
+        const existing = bySubject || byEmail;
         const credentialKey = isGitHub ? 'githubSub' : 'googleSub';
         let profile, credentials;
         if (existing) {
           profile = await tx.read(userPath(existing, 'profile'));
           credentials = await tx.read(userPath(existing, 'credentials'));
-          // GitHub's immutable ID keeps a returning user in their original
-          // account even if the new primary email belongs to another account.
-          const matches = isGitHub && bySubject
-            ? credentials?.githubSub === identity.sub
-            : profile?.email === email && (!isGitHub || profile.emailVerified === true);
+          // A known provider subject takes precedence over a changed provider email.
+          const matches = bySubject
+            ? credentials?.[credentialKey] === identity.sub
+            : profile?.email === email && profile.emailVerified === true;
           if (!profile || profile.id !== existing || !credentials || !matches || (credentials[credentialKey] && credentials[credentialKey] !== identity.sub)) {
             stage = 'storage_identity_conflict';
             throw new Error('Account identity conflict');
+          }
+          if (linkSession) {
+            const active = credentials.sessions?.[linkSession.sessionKey];
+            if (profile.email !== email || profile.emailVerified !== true || active?.mode !== 'web' ||
+                active.exp !== linkSession.exp || active.exp <= seconds()) {
+              stage = 'email_proof_required';
+              throw new Error('Account link session expired or email changed');
+            }
           }
           profile.providers = Array.from(new Set([...(profile.providers || []), provider]));
           credentials[credentialKey] = identity.sub;
@@ -202,15 +238,18 @@ export async function handleAccount(request, env, dependencies = {}) {
           tx.write(appDataPath(newId, 'brclio'), {version: 1, revision: 0, preferences: {}, updatedAt: new Date().toISOString()});
         }
         index[provider][identity.sub] = profile.id;
-        addGrant(credentials, grant);
+        if (grant) addGrant(credentials, grant);
         tx.write('users/_index.json', index); tx.write(userPath(profile.id, 'profile'), profile); tx.write(userPath(profile.id, 'credentials'), credentials);
         stage = 'storage_commit';
         return profile;
       });
       stage = 'session_cookie';
-      const response = await grantResponse(profile, grant, env);
       const headers = new Headers({'Location': '/account' + (state.device ? '?device=' + encodeURIComponent(state.device) : ''), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'});
-      headers.append('Set-Cookie', response.headers.get('Set-Cookie')); headers.append('Set-Cookie', clear);
+      if (grant) {
+        const response = await grantResponse(profile, grant, env);
+        headers.append('Set-Cookie', response.headers.get('Set-Cookie'));
+      }
+      headers.append('Set-Cookie', clear);
       return new Response(null, {status: 302, headers});
     } catch { return failure(stage); }
   }

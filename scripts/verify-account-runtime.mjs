@@ -27,7 +27,7 @@ for (const mode of ['ready', 'challenge', 'invalid-json', 'redirect']) {
       response.end(mode === 'invalid-json' ? sensitive : JSON.stringify({error: 'invalid origin'})); return;
     }
     response.setHeader('content-type', 'application/json');
-    if (request.url === '/api/account/session') response.end(JSON.stringify({user: null, csrf: null, googleEnabled: true, emailEnabled: true}));
+    if (request.url === '/api/account/session') response.end(JSON.stringify({user: null, csrf: null, githubEnabled: true, googleEnabled: true, emailEnabled: true}));
     else if (request.url === '/api/account/data') {response.writeHead(401); response.end(JSON.stringify({error: 'login required'}));}
     else if (request.url === '/api/account/login' && request.method === 'POST' && request.headers['x-brclio-client'] === 'native'
       && value?.identifier === '__brclio_readiness_invalid__' && value.password === 'not-a-real-password') {

@@ -34,7 +34,7 @@ const endpoints = [
   {label: 'health', path: '/api/health', limit: 4096, valid: value => object(value) && value.ok === true
     && value.service === 'brclio-client-services' && value.proxyProtocol === 'vless-tls-websocket'},
   {label: 'anonymous_session', path: '/api/account/session', limit: 8192, valid: value => object(value) && value.user === null
-    && value.csrf === null && value.passwordEnabled === false && typeof value.googleEnabled === 'boolean' && typeof value.emailEnabled === 'boolean'},
+    && value.csrf === null && value.passwordEnabled === false && typeof value.githubEnabled === 'boolean' && typeof value.googleEnabled === 'boolean' && typeof value.emailEnabled === 'boolean'},
   {label: 'client_configuration', path: '/api/client/update-proxy', limit: 32 * 1024, valid: value => { parseProxyConfiguration(value); return true; }},
   {label: 'latest_release', path: '/api/releases/latest', limit: 64 * 1024, valid: releaseValid}
 ];
@@ -109,9 +109,9 @@ export async function verifyDeployment({fetchImpl = globalThis.fetch, attempts =
           let valid; try { valid = endpoint.valid(value); } catch { valid = false; }
           if (!valid) throw failure('invalid_schema');
           if (endpoint.label === 'anonymous_session') {
-            if (typeof value.githubEnabled === 'boolean') last.githubEnabled = value.githubEnabled;
+            last.githubEnabled = value.githubEnabled;
             last.googleEnabled = value.googleEnabled; last.emailEnabled = value.emailEnabled;
-            if (!value.googleEnabled || !value.emailEnabled) throw failure('provider_unavailable');
+            if (!value.githubEnabled || !value.googleEnabled || !value.emailEnabled) throw failure('provider_unavailable');
           }
           if (endpoint.label === 'latest_release') last.version = value.version;
           if (active.aborted) throw failure(abortCode());

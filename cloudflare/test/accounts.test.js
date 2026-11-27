@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {handleAccount} from '../src/accounts.js';
-import {digest, hashPassword, checkPassword, random} from '../src/accounts-crypto.js';
+import {digest, hashPassword, checkPassword, random, seal} from '../src/accounts-crypto.js';
 import {createAccountStore} from '../src/account-store.js';
 import {sendRegistrationCode} from '../src/mail.js';
 import {googleIdentity} from '../src/accounts-google.js';
@@ -32,7 +32,7 @@ function fixture() {
   const env = {SESSION_SECRET: 'test-account-secret-of-at-least-32-characters', SMTP_EMAIL: 'sender@example.com', SMTP_APP_PASSWORD: 'test-app-password', GOOGLE_CLIENT_ID: 'client', GOOGLE_CLIENT_SECRET: 'secret', ACCOUNT_LIMITER: allow, ACCOUNT_AUTH_LIMITER: allow, ACCOUNT_EMAIL_LIMITER: allow, ACCOUNT_EMAIL_GLOBAL_LIMITER: allow};
   env.GITHUB_OAUTH_CLIENT_ID = 'github-client';
   env.GITHUB_OAUTH_CLIENT_SECRET = 'github-secret';
-  const dependencies = {accountDiagnostic: () => {}, accountStore: store, sendRegistrationCode: async (_env, email, code) => sent.push({email, code}), googleIdentity: async () => ({sub: 'google-test-sub', email: 'google@example.com', name: 'Google User'}), githubIdentity: async () => ({sub: '42', email: 'github@example.com'})};
+  const dependencies = {accountDiagnostic: () => {}, accountStore: store, sendRegistrationCode: async (_env, email, code) => sent.push({email, code}), googleIdentity: async () => ({sub: 'google-test-sub', email: 'google@example.com', emailAuthority: true, name: 'Google User'}), githubIdentity: async () => ({sub: '42', email: 'github@example.com'})};
   async function call(path, method = 'GET', body, options = {}) {
     const headers = {...(method !== 'GET' ? {'Content-Type': 'application/json', Origin: 'https://tools.brclio.com'} : {}), ...(options.native ? {'X-Brclio-Client': 'native'} : {}), ...options.headers};
     if (options.native) delete headers.Origin;
@@ -62,6 +62,16 @@ async function githubCallback(f, device) {
   const state = new URL(start.headers.get('Location')).searchParams.get('state');
   return f.call('github/callback?state=' + state + '&code=valid', 'GET', undefined, {
     headers: {Cookie: start.headers.get('Set-Cookie').split(';')[0]}
+  });
+}
+
+async function startGoogle(f, query = '', webCookie = '') {
+  const start = await f.call('google/start' + query, 'GET', undefined, {headers: {Cookie: webCookie}});
+  assert.equal(start.status, 302);
+  const state = new URL(start.headers.get('Location')).searchParams.get('state');
+  const oauthCookie = start.headers.get('Set-Cookie').split(';')[0];
+  return (cookie = webCookie) => f.call('google/callback?code=valid&state=' + state, 'GET', undefined, {
+    headers: {Cookie: [oauthCookie, cookie].filter(Boolean).join('; ')}
   });
 }
 
@@ -313,7 +323,7 @@ test('Google authorization verifies state cookie and creates a Google identity w
   assert.equal(profile.email, 'google@example.com'); assert.deepEqual(profile.providers, ['google']);
 });
 
-test('verified Google email links the existing password account and preserves its user folder and password', async () => {
+test('a Google-authoritative email links the existing password account and preserves its user folder and password', async () => {
   const f = fixture(), existing = await f.register('existing-user', 'google@example.com');
   const credentialsPath = 'users/' + existing.user.id + '/credentials.json';
   const originalPassword = structuredClone(f.store.files.get(credentialsPath).password);
@@ -331,6 +341,87 @@ test('verified Google email links the existing password account and preserves it
   assert.deepEqual(f.store.files.get(credentialsPath).password, originalPassword);
   assert.equal(f.store.files.get(credentialsPath).googleSub, 'google-test-sub');
   assert.equal((await f.call('login', 'POST', {identifier:'google@example.com', password:'my correct password'})).status, 200);
+});
+
+test('a third-party Google email needs mailbox proof for its first signup or automatic link', async () => {
+  const f = fixture(), existing = await f.register();
+  const device = await (await f.call('device/start', 'POST', {challenge: await digest(random())}, {native: true})).json();
+  const before = structuredClone([...f.store.files]);
+  for (const email of ['new@example.com', existing.user.email]) {
+    f.dependencies.googleIdentity = async () => ({sub: 'third-party', email, emailAuthority: false});
+    const finish = await startGoogle(f, '?device=' + device.id, existing.cookie);
+    const result = await finish();
+    assert.equal(result.headers.get('Location'), '/account?error=google_email_proof&device=' + device.id);
+    assert.ok(result.headers.getSetCookie().every(value => !value.startsWith('__Host-brclio_user=')));
+    assert.deepEqual([...f.store.files], before);
+  }
+});
+
+test('Google explicit linking keeps the original verified web account and its session', async () => {
+  const f = fixture(), owner = await f.register();
+  const identity = {sub: 'third-party', email: owner.user.email, emailAuthority: false};
+  f.dependencies.googleIdentity = async () => identity;
+  const path = 'users/' + owner.user.id + '/credentials.json';
+  const sessions = structuredClone(f.store.files.get(path).sessions);
+  const expiredCookie = await seal({typ: 'account', id: owner.user.id, exp: Math.floor(Date.now() / 1000) - 1}, f.env.SESSION_SECRET);
+  for (const cookie of ['', '__Host-brclio_user=' + expiredCookie]) {
+    const signIn = await f.call('google/start?link=1', 'GET', undefined, {headers: {Cookie: cookie}});
+    assert.equal(signIn.status, 302);
+    assert.equal(signIn.headers.get('Location'), '/account?error=google_email_proof');
+    assert.equal(signIn.headers.has('Set-Cookie'), false);
+  }
+  const native = await f.call('login', 'POST', {identifier: owner.user.username, password: 'my correct password'}, {native: true});
+  const token = (await native.json()).token;
+  assert.equal((await f.call('google/start?link=1', 'GET', undefined, {headers: {Authorization: 'Bearer ' + token}})).status, 401);
+  const finish = await startGoogle(f, '?link=1', owner.cookie);
+  const before = structuredClone(f.store.files.get(path).sessions);
+  const result = await finish();
+  assert.equal(result.headers.get('Location'), '/account');
+  assert.ok(result.headers.getSetCookie().every(value => !value.startsWith('__Host-brclio_user=')));
+  assert.deepEqual(f.store.files.get(path).sessions, before);
+  assert.ok(Object.keys(sessions).every(key => before[key]));
+  const web = await (await f.call('session', 'GET', undefined, {headers: {Cookie: owner.cookie}})).json();
+  assert.equal(web.csrf, owner.csrf); assert.deepEqual(web.user.providers, ['password', 'google']);
+
+  // An ordinary Google authorization started by a previous Worker version
+  // has no link metadata. A previously associated sub remains sufficient.
+  identity.email = 'changed-outside-brclio@example.com';
+  const oldState = random();
+  const oldCookie = await seal({typ: 'google', state: oldState, nonce: random(), verifier: random(), device: null,
+    exp: Math.floor(Date.now() / 1000) + 60}, f.env.SESSION_SECRET);
+  const again = await f.call('google/callback?code=valid&state=' + oldState, 'GET', undefined, {headers: {Cookie: '__Host-brclio_oauth=' + oldCookie}});
+  assert.equal(again.headers.get('Location'), '/account');
+  const returnedCookie = again.headers.getSetCookie().find(value => value.startsWith('__Host-brclio_user=')).split(';')[0];
+  const returned = await (await f.call('session', 'GET', undefined, {headers: {Cookie: returnedCookie}})).json();
+  assert.equal(returned.user.id, owner.user.id); assert.equal(returned.user.email, owner.user.email);
+});
+
+test('Google explicit linking rejects a changed account, session, email or provider binding', async () => {
+  const f = fixture(), owner = await f.register(), other = await f.googleSignIn();
+  const anotherLogin = await f.call('login', 'POST', {identifier: owner.user.username, password: 'my correct password'});
+  const sameAccountDifferentSession = anotherLogin.headers.get('Set-Cookie').split(';')[0];
+  const identity = {sub: 'unbound', email: owner.user.email, emailAuthority: false};
+  f.dependencies.googleIdentity = async () => identity;
+  const before = structuredClone([...f.store.files]);
+  const finish = await startGoogle(f, '?link=1', owner.cookie);
+  for (const cookie of ['', other.cookie, sameAccountDifferentSession]) {
+    assert.equal((await finish(cookie)).headers.get('Location'), '/account?error=google_email_proof');
+  }
+  identity.email = other.user.email;
+  assert.equal((await finish()).headers.get('Location'), '/account?error=google_email_proof');
+  identity.sub = 'google-test-sub'; identity.email = owner.user.email;
+  assert.equal((await finish()).headers.get('Location'), '/account?error=google_email_proof');
+  assert.deepEqual([...f.store.files], before);
+
+  // The browser session is valid when the callback arrives and revoked
+  // before the account-link transaction begins.
+  f.dependencies.googleIdentity = async () => {
+    assert.equal((await f.call('logout', 'POST', {}, {headers: {Cookie: owner.cookie, 'X-CSRF-Token': owner.csrf}})).status, 200);
+    return {...identity, sub: 'unbound'};
+  };
+  const revoked = await finish();
+  assert.equal(revoked.headers.get('Location'), '/account?error=google_email_proof');
+  assert.equal(f.store.files.get('users/_index.json').google.unbound, undefined);
 });
 
 test('GitHub configuration is independent of Google and repository access credentials', async () => {
@@ -639,8 +730,13 @@ test('Google ID tokens require signature, matching audience and nonce, verified 
     const data = encode64(encoder.encode(JSON.stringify({alg: 'RS256', kid: jwk.kid}))) + '.' + encode64(encoder.encode(JSON.stringify(claims)));
     return data + '.' + encode64(new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', pair.privateKey, encoder.encode(data))));
   }
-  token = await signed(valid);
-  assert.equal((await googleIdentity('code', 'verifier', 'nonce', 'https://tools.brclio.com/api/account/google/callback', {GOOGLE_CLIENT_ID: 'client', GOOGLE_CLIENT_SECRET: 'secret'}, fetchImpl)).email, valid.email);
+  for (const [emailClaims, authority] of [[{}, false], [{hd: ' '}, false], [{hd: true}, false],
+    [{hd: 'example.com'}, true], [{email: 'verified@GMAIL.COM'}, true], [{email: 'verified@gmail.com.example'}, false]]) {
+    token = await signed({...valid, ...emailClaims});
+    const identity = await googleIdentity('code', 'verifier', 'nonce', 'https://tools.brclio.com/api/account/google/callback', {GOOGLE_CLIENT_ID: 'client', GOOGLE_CLIENT_SECRET: 'secret'}, fetchImpl);
+    assert.equal(identity.email, emailClaims.email || valid.email);
+    assert.equal(identity.emailAuthority, authority);
+  }
   for (const invalid of [{...valid, aud: 'another-client'}, {...valid, nonce: 'other-nonce'}, {...valid, email_verified: false}, {...valid, exp: now - 1}]) {
     token = await signed(invalid);
     await assert.rejects(googleIdentity('code', 'verifier', 'nonce', 'https://tools.brclio.com/api/account/google/callback', {GOOGLE_CLIENT_ID: 'client', GOOGLE_CLIENT_SECRET: 'secret'}, fetchImpl), /claims/);

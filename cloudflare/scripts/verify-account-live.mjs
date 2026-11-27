@@ -43,7 +43,7 @@ try {
     results.session.googleEnabled = value.googleEnabled;
     if (typeof value.githubEnabled === 'boolean') results.session.githubEnabled = value.githubEnabled;
     if (typeof value.emailEnabled === 'boolean') results.session.emailEnabled = value.emailEnabled;
-    if (args.includes('--ready') && (!value.googleEnabled || !value.emailEnabled)) throw new Error('providers_not_configured');
+    if (args.includes('--ready') && (value.githubEnabled !== true || !value.googleEnabled || !value.emailEnabled)) throw new Error('providers_not_configured');
   }});
   await check('anonymous_data', '/api/account/data', {expected: 401});
   await check('foreign_origin', '/api/account/login', {method: 'POST', headers: {'Content-Type': 'application/json', Origin: 'https://invalid.example'}, body: {identifier: 'test', password: 'not-a-real-password'}, expected: 403});
