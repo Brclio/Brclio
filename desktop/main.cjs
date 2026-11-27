@@ -39,6 +39,7 @@ const updateLaunchArgs = process.argv.filter((value, index, argv) =>
   ['--brclio-update-job', '--brclio-update-token'].includes(value) || ['--brclio-update-job', '--brclio-update-token'].includes(argv[index - 1]));
 const gotLock = app.requestSingleInstanceLock({ copyPaths: initialPaths, updateLaunchArgs });
 let mainWindow;
+let terminalHost;
 let rendererReady = false;
 let pendingUpdateLaunchArgs = updateLaunchArgs;
 let pendingPaths = [];
@@ -213,6 +214,12 @@ function handle(channel, callback) {
 }
 
 function registerIPC() {
+  if (['darwin', 'win32'].includes(process.platform)) {
+    handle('brclio:terminal:open', () => {
+      terminalHost ??= require('./terminal/host.cjs').createTerminalHost({ app, BrowserWindow, ipcMain, dialog, clipboard });
+      return terminalHost.open();
+    });
+  }
   handle('brclio:logs:get', () => softwareLogs.read());
   handle('brclio:logs:event', (action, outcome) => softwareLogs.recordUI(action, outcome));
   handle('brclio:xhs:request', async (action, input) => (await getXhsService()).request(action, input));

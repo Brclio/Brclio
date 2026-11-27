@@ -9,6 +9,8 @@ if (process.platform === 'darwin') {
 }
 
 contextBridge.exposeInMainWorld('brclio', Object.freeze({
+  ...(['darwin', 'win32'].includes(process.platform)
+    ? { openTerminal: () => ipcRenderer.invoke('brclio:terminal:open') } : {}),
   xhsRequest: (action, input) => ipcRenderer.invoke('brclio:xhs:request', action, input),
   onXhsEvent: callback => {
     if (typeof callback !== 'function') throw new TypeError('需要小红书状态处理函数。');

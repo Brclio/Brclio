@@ -1,0 +1,71 @@
+name: Desktop terminal
+
+on:
+  push:
+    paths:
+      - '.github/workflows/desktop-terminal.yml'
+      - 'desktop/terminal/**'
+      - 'desktop/terminal-*.test.cjs'
+      - 'desktop/main.cjs'
+      - 'desktop/preload.cjs'
+      - 'web/app.js'
+      - 'web/index.html'
+      - 'scripts/*after-pack.cjs'
+      - 'scripts/terminal-*.cjs'
+      - 'scripts/verify-terminal.cjs'
+      - 'package*.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packaged-terminal:
+    name: Packaged terminal on ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            runner: windows-2022
+            platform: win
+            arch: x64
+            executable: release/win-unpacked/Brclio.exe
+            installer: release/*.exe
+          - name: macOS Intel
+            runner: macos-15-intel
+            platform: mac
+            arch: x64
+            executable: release/mac/Brclio.app/Contents/MacOS/Brclio
+            installer: release/*.dmg
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run sync
+      - run: node --test desktop/terminal-host.test.cjs desktop/terminal-pty.test.cjs
+      - run: node scripts/verify-terminal.cjs
+      - run: npm run prepare:xhs
+      - name: Build the desktop test installer
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+      - name: Run commands in the packaged terminal
+        env:
+          BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
+        run: node scripts/verify-terminal.cjs
+      - name: Save the verified test installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal-test-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ matrix.installer }}
+          if-no-files-found: error
+          retention-days: 7

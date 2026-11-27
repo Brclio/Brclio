@@ -3,6 +3,7 @@
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { enableMacPtyHelper } = require('./terminal-helper-mode.cjs');
 
 const execute = promisify(execFile);
 
@@ -19,6 +20,7 @@ module.exports = async function afterPack(context) {
   }
   const version = context.packager.appInfo.version;
   const app = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
+  enableMacPtyHelper(path.join(app, 'Contents', 'Resources', 'app.asar.unpacked', 'node_modules', 'node-pty'), arch);
   const output = path.join(app, 'Contents', 'PlugIns', 'BrclioFinderSync.appex');
   const buildScript = path.join(__dirname, 'build-mac-finder-extension.mjs');
   const result = await execute(process.execPath, [buildScript, '--arch', arch, '--version', version, '--output', output], {

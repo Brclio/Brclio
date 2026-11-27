@@ -47,11 +47,17 @@ try {
   assert.equal(await page.locator('#help-dialog').isVisible(), true);
   await page.keyboard.press('Escape');
   await page.locator('[data-view="tools"]').first().click();
+  await page.locator('#tool-filter').fill('终端');
+  assert.equal(await page.locator('#terminal-card').isVisible(), false);
+  assert.equal(await page.locator('#no-tools').isVisible(), true);
   await page.locator('#tool-filter').fill('不存在');
   assert.equal(await page.locator('#no-tools').isVisible(), true);
   await page.locator('#tool-filter').fill('路径');
   await page.locator('.tool-card:visible').click();
   await page.locator('#open-search').click();
+  await page.locator('#global-search').fill('powershell');
+  assert.equal(await page.locator('#search-terminal').isVisible(), false);
+  assert.equal(await page.locator('#search-empty').isVisible(), true);
   await page.locator('#global-search').fill('path');
   await page.keyboard.press('Enter');
   assert.equal(await page.locator('#view-copy').isVisible(), true);

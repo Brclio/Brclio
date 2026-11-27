@@ -1,10 +1,26 @@
 # Brclio
 
-让日常的小事，变得顺手一点。Windows、macOS、Android 共用界面的本地工具软件，提供**复制文件和文件夹路径**与**小红书媒体工具**。
+让日常的小事，变得顺手一点。Windows、macOS、Android 共用界面的本地工具软件，提供**复制文件和文件夹路径**与**小红书媒体工具**。Windows 和 macOS 桌面端还提供 **Brclio 终端**。
 
 [便捷下载器（支持无 VPN 安装）](https://tools.brclio.com/downloader/) · [Brclio 客户端安装包](https://github.com/Brclio/Brclio/releases/latest) · [发布记录](https://github.com/Brclio/Brclio/releases)
 
 ![Brclio 界面预览](docs/screenshots/desktop-preview.png)
+
+## Brclio 终端
+
+在桌面客户端的侧栏或「全部工具」中点击「Brclio 终端」，会打开独立窗口。再次点击会回到已有终端。macOS 默认启动用户的登录 Shell，Windows 默认启动 Windows PowerShell，可在窗口底部为新会话选择 Shell 和起始目录。
+
+每个标签页和分屏各有一个本地会话。拖动分隔条可以调整大小，放大镜可搜索当前窗格的滚动记录。切换标签或回到工具箱时，命令会继续运行。关闭窗格会结束该会话，关闭终端窗口会结束其中所有会话。
+
+| 操作 | macOS | Windows |
+| --- | --- | --- |
+| 新建标签 | ⌘T | Ctrl+Shift+T |
+| 左右分屏 | ⌘D | Ctrl+Shift+D |
+| 上下分屏 | ⌘Shift+D | Ctrl+Shift+Alt+D |
+| 搜索当前窗格 | ⌘F | Ctrl+Shift+F |
+| 中断前台命令 | Ctrl+C | Ctrl+C |
+
+Brclio 终端使用 xterm.js 显示终端内容，并通过 node-pty 连接本机的 PTY 或 Windows ConPTY。
 
 ## 小红书工具（v0.2.0）
 

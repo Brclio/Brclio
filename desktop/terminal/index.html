@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Brclio 终端</title>
+  <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css">
+  <link rel="stylesheet" href="terminal.css">
+  <script defer src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script defer src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script defer src="../../node_modules/@xterm/addon-search/lib/addon-search.js"></script>
+  <script defer src="terminal.js"></script>
+</head>
+<body>
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="plus" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></symbol>
+    <symbol id="columns" viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14" rx="2"/><path d="M10 3v14"/></symbol>
+    <symbol id="rows" viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14" rx="2"/><path d="M3 10h14"/></symbol>
+    <symbol id="glass" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></symbol>
+    <symbol id="cross" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15"/></symbol>
+    <symbol id="sheets" viewBox="0 0 20 20"><path d="M7 6V3h9v11h-3"/><rect x="3" y="6" width="10" height="11" rx="1"/></symbol>
+    <symbol id="clipboard" viewBox="0 0 20 20"><path d="M7 4H4v13h12V4h-3"/><rect x="7" y="2" width="6" height="4" rx="1"/></symbol>
+    <symbol id="folder" viewBox="0 0 20 20"><path d="M2.5 5h5l1.5 2H17v9H2.5z"/></symbol>
+  </svg>
+  <header>
+    <h1><img src="../../web/assets/icon.png" alt="">Brclio <span>终端</span></h1>
+    <div class="actions" role="group" aria-label="会话操作">
+      <button id="new-tab" class="primary"><svg aria-hidden="true"><use href="#plus"/></svg>新建标签</button>
+      <button id="split-right" aria-label="左右分屏"><svg aria-hidden="true"><use href="#columns"/></svg></button>
+      <button id="split-down" aria-label="上下分屏"><svg aria-hidden="true"><use href="#rows"/></svg></button>
+      <button id="close-pane" aria-label="关闭当前窗格"><svg aria-hidden="true"><use href="#cross"/></svg></button>
+      <span class="rule"></span>
+      <button id="find" aria-label="查找终端内容" aria-expanded="false" aria-controls="find-bar"><svg aria-hidden="true"><use href="#glass"/></svg></button>
+      <button id="copy" aria-label="复制所选文本"><svg aria-hidden="true"><use href="#sheets"/></svg></button>
+      <button id="paste" aria-label="粘贴"><svg aria-hidden="true"><use href="#clipboard"/></svg></button>
+    </div>
+  </header>
+  <div id="tabs" role="tablist" aria-label="终端标签"></div>
+  <div id="find-bar" role="search" hidden>
+    <label for="find-input">查找</label><input id="find-input" type="search" placeholder="在当前窗格中查找" autocomplete="off" spellcheck="false">
+    <span id="find-result" role="status"></span>
+    <button id="find-prev" title="上一个（Shift + Enter）">上一个</button><button id="find-next" title="下一个（Enter）">下一个</button>
+    <button id="find-close" aria-label="关闭查找" title="关闭查找（Esc）"><svg aria-hidden="true"><use href="#cross"/></svg></button>
+  </div>
+  <main id="workspace" aria-label="终端工作区">
+    <div id="empty" hidden><p>所有会话已关闭</p><button id="empty-new">新建标签</button></div>
+  </main>
+  <footer>
+    <span id="status" role="status" aria-live="polite">正在打开终端…</span>
+    <div class="defaults">
+      <label for="profile">新会话</label><select id="profile" aria-label="新会话的 Shell"><option value="default">默认 Shell</option></select>
+      <button id="directory" title="选择新会话的起始目录"><svg aria-hidden="true"><use href="#folder"/></svg><span id="directory-label">主目录</span></button>
+    </div>
+  </footer>
+</body>
+</html>
