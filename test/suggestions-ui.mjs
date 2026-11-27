@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {test} from 'node:test';
+import {fileURLToPath} from 'node:url';
 import {chromium} from '@playwright/test';
 import {handleAccount} from '../cloudflare/src/accounts.js';
 import {digest, seal} from '../cloudflare/src/accounts-crypto.js';
@@ -13,6 +14,13 @@ const env = {
   SESSION_SECRET: 'isolated-suggestions-browser-test-secret',
   ACCOUNT_LIMITER: {limit: async () => ({success: true})}
 };
+
+function launchBrowser() {
+  return chromium.launch({
+    executablePath: process.env.BRCLIO_CHROME || (process.platform === 'darwin'
+      ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined)
+  });
+}
 
 async function fixtureAccount(id, mode, nickname) {
   const exp = Math.floor(Date.now() / 1000) + 3600;
@@ -36,10 +44,7 @@ test('browser and desktop users share a suggestion, half-star ratings and commen
     fetch: (url, init) => dispatch(new Request(url, init))
   });
 
-  const browser = await chromium.launch({
-    executablePath: process.env.BRCLIO_CHROME || (process.platform === 'darwin'
-      ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined)
-  });
+  const browser = await launchBrowser();
   t.after(() => browser.close());
   const page = await browser.newPage();
   page.setDefaultTimeout(10000);
@@ -157,4 +162,81 @@ test('browser and desktop users share a suggestion, half-star ratings and commen
   await board.getByRole('button', {name: '登录账号'}).waitFor();
   assert.equal(await board.getByRole('article').count(), 0);
   assert.deepEqual(errors, []);
+});
+
+test('refreshing ten expanded discussions leaves desktop account slots free and stops queued reads on exit', async t => {
+  const items = Array.from({length: 10}, (_, index) => ({
+    id: crypto.randomUUID(), title: '建议 ' + index, description: '讨论内容', category: '', author: '测试用户',
+    createdAt: new Date().toISOString(), ratingCount: 0, averageRating: null, commentCount: 1
+  }));
+  let phase = 0, gate, notifyStarted, pending = 0, peak = 0;
+  const calls = [];
+  const desktop = accountClient.createAccountClient({
+    store: {read: async () => 'fixture-native-token', write: async () => assert.fail('read-only test')},
+    fetch: async url => {
+      const path = new URL(url).pathname;
+      if (path === '/api/account/session') return Response.json({user: {id: 'viewer'}});
+      if (path === endpoint) return Response.json({items, nextCursor: null});
+      const topic = items.find(item => path === endpoint + '/' + item.id);
+      assert.ok(topic);
+      const batch = phase;
+      calls.push({batch, id: topic.id});
+      pending++; peak = Math.max(peak, pending);
+      notifyStarted?.();
+      try {
+        await gate;
+        return Response.json({suggestion: {...topic, myRating: null}, nextCursor: null,
+          comments: [{id: topic.id, author: topic.author, createdAt: topic.createdAt, text: '讨论版本 ' + batch}]});
+      } finally { pending--; }
+    }
+  });
+  const browser = await launchBrowser();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  page.setDefaultTimeout(10000);
+  await page.exposeFunction('fixtureAccountRequest', input => desktop.request(input));
+  await page.setContent('<section id="view-suggestions"></section>');
+  await page.evaluate(() => { window.BrclioHost = {accountRequest: window.fixtureAccountRequest}; });
+  await page.addScriptTag({path: fileURLToPath(new URL('../web/suggestions.js', import.meta.url))});
+  const navigate = name => page.evaluate(name => window.dispatchEvent(new CustomEvent('brclio:view', {detail: {name}})), name);
+  await navigate('suggestions');
+  const cards = page.getByRole('article');
+  for (let i = 0; i < items.length; i++) {
+    const card = cards.nth(i);
+    await card.getByRole('button', {name: /评分与讨论/}).click();
+    await card.getByText('讨论版本 0', {exact: true}).waitFor();
+  }
+  const draft = cards.first().getByLabel('写评论');
+  await draft.fill('批量刷新时保留这条草稿');
+  async function beginRefresh() {
+    phase++;
+    let release;
+    gate = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { notifyStarted = resolve; });
+    await page.getByRole('button', {name: '刷新', exact: true}).click();
+    await started;
+    return release;
+  }
+  const finishFirst = await beginRefresh();
+  // A session check must still succeed while the first group of detail reads is held open.
+  try {
+    assert.equal((await desktop.request({path: '/api/account/session'})).user.id, 'viewer');
+  } finally { finishFirst(); }
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('.sg-comment-text'))
+    .filter(node => node.textContent === '讨论版本 1').length === 10);
+  assert.equal(new Set(calls.filter(call => call.batch === 1).map(call => call.id)).size, items.length);
+  assert.ok(peak < 8);
+  assert.equal(await draft.inputValue(), '批量刷新时保留这条草稿');
+
+  const finishSecond = await beginRefresh();
+  await navigate('copy');
+  const callsAtExit = calls.length;
+  finishSecond();
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('.sg-rating')).every(group => !group.disabled));
+  assert.equal(calls.length, callsAtExit);
+  assert.equal(await page.getByText('讨论版本 2', {exact: true}).count(), 0);
+  await navigate('suggestions');
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('.sg-comment-text'))
+    .filter(node => node.textContent === '讨论版本 2').length === 10);
+  assert.equal(await draft.inputValue(), '批量刷新时保留这条草稿');
 });

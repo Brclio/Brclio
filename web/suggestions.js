@@ -7,6 +7,20 @@
   const base = '/api/account/suggestions';
   const request = (path, method = 'GET', body) =>
     window.BrclioHost.accountRequest({ path, method, ...(body === undefined ? {} : { body }) });
+  // The desktop account bridge shares eight request slots with login, votes and comments.
+  // Keep discussion reads bounded even when every card on a page is expanded.
+  let availableDetailReads = 3;
+  const waitingDetailReads = [];
+  async function scheduleDetailRead(read) {
+    if (availableDetailReads) availableDetailReads--;
+    else await new Promise(resolve => waitingDetailReads.push(resolve));
+    try { return await read(); }
+    finally {
+      const next = waitingDetailReads.shift();
+      if (next) next();
+      else availableDetailReads++;
+    }
+  }
   const pagePath = (path, cursor) => cursor ? path + '?cursor=' + encodeURIComponent(cursor) : path;
   const formatTime = new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
@@ -265,7 +279,7 @@
       more.disabled = loading || writing;
     }
     function refreshDiscussion() {
-      if (discussion.hidden) return;
+      if (!active || discussion.hidden || !node.isConnected) return;
       if (loading || writing) refreshPending = true;
       else void loadDetail();
     }
@@ -321,12 +335,13 @@
     async function loadDetail(append = false) {
       if (loading || writing) return;
       loading = true; controls(); retry.hidden = true;
-      const readVersion = version;
+      const readVersion = version, session = sessionVersion;
+      const current = () => active && session === sessionVersion && node.isConnected && !discussion.hidden;
       const status = find(append ? '[data-comments-status]' : '[data-detail-status]');
       notice(status, '正在加载讨论…');
       try {
-        const result = await request(pagePath(path, append && cursor));
-        if (!node.isConnected) return;
+        const result = await scheduleDetailRead(() => current() ? request(pagePath(path, append && cursor)) : null);
+        if (!result || !current()) return;
         if (!append) {
           if (!starNodes.length) makeStars();
           setRating(result.suggestion.myRating);

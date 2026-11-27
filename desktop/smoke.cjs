@@ -12,6 +12,36 @@ const { _electron: electron, expect } = require('@playwright/test');
 const { formatPaths } = require('../core/path-engine.cjs');
 const { createWindowsSelectionFixture } = require('./windows-selection-smoke.cjs');
 
+async function verifySuggestionBoard(tested, page, filename) {
+  // Keep the packaged preload, IPC handler and account route validation in the path.
+  const transport = await tested.evaluateHandle(({ net }) => {
+    const original = net.fetch;
+    net.fetch = async (url, options) => {
+      if (options.method !== 'GET' || options.headers.Authorization) throw new Error('Expected anonymous read-only smoke traffic.');
+      if (url === 'https://tools.brclio.com/api/account/session') return Response.json({ user: null, csrf: null });
+      if (url === 'https://tools.brclio.com/api/account/suggestions') return Response.json({ error: '匿名广场测试会话' }, { status: 401 });
+      throw new Error('Unexpected account endpoint in suggestion smoke.');
+    };
+    return () => { net.fetch = original; };
+  });
+  try {
+    await page.locator('#manual-paths').fill(filename);
+    await page.locator('[data-view="suggestions"]').click();
+    const board = page.locator('#view-suggestions');
+    await expect(board.getByRole('heading', { name: '功能建议广场' })).toBeVisible();
+    await board.getByRole('button', { name: '登录账号' }).click();
+    await expect(page.locator('#account-login-form')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await assert.rejects(page.evaluate(() => window.brclio.accountRequest({ path: '/api/account/suggestions' })), /匿名广场测试会话/);
+    await page.locator('[data-view="copy"]').first().click();
+    await expect(page.locator('#manual-paths')).toHaveValue(filename);
+    await expect(page.locator('#view-copy')).toBeVisible();
+    await page.locator('#manual-paths').fill('');
+  } finally {
+    try { await transport.evaluate(restore => restore()); } finally { await transport.dispose(); }
+  }
+}
+
 async function main() {
   const root = path.join(__dirname, '..');
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-native-smoke-'));
@@ -93,6 +123,7 @@ async function main() {
     const integration = await page.evaluate(() => window.brclio.getIntegrationStatus());
     assert.equal(integration.supported, ['darwin', 'win32'].includes(process.platform));
     if (packagedExecutable) {
+      await verifySuggestionBoard(tested, page, filename);
       const xhs = await page.evaluate(() => window.brclio.xhsRequest('info'));
       assert.equal(xhs.pythonAvailable, true, 'The installed package must run its bundled XHS Python parser.');
       const denied = await page.evaluate(async () => {
