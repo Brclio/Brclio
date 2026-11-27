@@ -50,7 +50,7 @@ function shellProfiles(platform, env) {
 function shellEnvironment(env, file, platform) {
   const result = { ...env, TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'Brclio' };
   for (const key of Object.keys(result)) {
-    if (/^(BRCLIO_|ELECTRON_|ITERM_|LC_TERMINAL$|LC_TERMINAL_VERSION$|TERM_PROGRAM_VERSION$|TERM_SESSION_ID$|TMUX$|TMUX_PANE$|STY$|WINDOW$|WINDOWID$|TERMCAP$|COLUMNS$|LINES$)/i.test(key)) delete result[key];
+    if (/^(BRCLIO_|ELECTRON_|ITERM_|NODE_CHANNEL_FD$|NODE_CHANNEL_SERIALIZATION_MODE$|LC_TERMINAL$|LC_TERMINAL_VERSION$|TERM_PROGRAM_VERSION$|TERM_SESSION_ID$|TMUX$|TMUX_PANE$|STY$|WINDOW$|WINDOWID$|TERMCAP$|COLUMNS$|LINES$)/i.test(key)) delete result[key];
   }
   if (platform !== 'win32') result.SHELL = file;
   return result;
@@ -85,7 +85,7 @@ function createPtySessions({ home, send, platform = process.platform, env = proc
 
     const options = {
       name: 'xterm-256color', cols, rows, cwd, env: shellEnvironment(env, selected.file, platform),
-      ...(platform === 'win32' ? { useConpty: true } : {}),
+      ...(platform === 'win32' ? { useConptyDll: true } : {}),
     };
     const pty = load().spawn(selected.file, platform === 'win32' ? [] : ['-l'], options);
     const state = { pty, outstanding: 0, paused: false, forceKill: null };

@@ -189,7 +189,8 @@
       if (Number.isInteger(info.windowsBuild)) terminal.options.windowsPty = { backend: 'conpty', buildNumber: info.windowsBuild };
       updateLabel(pane);
       if (pane.state !== 'starting') return;
-      setState(pane, 'running', pane.shell + ' · PID ' + info.pid + (info.cwd ? ' · ' + info.cwd : ''));
+      const details = [pane.shell, info.pid > 0 && 'PID ' + info.pid, info.cwd].filter(Boolean);
+      setState(pane, 'running', details.join(' · '));
       if (terminal.cols !== initial.cols || terminal.rows !== initial.rows) {
         return api.resize(id, terminal.cols, terminal.rows).catch(error => { if (pane.state === 'running') report(error); });
       }
@@ -419,9 +420,11 @@
     const pane = panes.get(id);
     if (pane) pane.terminal.write(data, () => { if (panes.has(id)) api.ack(id, data.length); });
   });
-  const removeExit = api.onExit(({id, exitCode, signal}) => {
+  const removeExit = api.onExit(({id, exitCode, signal, error}) => {
     const pane = panes.get(id);
-    if (pane) setState(pane, 'exited', '已退出 · ' + (signal ? '信号 ' + signal : '退出码 ' + exitCode));
+    if (!pane) return;
+    if (error) setState(pane, 'error', error);
+    else setState(pane, 'exited', '已退出 · ' + (signal ? '信号 ' + signal : '退出码 ' + exitCode));
   });
   window.addEventListener('pagehide', () => {
     closing = true;

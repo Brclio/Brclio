@@ -2,7 +2,7 @@
 
 const path = require('node:path');
 const { isLocalDocument } = require('../trusted-url.cjs');
-const { createPtySessions } = require('./pty.cjs');
+const { createPtyService } = require('./service.cjs');
 
 const prefix = 'brclio:terminal-window:';
 const documentPath = path.join(__dirname, 'index.html');
@@ -11,7 +11,7 @@ function createTerminalHost({ app, BrowserWindow, ipcMain, dialog, clipboard }) 
   let window;
   let loading;
   const channels = [];
-  const sessions = createPtySessions({
+  const sessions = createPtyService({
     home: app.getPath('home'),
     send(channel, payload) {
       const contents = window?.webContents;

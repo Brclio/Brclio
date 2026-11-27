@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// The macOS binaries in node-pty 1.1.0's npm tarball have mode 0644.
+// Verify that the native helper is present and executable before signing.
 function enableMacPtyHelper(moduleRoot, arch) {
   const candidates = ['build/Release', 'build/Debug', `prebuilds/darwin-${arch}`];
   let found = false;

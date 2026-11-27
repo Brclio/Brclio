@@ -65,7 +65,6 @@
       "package.json",
       "!desktop/xhs/test/**",
       "!node_modules/node-pty/{src,typings,scripts,third_party,prebuilds}/**",
-      "!node_modules/node-pty/deps/winpty/!(LICENSE){,/**/*}",
       "!node_modules/@xterm/*/{src,typings}/**",
       "!node_modules/{node-pty,@xterm/*}/**/*.map"
     ],
@@ -103,7 +102,7 @@
         {
           "from": "node_modules/node-pty/prebuilds/win32-${arch}",
           "to": "node_modules/node-pty/prebuilds/win32-${arch}",
-          "filter": ["*.node", "*.dll", "*.exe", "conpty/*.dll", "conpty/*.exe"]
+          "filter": ["*.node", "conpty/*.dll", "conpty/*.exe"]
         }
       ],
       "target": [
@@ -135,7 +134,7 @@
     "@xterm/addon-fit": "0.10.0",
     "@xterm/addon-search": "0.15.0",
     "@xterm/xterm": "5.5.0",
-    "node-pty": "1.1.0",
+    "node-pty": "1.2.0-beta.18",
     "ws": "8.22.0"
   }
 }

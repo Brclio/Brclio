@@ -19,6 +19,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: desktop-terminal-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   packaged-terminal:
     name: Packaged terminal on ${{ matrix.name }}
