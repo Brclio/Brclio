@@ -21,7 +21,11 @@ async function main() {
       timeout: 45000,
     });
     const home = await app.firstWindow();
-    await home.locator('body[data-initialized="true"]').waitFor();
+    await home.waitForURL('file://**/web/index.html', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    // Cold Windows runners may still be querying Explorer integration and shortcut state.
+    await home.locator('body[data-ready="true"]').waitFor({ state: 'attached', timeout: 90000 });
+    assert.equal(await home.locator('body').getAttribute('data-initialized'), 'true',
+      'Brclio initialization: ' + await home.locator('#platform-label').innerText());
     if (executable) assert.equal((await home.evaluate(() => window.brclio.getPlatform())).packaged, true);
     assert.equal(await home.evaluate(() => typeof window.brclioTerminal), 'undefined');
     await home.locator('#manual-paths').fill('Brclio terminal smoke');
