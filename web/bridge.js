@@ -28,7 +28,8 @@
   const browser = {
     accountRequest: async ({ path, method = 'GET', body } = {}) => {
       const routes = { '/api/account/session': ['GET'], '/api/account/code': ['POST'], '/api/account/register': ['POST'], '/api/account/login': ['POST'], '/api/account/logout': ['POST'], '/api/account/data': ['GET', 'PUT'], '/api/account/feedback': ['POST'], '/api/account/profile': ['PUT'], '/api/account/password': ['POST'] };
-      if (!routes[path]?.includes(method)) throw new Error('账号请求路径或方法无效。');
+      const knownRoute = typeof path === 'string' && Object.hasOwn(routes, path) && routes[path].includes(method);
+      if (!knownRoute && !window.BrclioSuggestionRequest?.(path, method)) throw new Error('账号请求路径或方法无效。');
       const encoded = body === undefined ? undefined : JSON.stringify(body);
       if (encoded && new TextEncoder().encode(encoded).length > (path === '/api/account/feedback' ? 1048576 : 131072)) throw new Error('账号请求数据过大。');
       const response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store',
@@ -53,7 +54,7 @@
     },
     accountGoogle: () => browser.accountOAuth('google'),
     accountCancelGoogle: async () => ({ canceled: true }),
-    getPlatform: async () => ({ platform: 'browser', version: '0.2.13', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
+    getPlatform: async () => ({ platform: 'browser', version: '0.2.14', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
     getSettings: async () => { const saved = localStorage.getItem(STORE); return saved ? JSON.parse(saved) : {}; },
     saveSettings: async settings => { localStorage.setItem(STORE, JSON.stringify(settings)); return settings; },
     copyText: async text => {
@@ -73,7 +74,7 @@
     onPaths: () => () => {},
     getUpdateProxyState: async () => ({ enabled: true, supported: false, route: 'direct' }),
     setUpdateProxyEnabled: async () => { throw new Error('请在客户端中设置更新代理。'); },
-    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.2.13' }),
+    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.2.14' }),
     downloadUpdate: async () => { throw new Error('请在客户端中下载安装包。'); },
     installUpdate: async () => { throw new Error('请在客户端中安装更新。'); },
     onUpdateState: () => () => {},

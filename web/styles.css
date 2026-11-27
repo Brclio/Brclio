@@ -59,3 +59,16 @@ body {font-family:var(--sans);font-size:13px;line-height:1.65;color:var(--ink);b
 #xhs-message { white-space: pre-line; overflow-wrap: anywhere; user-select: text; }
 #xhs-report-error { margin: 6px 0 14px; }
 @media (max-width: 820px) { .feedback-layout { grid-template-columns: minmax(0, 1fr); } }
+
+@media (min-width: 601px) and (max-height: 760px) {
+  .app-sidebar:has([data-view="suggestions"]:not([hidden])) { overflow-y: auto; }
+  .app-sidebar:has([data-view="suggestions"]:not([hidden])) .sidebar-note { display: none; }
+  .app-sidebar:has([data-view="suggestions"]:not([hidden])) .nav-bottom { margin-top: auto; }
+}
+@media (max-width: 390px) {
+  .app-sidebar:has([data-view="suggestions"]:not([hidden])) .brand { justify-self: start; }
+  .app-sidebar:has([data-view="suggestions"]:not([hidden])) .nav-main { gap: 10px; }
+  .nav-bottom [data-view="suggestions"] {
+    position: absolute; right: 40px; bottom: calc(100% + 6px); min-height: 34px; width: 34px;
+  }
+}

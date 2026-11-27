@@ -9,6 +9,7 @@ import {sendRegistrationCode} from './mail.js';
 import {handleAccountSettings} from './account-settings.js';
 import {activeSession, checkLink, deviceLink, expiredLink, fromAccountPage, sameLinkSession, saveLink, validDeviceId, validVerifier} from './account-links.js';
 import {submitFeedback} from './modules/feedback.js';
+import {handleSuggestions, suggestionPrefix} from './suggestions.js';
 
 const COOKIE = '__Host-brclio_user';
 const WEB_LIFETIME = 7 * 86400, NATIVE_LIFETIME = 30 * 86400;
@@ -103,10 +104,11 @@ export async function handleAccount(request, env, dependencies = {}) {
   const fetchImpl = dependencies.accountFetchImpl || dependencies.fetchImpl || fetch;
   const store = dependencies.accountStore || createAccountStore(env, fetchImpl);
   const ip = request.headers.get('CF-Connecting-IP') || 'development';
+  const suggestions = path === suggestionPrefix || path.startsWith(suggestionPrefix + '/');
   const googleEnabled = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
   const githubEnabled = Boolean(env.GITHUB_OAUTH_CLIENT_ID && env.GITHUB_OAUTH_CLIENT_SECRET);
   const limit = async (name, key, count) => rateLimit(env, name, key, count);
-  if (!await limit('ACCOUNT_LIMITER', ip, 120)) return json({error: '请求过于频繁，请稍后重试'}, 429, {'Retry-After': '60'});
+  if (!await limit('ACCOUNT_LIMITER', suggestions ? 'suggestions:' + ip : ip, 120)) return json({error: '请求过于频繁，请稍后重试'}, 429, {'Retry-After': '60'});
 
   if (path === '/api/account/session' && request.method === 'GET') {
     const session = await authenticate(request, env, store);
@@ -330,7 +332,7 @@ export async function handleAccount(request, env, dependencies = {}) {
   }
 
   let input;
-  if (request.method !== 'GET' && path !== '/api/account/feedback') {
+  if (request.method !== 'GET' && path !== '/api/account/feedback' && !suggestions) {
     try { input = await readJSON(request); if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error(); }
     catch { return json({error: '请求格式无效'}, 400); }
   }
@@ -477,6 +479,7 @@ export async function handleAccount(request, env, dependencies = {}) {
   if (request.method !== 'GET' && !session.isBearer && !await safeEqual(request.headers.get('X-CSRF-Token') || '', session.csrf)) return json({error: '页面会话已更新，请刷新后重试'}, 403);
 
   if (path === '/api/account/feedback') return submitFeedback(request, env, session, dependencies);
+  if (suggestions) return handleSuggestions(request, env, session, dependencies);
   const settings = await handleAccountSettings({path, request, input, session, store, env, ip, usernameValue, publicUser});
   if (settings) return settings;
   const dataResponse = await handleAccountData({path, request, input, session, store, preferencesValue});

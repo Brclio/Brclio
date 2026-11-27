@@ -3,6 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const isSuggestionRequest = require('../web/suggestion-routes.js');
 
 const ORIGIN = 'https://tools.brclio.com';
 const MAX_BYTES = 128 * 1024;
@@ -15,7 +16,8 @@ const ROUTES = { '/api/account/session': ['GET'], '/api/account/code': ['POST'],
 function validateAccountRequest(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('账号请求格式无效。');
   const method = input.method === undefined ? 'GET' : input.method;
-  if (typeof input.path !== 'string' || !ROUTES[input.path]?.includes(method)) throw new TypeError('账号请求路径或方法无效。');
+  const knownRoute = typeof input.path === 'string' && Object.hasOwn(ROUTES, input.path) && ROUTES[input.path].includes(method);
+  if (!knownRoute && !isSuggestionRequest(input.path, method)) throw new TypeError('账号请求路径或方法无效。');
   let body;
   if (input.body !== undefined) {
     if (method === 'GET' || !input.body || typeof input.body !== 'object' || Array.isArray(input.body)) throw new TypeError('账号请求数据无效。');

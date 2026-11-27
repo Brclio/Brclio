@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {createAccountStore} from '../../src/account-store.js';
 import {createFeedbackStore, feedbackRepository} from '../../src/feedback-store.js';
+import {createSuggestionStore} from '../../src/suggestion-store.js';
 
 let fixtureId = 0;
 export const encode = content => ({encoding: 'base64', size: Buffer.byteLength(content), content: Buffer.from(content).toString('base64')});
@@ -9,7 +10,7 @@ export function repositoryFixture(initial = {}, intercept, kind = "account") {
   const first = new Map(Object.entries(initial).map(([path, value]) => [path, typeof value === 'string' ? value : JSON.stringify(value)]));
   const trees = new Map([['tree-0', first]]), commits = new Map([['commit-0', {tree: {sha: 'tree-0'}, parents: []}]]);
   const calls = [], updates = [], env = {GITHUB_DATA_REPOSITORY: 'fixture/account-store-' + (++fixtureId), GITHUB_PROGRAM_DATA_REPOSITORY: 'fixture/program-data-must-not-be-used'};
-  const repository = kind === 'feedback' ? feedbackRepository : env.GITHUB_DATA_REPOSITORY;
+  const repository = kind === 'account' ? env.GITHUB_DATA_REPOSITORY : feedbackRepository;
   const current = () => trees.get(commits.get(head).tree.sha);
   const fetchImpl = async (url, options) => {
     const parsed = new URL(url), prefix = '/repos/' + repository;
@@ -48,6 +49,6 @@ export function repositoryFixture(initial = {}, intercept, kind = "account") {
     throw new Error('Unexpected repository request: ' + path);
   };
   const tokenProvider = async (received, scope, transport) => { assert.equal(received, env); assert.equal(scope, repository); assert.equal(transport, fetchImpl); return 'fixture-installation-token'; };
-  const factory = kind === 'feedback' ? createFeedbackStore : createAccountStore;
+  const factory = {account: createAccountStore, feedback: createFeedbackStore, suggestions: createSuggestionStore}[kind];
   return {store: factory(env, fetchImpl, tokenProvider), calls, updates, current, read: path => JSON.parse(current().get(path))};
 }

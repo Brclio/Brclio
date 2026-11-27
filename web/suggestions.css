@@ -1,0 +1,100 @@
+/* Uses the existing Brclio app palette and button styles. © Brclio · CC BY-NC-SA 4.0 */
+#view-suggestions { max-width: 880px; }
+#view-suggestions .sg-welcome,
+#view-suggestions .sg-composer,
+#view-suggestions .sg-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-bg);
+  padding: clamp(16px, 2.3vw, 26px);
+}
+#view-suggestions .sg-welcome { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+#view-suggestions .sg-welcome p,
+#view-suggestions .sg-order,
+#view-suggestions .sg-byline,
+#view-suggestions .sg-score small,
+#view-suggestions .sg-value,
+#view-suggestions .sg-comment-author { color: var(--ink-light); font-size: 12px; }
+#view-suggestions .sg-welcome p { margin-top: 5px; }
+#view-suggestions .sg-toolbar,
+#view-suggestions .sg-actions,
+#view-suggestions .sg-title,
+#view-suggestions .sg-card-head,
+#view-suggestions .sg-rating-row { display: flex; gap: 12px; align-items: center; }
+#view-suggestions .sg-toolbar { margin-bottom: 15px; }
+#view-suggestions .sg-toolbar [data-refresh] { margin-left: auto; }
+#view-suggestions .sg-toolbar .text-button,
+#view-suggestions .sg-actions .text-button { min-height: 36px; padding-inline: 4px; }
+#view-suggestions .sg-form { display: grid; gap: 12px; }
+#view-suggestions .sg-composer { margin-bottom: 18px; }
+#view-suggestions .sg-fields { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
+#view-suggestions .sg-form label { font-weight: 600; }
+#view-suggestions .sg-form input,
+#view-suggestions .sg-form textarea {
+  display: block; width: 100%; min-width: 0; margin-top: 4px;
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--cream); color: var(--ink); font: inherit; font-weight: 400;
+}
+#view-suggestions .sg-form textarea { resize: vertical; min-height: 62px; }
+#view-suggestions .sg-list { display: grid; gap: 12px; }
+#view-suggestions .sg-card { min-width: 0; }
+#view-suggestions .sg-card-head { align-items: flex-start; justify-content: space-between; }
+#view-suggestions .sg-title { flex-wrap: wrap; gap: 6px 10px; }
+#view-suggestions .sg-title h3 { font-size: 16px; line-height: 1.5; }
+#view-suggestions .sg-category {
+  color: var(--blue-dark); background: rgba(43, 127, 216, .08);
+  font-size: 11px; padding: 2px 8px; border-radius: 4px; max-width: 100%;
+}
+#view-suggestions .sg-byline { margin-top: 4px; }
+#view-suggestions .sg-score { flex: 0 0 auto; text-align: right; }
+#view-suggestions .sg-score strong { font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+#view-suggestions .sg-score strong::before { content: '★'; color: #986616; margin-right: 5px; }
+#view-suggestions .sg-score small { display: block; }
+#view-suggestions .sg-description,
+#view-suggestions .sg-comment-text { white-space: pre-wrap; }
+#view-suggestions .sg-description { margin-block: 13px 4px; line-height: 1.85; }
+#view-suggestions .sg-card,
+#view-suggestions .sg-status { overflow-wrap: anywhere; }
+#view-suggestions .sg-toggle,
+#view-suggestions [data-more-comments] { color: var(--blue-dark); min-height: 36px; font-size: 12px; }
+#view-suggestions .sg-discussion { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 16px; }
+#view-suggestions .sg-rating { border: 0; min-width: 0; }
+#view-suggestions .sg-rating legend,
+#view-suggestions .sg-discussion-title { font-size: 14px; font-weight: 650; }
+#view-suggestions .sg-rating-row { flex-wrap: wrap; gap: 2px 12px; }
+#view-suggestions .sg-stars { display: inline-flex; flex: 0 1 auto; }
+#view-suggestions .sg-star {
+  position: relative; isolation: isolate; display: inline-block; width: 48px; height: 44px;
+  font: 32px/44px Arial, sans-serif; text-align: center;
+}
+#view-suggestions .sg-star::before,
+#view-suggestions .sg-star::after { content: '★'; position: absolute; inset: 0; color: #d3cbb6; pointer-events: none; }
+#view-suggestions .sg-star::after { color: #ae7415; }
+#view-suggestions .sg-star[data-fill=empty]::after { visibility: hidden; }
+#view-suggestions .sg-star[data-fill=half]::after { clip-path: inset(0 50% 0 0); }
+#view-suggestions .sg-star input {
+  position: absolute; inset: 0 auto 0 0; width: 50%; height: 100%;
+  z-index: 1; opacity: 0; cursor: pointer; margin: 0;
+}
+#view-suggestions .sg-star input:last-child { left: 50%; }
+#view-suggestions .sg-star:has(input:focus-visible) { outline: 2px solid var(--blue); outline-offset: -2px; border-radius: 5px; }
+#view-suggestions .sg-rating:disabled input { cursor: wait; }
+#view-suggestions .sg-discussion-title { border-top: 1px solid var(--border); padding-top: 15px; margin-top: 12px; }
+#view-suggestions .sg-comment-form { margin-top: 9px; }
+#view-suggestions .sg-comment-form label { font-size: 12px; }
+#view-suggestions .sg-comments { padding: 0; list-style: none; }
+#view-suggestions .sg-comments li { border-top: 1px solid var(--border); padding: 12px 0; }
+#view-suggestions .sg-comments:not(:empty) { margin-top: 14px; }
+#view-suggestions .sg-comment-text { line-height: 1.8; margin-top: 4px; }
+#view-suggestions .sg-status { color: var(--ink-light); margin-block: 9px; font-size: 12px; }
+#view-suggestions .sg-status.sg-error { color: #ac3245; }
+#view-suggestions .sg-more { margin-top: 14px; }
+@media (max-width: 600px) {
+  #view-suggestions .sg-toolbar { gap: 8px; }
+  #view-suggestions .sg-fields { grid-template-columns: 1fr; }
+  #view-suggestions .sg-welcome { align-items: flex-start; flex-direction: column; }
+}
+@media (forced-colors: active) {
+  #view-suggestions .sg-star::before { color: GrayText; forced-color-adjust: none; }
+  #view-suggestions .sg-star::after { color: Highlight; forced-color-adjust: none; }
+}

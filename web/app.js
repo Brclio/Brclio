@@ -332,6 +332,12 @@
   $$('[data-close]').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
   $$('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const r = dialog.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) dialog.close(); } }));
   const toolSearchTerms = { copy: '复制路径 路径 复制 文件 copy path file', xhs: '小红书 下载 原视频 原图 实况 合成 主页 批量 xhs live photo video' };
+  if (!window.AndroidBridge?.postMessage) {
+    viewNames.suggestions = '功能建议广场';
+    toolSearchTerms.suggestions = '新功能建议广场 社区 评论 交流 星级 评分 suggestions';
+    $('.nav-item[data-view="suggestions"]').hidden = false;
+    $('#search-suggestions').hidden = false;
+  }
   function searchMatches(value, terms) { return !value.trim() || terms.toLowerCase().includes(value.trim().toLowerCase()); }
   $('#global-search').addEventListener('input', event => {
     for (const [name, terms] of Object.entries(toolSearchTerms)) $('#search-' + name).hidden = !searchMatches(event.target.value, terms);
