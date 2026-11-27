@@ -218,6 +218,8 @@ function registerIPC() {
   handle('brclio:xhs:request', async (action, input) => (await getXhsService()).request(action, input));
   handle('brclio:account:request', input => account.request(input));
   handle('brclio:account:oauth', provider => account.oauth(provider));
+  handle('brclio:account:oauth:link', (provider, expectedUserId) => account.linkOAuth(provider, expectedUserId));
+  handle('brclio:account:oauth:link:confirm', (provider, expectedUserId) => account.confirmLinkOAuth(provider, expectedUserId));
   handle('brclio:account:oauth:cancel', () => account.cancelOAuth());
   handle('brclio:account:google', () => account.google());
   handle('brclio:account:google:cancel', () => account.cancelGoogle());

@@ -217,3 +217,50 @@ test('cancelling a pending browser handoff rejects and does not persist a token'
   await assert.rejects(f.client.google(), /取消/);
   assert.equal(f.saved(), null);
 });
+
+for (const provider of ['google', 'github']) test(provider + ' linking keeps the native session and waits for local confirmation', async () => {
+  const id = 'fixture_binding_0123456789', expectedUserId = 'alice';
+  const email = 'provider@example.com', user = { id: expectedUserId, providers: ['password', provider] };
+  let challenge, confirmed = 0;
+  const writes = [];
+  const f = fixture({ delay: async () => {}, store: { read: async () => token, write: async value => writes.push(value) },
+    fetch: async (url, init) => {
+      assert.equal(init.headers.Authorization, 'Bearer ' + token);
+      const target = new URL(url);
+      if (target.pathname === '/api/account/device/link/start') {
+        const input = JSON.parse(init.body);
+        assert.deepEqual(input, { challenge: input.challenge, provider, expectedUserId });
+        challenge = input.challenge;
+        return response({ id, url: ORIGIN + '/api/account/' + provider + '/start?device=' + id });
+      }
+      const proof = init.body ? JSON.parse(init.body) : Object.fromEntries(target.searchParams);
+      assert.equal(proof.id, id);
+      assert.equal(crypto.createHash('sha256').update(proof.verifier).digest('base64url'), challenge);
+      if (target.pathname === '/api/account/device/poll') return response({ pending: false, linkReady: true, provider, email });
+      assert.equal(target.pathname, '/api/account/device/link');
+      assert.equal(init.method, 'POST');
+      confirmed++;
+      return response({ ok: true, user });
+    } });
+  await assert.rejects(f.client.linkOAuth(provider), /账号/);
+  assert.deepEqual(await f.client.linkOAuth(provider, expectedUserId), { linkReady: true, provider, email });
+  assert.equal(confirmed, 0);
+  await assert.rejects(f.client.confirmLinkOAuth(provider, 'other-user'), /失效/);
+  assert.deepEqual(await f.client.confirmLinkOAuth(provider, expectedUserId), { ok: true, user });
+  await assert.rejects(f.client.confirmLinkOAuth(provider, expectedUserId), /失效/);
+  await f.client.linkOAuth(provider, expectedUserId);
+  f.client.cancelOAuth();
+  await assert.rejects(f.client.confirmLinkOAuth(provider, expectedUserId), /失效/);
+  assert.equal(confirmed, 1);
+  assert.deepEqual(writes, []);
+});
+
+test('a login grant is rejected while binding, even if returned by the server', async () => {
+  const id = 'fixture_binding_0123456789';
+  const f = fixture({ delay: async () => {}, fetch: async url => url.includes('/link/start') ?
+    response({ id, url: ORIGIN + '/api/account/google/start?device=' + id }) :
+    response({ user: { id: 'another' }, token }) });
+  await assert.rejects(f.client.linkOAuth('google', 'alice'), /未完成/);
+  await assert.rejects(f.client.confirmLinkOAuth('google', 'alice'), /失效/);
+  assert.equal(f.saved(), null);
+});

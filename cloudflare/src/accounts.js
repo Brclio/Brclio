@@ -7,6 +7,7 @@ import {googleIdentity} from './accounts-google.js';
 import {githubIdentity} from './accounts-github.js';
 import {sendRegistrationCode} from './mail.js';
 import {handleAccountSettings} from './account-settings.js';
+import {activeSession, checkLink, deviceLink, expiredLink, fromAccountPage, sameLinkSession, saveLink, validDeviceId, validVerifier} from './account-links.js';
 import {submitFeedback} from './modules/feedback.js';
 
 const COOKIE = '__Host-brclio_user';
@@ -46,6 +47,7 @@ function cleanIndex(index) {
   const now = Date.now();
   for (const [key, value] of Object.entries(index.verifications)) if (value.expiresAt < now && value.sentAt < now - 86400000) delete index.verifications[key];
   for (const [key, value] of Object.entries(index.devices)) if (value.expiresAt < now) delete index.devices[key];
+  for (const [key, value] of Object.entries(index.deviceLinks || {})) if (value.expiresAt < now) delete index.deviceLinks[key];
   return index;
 }
 async function makeGrant(mode) {
@@ -64,14 +66,14 @@ async function grantResponse(profile, grant, env) {
   return json({user: publicUser(profile), csrf: grant.csrf, ...(grant.mode === 'native' ? {token} : {})}, 200,
     grant.mode === 'web' ? {'Set-Cookie': cookie(COOKIE, token, WEB_LIFETIME)} : {});
 }
-async function authenticate(request, env, store) {
+async function authenticate(request, env, store, snapshot) {
   const authorization = request.headers.get('Authorization');
   const isBearer = authorization?.startsWith('Bearer ');
   const token = isBearer ? authorization.slice(7) : cookieValue(request, COOKIE);
   const session = await unseal(token, env.SESSION_SECRET);
   if (!session || session.typ !== 'account' || !/^[a-zA-Z0-9-]+$/.test(session.id || '') || typeof session.sid !== 'string' || typeof session.csrf !== 'string' ||
       session.mode !== (isBearer ? 'native' : 'web')) return null;
-  const state = await store.snapshot();
+  const state = snapshot || await store.snapshot();
   const credentials = await state.read(userPath(session.id, 'credentials'));
   const sessionKey = await digest(session.sid);
   if (!credentials || credentials.sessions?.[sessionKey]?.exp !== session.exp || credentials.sessions[sessionKey].mode !== session.mode) return null;
@@ -120,59 +122,93 @@ export async function handleAccount(request, env, dependencies = {}) {
     if (action === 'start') {
       if (!enabled) return json({error: isGitHub ? 'GitHub 登录尚未配置' : '谷歌登录尚未配置'}, 503);
       if (!await limit('ACCOUNT_AUTH_LIMITER', ip, 10)) return json({error: '请求过于频繁'}, 429);
-      let link;
+      let link, nativeLink = false;
+      const device = url.searchParams.get('device');
       if (url.searchParams.has('link')) {
-        if (isGitHub || url.searchParams.get('link') !== '1') return json({error: '不支持的账号关联请求'}, 400);
-        if (['same-site', 'cross-site'].includes(request.headers.get('Sec-Fetch-Site'))) return json({error: '请从账号设置关联 Google'}, 403);
+        if (device !== null || url.searchParams.get('link') !== '1') return json({error: '不支持的账号关联请求'}, 400);
         if (isNative || request.headers.has('Authorization')) return json({error: '请先在网页登录 Brclio'}, 401);
         const session = await authenticate(request, env, store);
-        if (!session) return new Response(null, {status: 302, headers: {
-          Location: '/account?error=google_email_proof', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'
+        const expected = url.searchParams.get('expectedUserId');
+        const legacy = !isGitHub && expected === null;
+        if (!session || (expected !== null && expected !== session.id)) return new Response(null, {status: 302, headers: {
+          Location: '/account?error=' + (legacy ? 'google_email_proof' : provider + '_link'), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'
         }});
-        link = {userId: session.id, sessionKey: session.sessionKey};
+        if (!fromAccountPage(request)) return json({error: '请从账号设置发起关联'}, 403);
+        link = {userId: session.id, sessionKey: session.sessionKey, explicit: !legacy};
       }
-      const device = url.searchParams.get('device');
-      if (device) {
+      if (device !== null) {
+        if (!validDeviceId(device)) return json({error: '客户端登录请求无效'}, 400);
         const state = await store.snapshot(), index = await state.read('users/_index.json', emptyAccountIndex());
-        if (!/^[A-Za-z0-9_-]{32,64}$/.test(device) || !own(index.devices, device) || index.devices[device].expiresAt <= Date.now()) return json({error: '客户端登录请求已过期'}, 400);
+        const binding = deviceLink(index, device), entry = binding || own(index.devices, device);
+        if (!entry || entry.expiresAt <= Date.now() || (entry.provider && entry.provider !== provider)) return json({error: '客户端请求已失效，请重新发起'}, 400);
+        if (binding) {
+          if (binding.candidate || binding.failed) return fail(expiredLink());
+          nativeLink = true;
+        }
       }
       const verifier = random(), state = random(), nonce = isGitHub ? undefined : random();
       // Only the opaque state identifier enters the redirect URL. The PKCE
       // verifier remains in an HttpOnly cookie until the server exchanges code.
-      const oauthCookie = await seal({typ: provider, state, nonce, verifier, link, device: device || null, exp: seconds() + 600}, env.SESSION_SECRET);
+      // A previous Worker must reject a new binding cookie, even during a rolling deployment.
+      const typ = nativeLink ? provider + '-device-link' : link?.explicit ? provider + '-link' : provider;
+      const oauthCookie = await seal({typ, state, nonce, verifier, link, device, exp: seconds() + 600}, env.SESSION_SECRET);
       const target = new URL(isGitHub ? 'https://github.com/login/oauth/authorize' : 'https://accounts.google.com/o/oauth2/v2/auth');
       target.search = new URLSearchParams({
         client_id: isGitHub ? env.GITHUB_OAUTH_CLIENT_ID : env.GOOGLE_CLIENT_ID,
         redirect_uri: url.origin + '/api/account/' + provider + '/callback',
         scope: isGitHub ? 'user:email' : 'openid email profile',
         state, code_challenge: await digest(verifier), code_challenge_method: 'S256',
-        ...(isGitHub ? {} : {response_type: 'code', nonce, prompt: 'select_account'})
+        ...(!isGitHub ? {response_type: 'code', nonce} : {}),
+        ...(!isGitHub || nativeLink || link ? {prompt: 'select_account'} : {})
       }).toString();
       return new Response(null, {status: 302, headers: {'Location': target.href, 'Set-Cookie': cookie(cookieName, oauthCookie, 600), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}});
     }
 
     const stateText = url.searchParams.get('state'), stateCookie = cookieValue(request, cookieName), state = await unseal(stateCookie, env.SESSION_SECRET);
     const clear = cookie(cookieName, '', 0);
-    const failure = stage => {
+    const nativeLink = state?.typ === provider + '-device-link';
+    const webLink = state?.typ === provider + '-link' && state.link?.explicit === true;
+    let stateVerified = false;
+    const redirect = location => new Response(null, {status: 302, headers: {
+      Location: location, 'Set-Cookie': clear, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'
+    }});
+    const failure = async stage => {
       oauthDiagnostic(dependencies, provider, stage);
+      if (nativeLink) {
+        if (stateVerified) {
+          try {
+            await store.transaction(async tx => {
+              const index = await tx.read('users/_index.json', emptyAccountIndex()), entry = deviceLink(index, state.device);
+              if (entry?.provider !== provider || entry.candidate || entry.failed || entry.expiresAt <= Date.now()) return;
+              entry.failed = stage === 'storage_identity_conflict' ? 'conflict' : true;
+              tx.write('users/_index.json', index);
+            });
+          } catch { /* The device also enforces its own deadline. */ }
+        }
+        return redirect('/account?link_device=error');
+      }
+      if (webLink) return redirect('/account?error=' + provider + '_link');
       // Preserve only the device bound to our signed OAuth cookie. This lets a
       // canceled browser flow fall back to password login and client approval.
       const proofRequired = !isGitHub && (stage === 'email_proof_required' || (state?.typ === provider && state.link));
       const query = new URLSearchParams({error: proofRequired ? 'google_email_proof' : provider});
       if (state?.typ === provider && /^[A-Za-z0-9_-]{32,64}$/.test(state.device || '')) query.set('device', state.device);
-      return new Response(null, {status: 302, headers: {'Location': '/account?' + query, 'Set-Cookie': clear, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}});
+      return redirect('/account?' + query);
     };
     if (!enabled) return failure('not_configured');
     if (!state) return failure(stateCookie ? 'state_cookie_invalid' : 'state_cookie_missing');
-    if (state.typ !== provider) return failure('state_type');
+    if (!nativeLink && !webLink && state.typ !== provider) return failure('state_type');
     if (!await safeEqual(stateText || '', state.state)) return failure('state_mismatch');
+    stateVerified = true;
     if (url.searchParams.has('error')) return failure('provider_denied');
     if (!url.searchParams.get('code')) return failure('missing_code');
     let stage = 'identity_exchange';
     try {
       let linkSession;
       if (state.link) {
-        if (isGitHub) return failure('state_type');
+        // Legacy Google linking could carry a device login ID. Complete only
+        // the web account link. Never approve or grant a separate device here.
+        if (nativeLink || (isGitHub && !webLink)) return failure('state_type');
         linkSession = await authenticate(request, env, store);
         if (!linkSession || linkSession.isBearer || linkSession.id !== state.link.userId ||
             linkSession.sessionKey !== state.link.sessionKey) return failure('email_proof_required');
@@ -187,20 +223,40 @@ export async function handleAccount(request, env, dependencies = {}) {
       const email = emailValue(identity.email);
       const validSubject = isGitHub ? /^[1-9]\d{0,19}$/ : /^[A-Za-z0-9_-]{1,255}$/;
       if (!email || typeof identity.sub !== 'string' || !validSubject.test(identity.sub)) return failure(stage);
-      const grant = linkSession ? null : await makeGrant('web'), newId = crypto.randomUUID();
       stage = 'storage_transaction';
+      if (nativeLink || linkSession) {
+        const candidate = {sub: identity.sub, email};
+        const result = await store.transaction(async tx => {
+          const index = cleanIndex(await tx.read('users/_index.json', emptyAccountIndex()));
+          const entry = nativeLink ? deviceLink(index, state.device) : null;
+          if (nativeLink && (!entry || entry.provider !== provider || entry.failed || entry.expiresAt <= Date.now())) return expiredLink();
+          const checked = await checkLink(tx, index, provider, candidate, nativeLink ? entry.owner : linkSession, !nativeLink && !webLink);
+          if (checked.error) return checked;
+          if (nativeLink) {
+            // Freeze the displayed identity. Only the initiating native session
+            // can attach it, after the user confirms this specific candidate.
+            if (entry.candidate) {
+              if (entry.candidate.sub !== candidate.sub || entry.candidate.email !== candidate.email) return expiredLink();
+            } else {
+              entry.candidate = candidate;
+              tx.write('users/_index.json', index);
+            }
+          } else {
+            saveLink(tx, index, provider, candidate, checked);
+          }
+          return {ok: true};
+        });
+        if (result.error) return failure(result.status === 409 ? 'storage_identity_conflict' : 'email_proof_required');
+        return redirect(nativeLink ? '/account?link_device=ready' : webLink ? '/account?linked=' + provider : '/account');
+      }
+      const grant = await makeGrant('web'), newId = crypto.randomUUID();
       const profile = await store.transaction(async tx => {
         const index = cleanIndex(await tx.read('users/_index.json', emptyAccountIndex()));
         // Indexes created before GitHub support have no GitHub identity map.
         if (isGitHub && !Object.hasOwn(index, 'github')) index.github = {};
         const bySubject = own(index[provider], identity.sub);
         const byEmail = own(index.emails, email);
-        if (linkSession) {
-          if (byEmail !== linkSession.id || (bySubject && bySubject !== linkSession.id)) {
-            stage = 'email_proof_required';
-            throw new Error('Account link identity mismatch');
-          }
-        } else if (!isGitHub && !bySubject && identity.emailAuthority !== true) {
+        if (!isGitHub && !bySubject && identity.emailAuthority !== true) {
           stage = 'email_proof_required';
           throw new Error('Current mailbox ownership required');
         }
@@ -218,14 +274,6 @@ export async function handleAccount(request, env, dependencies = {}) {
             stage = 'storage_identity_conflict';
             throw new Error('Account identity conflict');
           }
-          if (linkSession) {
-            const active = credentials.sessions?.[linkSession.sessionKey];
-            if (profile.email !== email || profile.emailVerified !== true || active?.mode !== 'web' ||
-                active.exp !== linkSession.exp || active.exp <= seconds()) {
-              stage = 'email_proof_required';
-              throw new Error('Account link session expired or email changed');
-            }
-          }
           profile.providers = Array.from(new Set([...(profile.providers || []), provider]));
           credentials[credentialKey] = identity.sub;
         } else {
@@ -238,26 +286,34 @@ export async function handleAccount(request, env, dependencies = {}) {
           tx.write(appDataPath(newId, 'brclio'), {version: 1, revision: 0, preferences: {}, updatedAt: new Date().toISOString()});
         }
         index[provider][identity.sub] = profile.id;
-        if (grant) addGrant(credentials, grant);
+        addGrant(credentials, grant);
         tx.write('users/_index.json', index); tx.write(userPath(profile.id, 'profile'), profile); tx.write(userPath(profile.id, 'credentials'), credentials);
         stage = 'storage_commit';
         return profile;
       });
       stage = 'session_cookie';
       const headers = new Headers({'Location': '/account' + (state.device ? '?device=' + encodeURIComponent(state.device) : ''), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'});
-      if (grant) {
-        const response = await grantResponse(profile, grant, env);
-        headers.append('Set-Cookie', response.headers.get('Set-Cookie'));
-      }
+      const response = await grantResponse(profile, grant, env);
+      headers.append('Set-Cookie', response.headers.get('Set-Cookie'));
       headers.append('Set-Cookie', clear);
       return new Response(null, {status: 302, headers});
     } catch { return failure(stage); }
   }
 
   if (path === '/api/account/device/poll' && request.method === 'GET') {
-    if (!isNative || !/^[A-Za-z0-9_-]{32,64}$/.test(url.searchParams.get('id') || '') || !/^[A-Za-z0-9_-]{43,128}$/.test(url.searchParams.get('verifier') || '')) return json({error: '客户端登录请求无效'}, 400);
+    if (!isNative || !validDeviceId(url.searchParams.get('id')) || !validVerifier(url.searchParams.get('verifier'))) return json({error: '客户端登录请求无效'}, 400);
     const id = url.searchParams.get('id'), challenge = await digest(url.searchParams.get('verifier'));
     const state = await store.snapshot(), index = await state.read('users/_index.json', emptyAccountIndex()), device = own(index.devices, id);
+    const binding = deviceLink(index, id);
+    if (binding) {
+      if (binding.expiresAt <= Date.now() || !await safeEqual(binding.challenge, challenge)) return fail(expiredLink());
+      const session = await authenticate(request, env, store, state);
+      if (!sameLinkSession(binding, session)) return json({error: '请使用发起绑定的客户端会话'}, 401);
+      if (binding.failed) return json({error: binding.failed === 'conflict'
+        ? '此第三方账号或邮箱与已有账号关联冲突，请核对当前 Brclio 账号或选择其他第三方账号'
+        : '第三方账号授权取消或绑定失败，请重新发起'}, 409);
+      return json(binding.candidate ? {pending: false, linkReady: true, provider: binding.provider, email: binding.candidate.email} : {pending: true});
+    }
     if (!device || device.expiresAt <= Date.now() || !await safeEqual(device.challenge, challenge)) return json({error: '客户端登录请求已过期'}, 400);
     if (!device.userId) return json({pending: true});
     const grant = await makeGrant('native');
@@ -279,20 +335,57 @@ export async function handleAccount(request, env, dependencies = {}) {
     catch { return json({error: '请求格式无效'}, 400); }
   }
 
-  if (path === '/api/account/device/start' && request.method === 'POST') {
-    if (!isNative || !/^[A-Za-z0-9_-]{43}$/.test(input.challenge || '')) return json({error: '客户端登录请求无效'}, 400);
-    const provider = input.provider === undefined ? 'google' : input.provider;
+  if (['/api/account/device/start', '/api/account/device/link/start'].includes(path) && request.method === 'POST') {
+    const linking = path === '/api/account/device/link/start';
+    if (!isNative || typeof input.challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(input.challenge) || (!linking && (input.intent === 'link' || input.expectedUserId !== undefined))) return json({error: '客户端请求无效'}, 400);
+    const provider = input.provider === undefined && !linking ? 'google' : input.provider;
     if (provider !== 'google' && provider !== 'github') return json({error: '不支持的登录方式'}, 400);
     if (provider === 'github' && !githubEnabled) return json({error: 'GitHub 登录尚未配置'}, 503);
     if (provider === 'google' && !googleEnabled) return json({error: '谷歌登录尚未配置'}, 503);
     if (!await limit('ACCOUNT_AUTH_LIMITER', ip, 10)) return json({error: '请求过于频繁'}, 429);
+    const session = linking ? await authenticate(request, env, store) : null;
+    if (linking && (!session?.isBearer || session.id !== input.expectedUserId)) return json({error: '请使用当前 Brclio 账号重新发起绑定'}, 401);
     const id = random(24);
-    await store.transaction(async tx => {
+    const result = await store.transaction(async tx => {
       const index = cleanIndex(await tx.read('users/_index.json', emptyAccountIndex()));
-      index.devices[id] = {challenge: input.challenge, expiresAt: Date.now() + DEVICE_LIFETIME};
+      const entry = {challenge: input.challenge, expiresAt: Date.now() + DEVICE_LIFETIME};
+      if (linking) {
+        const credentials = await tx.read(userPath(session.id, 'credentials'));
+        if (!activeSession(credentials, session)) return errorResult('会话已失效，请重新登录', 401);
+        // Older servers know only index.devices. A binding must never be
+        // eligible for their normal login approval or bearer-token exchange.
+        index.deviceLinks ||= {};
+        entry.provider = provider;
+        entry.owner = {id: session.id, sessionKey: session.sessionKey, exp: session.exp, mode: 'native'};
+        index.deviceLinks[id] = entry;
+      } else {
+        index.devices[id] = entry;
+      }
       tx.write('users/_index.json', index);
+      return {ok: true};
     });
+    if (result.error) return fail(result);
     return json({id, url: url.origin + '/api/account/' + provider + '/start?device=' + id});
+  }
+
+  if (path === '/api/account/device/link' && request.method === 'POST') {
+    if (!isNative || !validDeviceId(input.id) || !validVerifier(input.verifier)) return fail(expiredLink());
+    const session = await authenticate(request, env, store);
+    if (!session?.isBearer) return json({error: '请使用发起绑定的客户端会话'}, 401);
+    const challenge = await digest(input.verifier);
+    const result = await store.transaction(async tx => {
+      const index = cleanIndex(await tx.read('users/_index.json', emptyAccountIndex()));
+      const entry = deviceLink(index, input.id);
+      if (!entry || entry.expiresAt <= Date.now() || entry.failed || !await safeEqual(entry.challenge, challenge)) return expiredLink();
+      if (!sameLinkSession(entry, session)) return errorResult('请使用发起绑定的客户端会话', 401);
+      if (!entry.candidate) return errorResult('请先在浏览器完成第三方授权', 409);
+      const checked = await checkLink(tx, index, entry.provider, entry.candidate, session);
+      if (checked.error) return checked;
+      delete index.deviceLinks[input.id];
+      saveLink(tx, index, entry.provider, entry.candidate, checked);
+      return {ok: true, user: publicUser(checked.profile)};
+    });
+    return result.error ? fail(result) : json(result);
   }
 
   if (path === '/api/account/code' && request.method === 'POST') {

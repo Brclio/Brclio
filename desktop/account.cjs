@@ -63,7 +63,7 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
   }), pollInterval = 2000, googleTimeout = 300000, browserLoginTimeout = googleTimeout } = {}) {
-  let pendingLogin, csrf = '', authVersion = 0;
+  let pendingLogin, pendingLink, csrf = '', authVersion = 0;
   const controllers = new Set();
   async function requestRaw(target, method, body, outerSignal) {
     if (controllers.size >= 8) throw new Error('账号操作繁忙，请稍后重试。');
@@ -110,7 +110,7 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
     if (typeof value.csrf === 'string') csrf = value.csrf;
     return value;
   }
-  function cancelOAuth() { pendingLogin?.abort(); return { canceled: true }; }
+  function cancelOAuth() { pendingLink = null; pendingLogin?.abort(); return { canceled: true }; }
   async function request(input) {
     const next = validateAccountRequest(input);
     const authChange = ['/api/account/login', '/api/account/register', '/api/account/logout'].includes(next.path);
@@ -124,20 +124,24 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
       if (next.path === '/api/account/logout' && version === authVersion) { await store.write(null); csrf = ''; }
     }
   }
-  async function oauth(provider) {
+  async function oauth(provider, expectedUserId) {
     if (provider !== 'google' && provider !== 'github') throw new Error('不支持此登录方式。');
+    const linking = expectedUserId !== undefined;
+    if (linking && (typeof expectedUserId !== 'string' || !expectedUserId || expectedUserId.length > 128)) throw new Error('请选择要绑定的账号。');
     if (pendingLogin) throw new Error('请先完成或取消当前浏览器登录。');
+    pendingLink = null;
     const controller = new AbortController();
     pendingLogin = controller;
-    const version = ++authVersion;
+    const version = linking ? authVersion : ++authVersion;
     let timedOut = false;
     const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, browserLoginTimeout);
     try {
       const verifier = randomBytes(32).toString('base64url');
       const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
       const started = now();
-      const body = provider === 'google' ? { challenge } : { challenge, provider };
-      const session = await requestRaw('/api/account/device/start', 'POST', JSON.stringify(body), controller.signal);
+      const body = linking ? { challenge, provider, expectedUserId } : provider === 'google' ? { challenge } : { challenge, provider };
+      const route = linking ? '/api/account/device/link/start' : '/api/account/device/start';
+      const session = await requestRaw(route, 'POST', JSON.stringify(body), controller.signal);
       if (typeof session.id !== 'string' || !/^[a-zA-Z0-9_-]{16,128}$/.test(session.id) ||
           session.url !== `${ORIGIN}/api/account/${provider}/start?device=${session.id}`) throw new Error('浏览器登录链接无效。');
       if (controller.signal.aborted) throw abortError();
@@ -147,6 +151,13 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
         const result = await requestRaw(`/api/account/device/poll?id=${encodeURIComponent(session.id)}&verifier=${encodeURIComponent(verifier)}`, 'GET', undefined, controller.signal);
         if (controller.signal.aborted) throw abortError();
         if (result.pending === true) continue;
+        if (linking) {
+          if (version !== authVersion || result.linkReady !== true || result.provider !== provider || typeof result.email !== 'string' || !result.email || result.token) {
+            throw new Error('绑定账号验证未完成，请重新绑定。');
+          }
+          pendingLink = { id: session.id, verifier, expectedUserId, provider, version, expiresAt: started + browserLoginTimeout };
+          return { linkReady: true, provider, email: result.email };
+        }
         if (typeof result.token !== 'string' || !result.user) throw new Error('浏览器登录尚未完成，请重试。');
         return await accept(result, version);
       }
@@ -156,7 +167,24 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
       throw error;
     } finally { clearTimeout(timeout); if (pendingLogin === controller) pendingLogin = null; }
   }
-  return { request, oauth, cancelOAuth, google: () => oauth('google'), cancelGoogle: cancelOAuth,
+  async function confirmLinkOAuth(provider, expectedUserId) {
+    const link = pendingLink;
+    if (!link || link.provider !== provider || link.expectedUserId !== expectedUserId || link.version !== authVersion || now() >= link.expiresAt) {
+      throw new Error('绑定请求已失效，请重新绑定。');
+    }
+    pendingLink = null;
+    const controller = new AbortController();
+    pendingLogin = controller;
+    try {
+      const result = await requestRaw('/api/account/device/link', 'POST', JSON.stringify({ id: link.id, verifier: link.verifier }), controller.signal);
+      if (controller.signal.aborted || link.version !== authVersion || result.ok !== true || result.user?.id !== expectedUserId || result.token) {
+        throw new Error('账号状态已变化，请刷新绑定状态。');
+      }
+      return { ok: true, user: result.user };
+    } finally { if (pendingLogin === controller) pendingLogin = null; }
+  }
+  return { request, oauth: provider => oauth(provider), linkOAuth: (provider, expectedUserId) => oauth(provider, expectedUserId ?? ''), confirmLinkOAuth,
+    cancelOAuth, google: () => oauth('google'), cancelGoogle: cancelOAuth,
     close() { cancelOAuth(); for (const controller of controllers) controller.abort(); } };
 }
 

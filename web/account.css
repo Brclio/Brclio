@@ -76,6 +76,8 @@
 .account-device strong {font-family:'Noto Serif SC','Songti SC',serif;font-size:14px}
 .account-device p {font-size:12px;margin:6px 0 12px;color:var(--account-muted);line-height:1.8}
 .account-device .account-button {width:100%}
+#account-link-review {margin:16px 0 0}
+#account-link-identity {overflow-wrap:anywhere}
 .account-cancel {display:block;border:0;background:transparent;color:var(--account-muted);font:inherit;font-size:11px;padding:9px 0 0;margin:auto;cursor:pointer}
 .account-root button:focus-visible,.account-root a:focus-visible,.account-root input:focus-visible,.account-root select:focus-visible,.account-trigger:focus-visible {outline:2px solid #2B7FD8;outline-offset:3px}
 .account-page {margin:0;background:#fefcf6;color:#1A1A2E;font:14px/1.65 'Noto Sans SC',-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;-webkit-font-smoothing:antialiased}

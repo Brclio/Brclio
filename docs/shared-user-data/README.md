@@ -98,11 +98,14 @@ users/
   "google": {},
   "github": {},
   "verifications": {},
-  "devices": {}
+  "devices": {},
+  "deviceLinks": {}
 }
 ```
 
 `usernames`、`emails`、`google` 分别将规范化用户名、规范化邮箱、Google `sub` 映射到同一个用户 ID。`github` 将 GitHub 的数字用户 ID（十进制字符串）映射到 Brclio 用户 ID。旧索引可以缺少 `github`，首次成功写入 GitHub 身份时补建并保留其他索引。用户名沿用中央服务的 trim、NFKC 和小写索引规则；邮箱沿用 trim 和小写规则。`verifications` 保留验证码验证记录，`devices` 保留短期设备登录请求，二者不是用户表。设备记录的 `userId` 一经存在，必须指向有效用户。不得在应用端自行按邮箱合并账号或创建第二套索引。
+
+新版客户端的短期绑定请求存放在 `deviceLinks`。旧索引可省略该字段。用户在发起绑定的客户端确认后，服务端更新身份索引和账号资料，并消费该请求。
 
 `profile.json` 沿用 `version:1`、`id`、`username`、`email`、`emailVerified`、`providers`、`createdAt`，以及已有的 `nickname`、`avatarUrl`、`updatedAt` 等字段。`id` 必须与目录 ID 相同。
 

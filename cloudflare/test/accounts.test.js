@@ -44,35 +44,34 @@ function fixture() {
     const value = await response.json(); assert.equal(response.status, 200, JSON.stringify(value));
     return {...value, cookie: response.headers.get('Set-Cookie')?.split(';')[0]};
   }
-  async function googleSignIn() {
-    const start = await call('google/start');
-    const state = new URL(start.headers.get('Location')).searchParams.get('state');
-    const completed = await call('google/callback?state=' + state + '&code=valid', 'GET', undefined, {headers: {Cookie: start.headers.get('Set-Cookie').split(';')[0]}});
+  async function providerSignIn(provider) {
+    const finish = await startOAuth({call}, provider);
+    const completed = await finish();
     assert.equal(completed.headers.get('Location'), '/account');
     const cookie = completed.headers.getSetCookie().find(value => value.startsWith('__Host-brclio_user=')).split(';')[0];
     const session = await (await call('session', 'GET', undefined, {headers: {Cookie: cookie}})).json();
     return {...session, cookie};
   }
-  return {store, env, dependencies, sent, call, register, googleSignIn};
+  return {store, env, dependencies, sent, call, register, providerSignIn};
 }
 
 async function githubCallback(f, device) {
-  const start = await f.call('github/start' + (device ? '?device=' + device : ''));
-  assert.equal(start.status, 302);
-  const state = new URL(start.headers.get('Location')).searchParams.get('state');
-  return f.call('github/callback?state=' + state + '&code=valid', 'GET', undefined, {
-    headers: {Cookie: start.headers.get('Set-Cookie').split(';')[0]}
-  });
+  const finish = await startOAuth(f, 'github', device ? '?device=' + device : '');
+  return finish();
 }
 
-async function startGoogle(f, query = '', webCookie = '') {
-  const start = await f.call('google/start' + query, 'GET', undefined, {headers: {Cookie: webCookie}});
+async function startOAuth(f, provider, query = '', webCookie = '') {
+  const start = await f.call(provider + '/start' + query, 'GET', undefined, {headers: {Cookie: webCookie, 'Sec-Fetch-Site': 'same-origin'}});
   assert.equal(start.status, 302);
   const state = new URL(start.headers.get('Location')).searchParams.get('state');
   const oauthCookie = start.headers.get('Set-Cookie').split(';')[0];
-  return (cookie = webCookie) => f.call('google/callback?code=valid&state=' + state, 'GET', undefined, {
+  return (cookie = webCookie) => f.call(provider + '/callback?code=valid&state=' + state, 'GET', undefined, {
     headers: {Cookie: [oauthCookie, cookie].filter(Boolean).join('; ')}
   });
+}
+
+function browserLink(f, provider, owner) {
+  return startOAuth(f, provider, '?link=1&expectedUserId=' + owner.user.id, owner.cookie);
 }
 
 test('registration persists independent readable user folders, plaintext password and hash, consumes code, and signs cookie', async () => {
@@ -258,7 +257,7 @@ test('password changes verify the old password, synchronize plaintext and hash, 
 });
 
 test('Google-only accounts set nickname, username and their first password while preserving Google identity and current web session', async () => {
-  const f = fixture(), signed = await f.googleSignIn();
+  const f = fixture(), signed = await f.providerSignIn('google');
   assert.equal(signed.passwordEnabled,false);
   const path = 'users/' + signed.user.id + '/credentials.json';
   assert.equal(f.store.files.get(path).password,null);
@@ -295,7 +294,7 @@ test('a successful legacy password login backfills plaintext without changing it
 test('both Google and password emails return EMAIL_EXISTS409 for code requests and repeated registration without sending mail', async () => {
   for (const provider of ['google','password']) {
     const f = fixture();
-    const account = provider === 'google' ? await f.googleSignIn() : await f.register();
+    const account = provider === 'google' ? await f.providerSignIn('google') : await f.register();
     const beforeIndex = structuredClone(f.store.files.get('users/_index.json'));
     const sentCount = f.sent.length;
     for (const [path,body] of [['code',{email:account.user.email}],['register',{username:'another-user',email:account.user.email,code:'123456',password:'other valid password'}]]) {
@@ -349,7 +348,7 @@ test('a third-party Google email needs mailbox proof for its first signup or aut
   const before = structuredClone([...f.store.files]);
   for (const email of ['new@example.com', existing.user.email]) {
     f.dependencies.googleIdentity = async () => ({sub: 'third-party', email, emailAuthority: false});
-    const finish = await startGoogle(f, '?device=' + device.id, existing.cookie);
+    const finish = await startOAuth(f, 'google', '?device=' + device.id, existing.cookie);
     const result = await finish();
     assert.equal(result.headers.get('Location'), '/account?error=google_email_proof&device=' + device.id);
     assert.ok(result.headers.getSetCookie().every(value => !value.startsWith('__Host-brclio_user=')));
@@ -373,7 +372,7 @@ test('Google explicit linking keeps the original verified web account and its se
   const native = await f.call('login', 'POST', {identifier: owner.user.username, password: 'my correct password'}, {native: true});
   const token = (await native.json()).token;
   assert.equal((await f.call('google/start?link=1', 'GET', undefined, {headers: {Authorization: 'Bearer ' + token}})).status, 401);
-  const finish = await startGoogle(f, '?link=1', owner.cookie);
+  const finish = await startOAuth(f, 'google', '?link=1', owner.cookie);
   const before = structuredClone(f.store.files.get(path).sessions);
   const result = await finish();
   assert.equal(result.headers.get('Location'), '/account');
@@ -397,13 +396,13 @@ test('Google explicit linking keeps the original verified web account and its se
 });
 
 test('Google explicit linking rejects a changed account, session, email or provider binding', async () => {
-  const f = fixture(), owner = await f.register(), other = await f.googleSignIn();
+  const f = fixture(), owner = await f.register(), other = await f.providerSignIn('google');
   const anotherLogin = await f.call('login', 'POST', {identifier: owner.user.username, password: 'my correct password'});
   const sameAccountDifferentSession = anotherLogin.headers.get('Set-Cookie').split(';')[0];
   const identity = {sub: 'unbound', email: owner.user.email, emailAuthority: false};
   f.dependencies.googleIdentity = async () => identity;
   const before = structuredClone([...f.store.files]);
-  const finish = await startGoogle(f, '?link=1', owner.cookie);
+  const finish = await startOAuth(f, 'google', '?link=1', owner.cookie);
   for (const cookie of ['', other.cookie, sameAccountDifferentSession]) {
     assert.equal((await finish(cookie)).headers.get('Location'), '/account?error=google_email_proof');
   }
@@ -422,6 +421,87 @@ test('Google explicit linking rejects a changed account, session, email or provi
   const revoked = await finish();
   assert.equal(revoked.headers.get('Location'), '/account?error=google_email_proof');
   assert.equal(f.store.files.get('users/_index.json').google.unbound, undefined);
+});
+
+for (const first of ['password', 'google', 'github']) {
+  test(`an account created with ${first} can add the other two methods and sign back into the same data`, async () => {
+    const f = fixture();
+    const owner = first === 'password' ? await f.register() : await f.providerSignIn(first);
+    const auth = {headers: {Cookie: owner.cookie, 'X-CSRF-Token': owner.csrf}};
+    const preferences = {separator: 'forward'};
+    assert.equal((await f.call('data', 'PUT', {preferences}, auth)).status, 200);
+    const data = await (await f.call('data', 'GET', undefined, auth)).json();
+    const password = 'my correct password';
+    if (first !== 'password') {
+      assert.equal((await f.call('password', 'POST', {newPassword: password}, auth)).status, 200);
+    }
+    for (const provider of ['google', 'github'].filter(provider => provider !== first)) {
+      const finish = await browserLink(f, provider, owner);
+      const result = await finish();
+      assert.equal(result.headers.get('Location'), '/account?linked=' + provider);
+      assert.ok(result.headers.getSetCookie().every(cookie => !cookie.startsWith('__Host-brclio_user=')));
+    }
+    const linked = await (await f.call('session', 'GET', undefined, auth)).json();
+    assert.equal(linked.csrf, owner.csrf);
+    assert.equal(linked.user.email, owner.user.email);
+    assert.deepEqual(linked.user.providers.sort(), ['github', 'google', 'password']);
+    assert.deepEqual(f.store.files.get('users/_index.json').emails, {[owner.user.email]: owner.user.id});
+    const passwordLogin = await f.call('login', 'POST', {identifier: owner.user.email, password});
+    assert.equal(passwordLogin.status, 200);
+    assert.equal((await passwordLogin.json()).user.id, owner.user.id);
+    for (const provider of ['google', 'github']) {
+      const again = await f.providerSignIn(provider);
+      assert.equal(again.user.id, owner.user.id);
+      assert.equal(again.user.email, owner.user.email);
+      assert.deepEqual(await (await f.call('data', 'GET', undefined, {headers: {Cookie: again.cookie}})).json(), data);
+    }
+    assert.equal([...f.store.files.keys()].filter(path => path.endsWith('/profile.json')).length, 1);
+  });
+}
+
+test('explicit GitHub binding keeps provider IDs unique and preserves other accounts', async () => {
+  const f = fixture(), owner = await f.register(), other = await f.providerSignIn('github');
+  const identity = {sub: '42', email: owner.user.email};
+  f.dependencies.githubIdentity = async () => identity;
+  const finish = await browserLink(f, 'github', owner);
+  const before = structuredClone([...f.store.files]);
+  for (const candidate of [
+    {sub: '42', email: owner.user.email},
+    {sub: '43', email: other.user.email}
+  ]) {
+    Object.assign(identity, candidate);
+    assert.equal((await finish()).headers.get('Location'), '/account?error=github_link');
+    assert.deepEqual([...f.store.files], before);
+  }
+  identity.email = 'additional@example.com';
+  assert.equal((await finish(other.cookie)).headers.get('Location'), '/account?error=github_link');
+  assert.deepEqual([...f.store.files], before);
+  assert.equal((await finish()).headers.get('Location'), '/account?linked=github');
+  const after = structuredClone([...f.store.files]);
+  identity.sub = '44';
+  const replacement = await browserLink(f, 'github', owner);
+  assert.equal((await replacement()).headers.get('Location'), '/account?error=github_link');
+  assert.deepEqual([...f.store.files], after);
+});
+
+test('the web binding starts only from the account page origin and for the signed-in page user', async () => {
+  const f = fixture(), owner = await f.register(), other = await f.providerSignIn('github');
+  for (const provider of ['github', 'google']) {
+    const start = (id, headers) => f.call(provider + '/start?link=1&expectedUserId=' + id, 'GET', undefined, {
+      headers: {Cookie: owner.cookie, ...headers}
+    });
+    for (const headers of [{}, {'Sec-Fetch-Site': 'cross-site'}, {Referer: 'https://other.example/'}]) {
+      const response = await start(owner.user.id, headers);
+      assert.equal(response.status, 403);
+      assert.equal(response.headers.has('Set-Cookie'), false);
+    }
+    const stalePage = await start(other.user.id, {'Sec-Fetch-Site': 'same-origin'});
+    assert.equal(stalePage.headers.has('Set-Cookie'), false);
+    assert.equal((stalePage.headers.get('Location') || '').startsWith('https://'), false);
+    const success = await start(owner.user.id, {Referer: 'https://tools.brclio.com/account'});
+    assert.equal(success.status, 302);
+    assert.ok(success.headers.has('Set-Cookie'));
+  }
 });
 
 test('GitHub configuration is independent of Google and repository access credentials', async () => {
@@ -526,6 +606,112 @@ test('GitHub browser authorization preserves the device and requires explicit ap
   const authenticated = await (await poll()).json();
   assert.ok(authenticated.token); assert.deepEqual(authenticated.user.providers, ['github']);
   assert.equal((await poll()).status, 400);
+});
+
+async function nativeLink(f, owner, provider) {
+  const verifier = random(), challenge = await digest(verifier);
+  const auth = {native: true, headers: {Authorization: 'Bearer ' + owner.token}};
+  const start = await f.call('device/link/start', 'POST', {provider, challenge, expectedUserId: owner.user.id}, auth);
+  assert.equal(start.status, 200);
+  const {id, url} = await start.json();
+  assert.equal(new URL(url).pathname, '/api/account/' + provider + '/start');
+  const query = new URL(url).search;
+  assert.equal(new URLSearchParams(query).get('device'), id);
+  assert.equal(Object.hasOwn(f.store.files.get('users/_index.json').devices, id), false);
+  const finish = await startOAuth(f, provider, query);
+  const poll = (options = auth, proof = verifier) => f.call('device/poll?id=' + id + '&verifier=' + proof, 'GET', undefined, options);
+  const confirm = (options = auth, proof = verifier) => f.call('device/link', 'POST', {id, verifier: proof}, options);
+  return {id, finish, poll, confirm};
+}
+
+for (const provider of ['google', 'github']) {
+  test(`native ${provider} binding requires confirmation by the initiating session and preserves its bearer`, async () => {
+    const f = fixture(), owner = await f.register('owner', 'owner@example.com', true);
+    const other = await f.register('other-user', 'other@example.com');
+    const otherWeb = {headers: {Cookie: other.cookie, 'X-CSRF-Token': other.csrf}};
+    const secondSession = await (await f.call('login', 'POST', {identifier: owner.user.email, password: 'my correct password'}, {native: true})).json();
+    const sameUserOtherBearer = {native: true, headers: {Authorization: 'Bearer ' + secondSession.token}};
+    const credentials = () => f.store.files.get('users/' + owner.user.id + '/credentials.json');
+    const grants = structuredClone(credentials().sessions);
+    const pending = await nativeLink(f, owner, provider);
+    assert.deepEqual(await (await pending.poll()).json(), {pending: true});
+    assert.ok((await pending.confirm()).status >= 400);
+    const returned = await pending.finish(other.cookie);
+    assert.equal(returned.headers.get('Location'), '/account?link_device=ready');
+    assert.ok(returned.headers.getSetCookie().every(cookie => !cookie.startsWith('__Host-brclio_user=')));
+    const identity = await f.dependencies[provider + 'Identity']();
+    assert.deepEqual(await (await pending.poll()).json(), {pending: false, linkReady: true, provider, email: identity.email});
+    assert.ok((await f.call('device/approve', 'POST', {id: pending.id}, otherWeb)).status >= 400);
+    for (const invalidAuth of [{native: true}, sameUserOtherBearer, otherWeb]) {
+      assert.ok((await pending.poll(invalidAuth)).status >= 400);
+      assert.ok((await pending.confirm(invalidAuth)).status >= 400);
+    }
+    assert.ok((await pending.poll(undefined, random())).status >= 400);
+    assert.ok((await pending.confirm(undefined, random())).status >= 400);
+    const bearer = {native: true, headers: {Authorization: 'Bearer ' + owner.token}};
+    const before = await (await f.call('session', 'GET', undefined, bearer)).json();
+    assert.deepEqual(before.user.providers, ['password']);
+    const confirmed = await pending.confirm();
+    assert.equal(confirmed.status, 200);
+    const after = await (await f.call('session', 'GET', undefined, bearer)).json();
+    assert.deepEqual(await confirmed.json(), {ok: true, user: after.user});
+    assert.equal(confirmed.headers.has('Set-Cookie'), false);
+    assert.deepEqual(after.user.providers.sort(), ['password', provider].sort());
+    assert.equal(after.user.id, owner.user.id);
+    assert.equal(after.user.email, owner.user.email);
+    assert.equal(after.csrf, before.csrf);
+    assert.deepEqual(credentials().sessions, grants);
+    assert.equal((await f.providerSignIn(provider)).user.id, owner.user.id);
+    assert.ok((await pending.confirm()).status >= 400);
+    assert.ok((await pending.poll()).status >= 400);
+    assert.deepEqual((await (await f.call('session', 'GET', undefined, otherWeb)).json()).user, other.user);
+  });
+}
+
+test('native binding validates the expected user on start and requires the original active session at confirmation', async () => {
+  const f = fixture(), owner = await f.register('owner', 'owner@example.com', true);
+  const other = await f.register('other-user', 'other@example.com');
+  const bearer = {native: true, headers: {Authorization: 'Bearer ' + owner.token}};
+  const params = {provider: 'github', challenge: await digest(random()), expectedUserId: owner.user.id};
+  assert.ok((await f.call('device/link/start', 'POST', params, {native: true})).status >= 400);
+  assert.ok((await f.call('device/link/start', 'POST', {...params, expectedUserId: other.user.id}, bearer)).status >= 400);
+  const pending = await nativeLink(f, owner, 'github');
+  assert.equal((await pending.finish()).headers.get('Location'), '/account?link_device=ready');
+  assert.equal((await f.call('logout', 'POST', {}, bearer)).status, 200);
+  assert.ok((await pending.confirm()).status >= 400);
+  assert.equal(f.store.files.get('users/_index.json').github['42'], undefined);
+  assert.deepEqual(f.store.files.get('users/' + owner.user.id + '/profile.json').providers, ['password']);
+});
+
+test('native confirmation leaves a GitHub identity with its existing account if it was claimed while awaiting confirmation', async () => {
+  const f = fixture(), owner = await f.register('owner', 'owner@example.com', true);
+  const pending = await nativeLink(f, owner, 'github');
+  assert.equal((await pending.finish()).headers.get('Location'), '/account?link_device=ready');
+  const other = await f.providerSignIn('github');
+  assert.notEqual(other.user.id, owner.user.id);
+  assert.ok((await pending.confirm()).status >= 400);
+  const index = f.store.files.get('users/_index.json');
+  assert.equal(index.github['42'], other.user.id);
+  assert.deepEqual(f.store.files.get('users/' + owner.user.id + '/profile.json').providers, ['password']);
+  assert.deepEqual(f.store.files.get('users/' + other.user.id + '/profile.json').providers, ['github']);
+  const retry = await nativeLink(f, owner, 'github');
+  assert.equal((await retry.finish()).headers.get('Location'), '/account?link_device=error');
+  const conflict = await retry.poll();
+  assert.equal(conflict.status, 409);
+  assert.match((await conflict.json()).error, /关联冲突/);
+});
+
+test('returning from a second provider selection cannot change the GitHub identity shown for native confirmation', async () => {
+  const f = fixture(), owner = await f.register('owner', 'owner@example.com', true);
+  const pending = await nativeLink(f, owner, 'github');
+  const secondSelection = await startOAuth(f, 'github', '?device=' + pending.id);
+  assert.equal((await pending.finish()).headers.get('Location'), '/account?link_device=ready');
+  const displayed = await (await pending.poll()).json();
+  f.dependencies.githubIdentity = async () => ({sub: '43', email: 'second-choice@example.com'});
+  assert.equal((await secondSelection()).headers.get('Location'), '/account?link_device=error');
+  assert.deepEqual(await (await pending.poll()).json(), displayed);
+  assert.equal((await pending.confirm()).status, 200);
+  assert.deepEqual(f.store.files.get('users/_index.json').github, {'42': owner.user.id});
 });
 
 test('Google failure diagnostics identify finite phases and never include callback or provider secrets', async () => {

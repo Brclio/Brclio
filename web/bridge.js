@@ -19,7 +19,7 @@
       const id = String(++nextId);
       const xhsAction = method === 'xhsRequest' ? payload.action : '';
       const unlimited = method === 'downloadUpdate' || ['saveImages', 'saveNote', 'exportArchive', 'saveVideo', 'copyImages', 'shareImages', 'finishGenerated'].includes(xhsAction);
-      const timer = unlimited ? null : setTimeout(() => { pending.delete(id); reject(new Error('系统操作尚未完成，请重试。')); }, method === 'pickPaths' ? 900000 : ['accountGoogle', 'accountOAuth'].includes(method) ? 330000 : method === 'accountRequest' && payload.path === '/api/account/feedback' ? 100000 : method === 'checkForUpdates' || ['parsePython', 'fetchNote'].includes(xhsAction) ? 90000 : 60000);
+      const timer = unlimited ? null : setTimeout(() => { pending.delete(id); reject(new Error('系统操作尚未完成，请重试。')); }, method === 'pickPaths' ? 900000 : ['accountGoogle', 'accountOAuth', 'accountLinkOAuth'].includes(method) ? 330000 : method === 'accountRequest' && payload.path === '/api/account/feedback' ? 100000 : method === 'checkForUpdates' || ['parsePython', 'fetchNote'].includes(xhsAction) ? 90000 : 60000);
       pending.set(id, { resolve, reject, timer });
       try { window.AndroidBridge.postMessage(JSON.stringify({ id, method, payload })); }
       catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
@@ -46,9 +46,14 @@
       return { redirecting: true };
     },
     accountCancelOAuth: async () => ({ canceled: true }),
+    accountLinkOAuth: async (provider, expectedUserId) => {
+      if (!['github', 'google'].includes(provider) || typeof expectedUserId !== 'string' || !expectedUserId) throw new Error('账号绑定请求无效。');
+      location.assign('/api/account/' + provider + '/start?' + new URLSearchParams({ link: '1', expectedUserId }));
+      return { redirecting: true };
+    },
     accountGoogle: () => browser.accountOAuth('google'),
     accountCancelGoogle: async () => ({ canceled: true }),
-    getPlatform: async () => ({ platform: 'browser', version: '0.2.12', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
+    getPlatform: async () => ({ platform: 'browser', version: '0.2.13', capabilities: { filePicker: false, folderPicker: false, systemIntegration: false, globalShortcut: false } }),
     getSettings: async () => { const saved = localStorage.getItem(STORE); return saved ? JSON.parse(saved) : {}; },
     saveSettings: async settings => { localStorage.setItem(STORE, JSON.stringify(settings)); return settings; },
     copyText: async text => {
@@ -68,7 +73,7 @@
     onPaths: () => () => {},
     getUpdateProxyState: async () => ({ enabled: true, supported: false, route: 'direct' }),
     setUpdateProxyEnabled: async () => { throw new Error('请在客户端中设置更新代理。'); },
-    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.2.12' }),
+    checkForUpdates: async () => ({ status: 'unsupported', currentVersion: '0.2.13' }),
     downloadUpdate: async () => { throw new Error('请在客户端中下载安装包。'); },
     installUpdate: async () => { throw new Error('请在客户端中安装更新。'); },
     onUpdateState: () => () => {},
@@ -155,6 +160,8 @@
     onXhsEvent: callback => { const listener = event => callback(event.detail); window.addEventListener('brclio:xhs', listener); return () => window.removeEventListener('brclio:xhs', listener); },
     accountRequest: input => native('accountRequest', input),
     accountOAuth: provider => native('accountOAuth', { provider }),
+    accountLinkOAuth: (provider, expectedUserId) => native('accountLinkOAuth', { provider, expectedUserId }),
+    accountConfirmLinkOAuth: (provider, expectedUserId) => native('accountConfirmLinkOAuth', { provider, expectedUserId }),
     accountCancelOAuth: () => native('accountCancelOAuth'),
     accountGoogle: () => native('accountGoogle'),
     accountCancelGoogle: () => native('accountCancelGoogle'),

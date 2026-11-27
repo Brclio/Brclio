@@ -167,6 +167,8 @@ class MainActivity : Activity() {
                 "accountRequest" -> account().request(payload) { result, error -> resolve(id, result, error) }
                 "accountGoogle" -> account().oauth("google") { result, error -> resolve(id, result, error) }
                 "accountOAuth" -> account().oauth(payload.optString("provider")) { result, error -> resolve(id, result, error) }
+                "accountLinkOAuth" -> account().oauth(payload.getString("provider"), payload.getString("expectedUserId")) { result, error -> resolve(id, result, error) }
+                "accountConfirmLinkOAuth" -> account().confirmLinkOAuth(payload.getString("provider"), payload.getString("expectedUserId")) { result, error -> resolve(id, result, error) }
                 "accountCancelGoogle", "accountCancelOAuth" -> resolve(id, account().cancelOAuth())
                 "getPlatform" -> resolve(id, JSONObject()
                     .put("platform", "android")

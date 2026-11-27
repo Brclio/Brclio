@@ -26,6 +26,10 @@ class AndroidAccount(private val activity: Activity) {
     @Volatile private var closed = false
     @Volatile private var csrf = ""
     @Volatile private var pendingLogin: BrowserLogin? = null
+    private var pendingLink: PendingLink? = null
+
+    private data class PendingLink(val id: String, val verifier: String, val provider: String,
+                                   val expectedUserId: String, val version: Int, val deadline: Long)
 
     private class BrowserLogin {
         @Volatile var canceled = false
@@ -49,13 +53,15 @@ class AndroidAccount(private val activity: Activity) {
         }
     }
 
-    fun oauth(provider: String, callback: (JSONObject?, String?) -> Unit) {
+    fun oauth(provider: String, expectedUserId: String? = null, callback: (JSONObject?, String?) -> Unit) {
         require(AccountPolicy.supportsProvider(provider)) { "不支持此登录方式。" }
+        require(expectedUserId == null || expectedUserId.length in 1..128) { "请选择要绑定的账号。" }
         val operation = synchronized(lock) {
             check(pendingLogin == null) { "请先完成或取消当前浏览器登录。" }
+            pendingLink = null
             BrowserLogin().also { pendingLogin = it }
         }
-        val version = authVersion.incrementAndGet()
+        val version = if (expectedUserId == null) authVersion.incrementAndGet() else authVersion.get()
         val timeout = Runnable { operation.timedOut = true; operation.canceled = true; operation.connection?.disconnect() }
         handler.postDelayed(timeout, TimeUnit.MINUTES.toMillis(5))
         execute(callback, { handler.removeCallbacks(timeout); synchronized(lock) { if (pendingLogin === operation) pendingLogin = null } }) {
@@ -63,8 +69,10 @@ class AndroidAccount(private val activity: Activity) {
             val verifier = AccountPolicy.verifier()
             val deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5)
             val body = JSONObject().put("challenge", AccountPolicy.challenge(verifier))
-            if (provider != "google") body.put("provider", provider)
-            val started = raw("/api/account/device/start", "POST", body.toString(), operation)
+            if (provider != "google" || expectedUserId != null) body.put("provider", provider)
+            if (expectedUserId != null) body.put("expectedUserId", expectedUserId)
+            val route = if (expectedUserId == null) "/api/account/device/start" else "/api/account/device/link/start"
+            val started = raw(route, "POST", body.toString(), operation)
             val id = started.optString("id")
             val url = started.optString("url")
             check(AccountPolicy.validOAuthUrl(url, id, provider)) { "浏览器登录链接无效。" }
@@ -85,6 +93,16 @@ class AndroidAccount(private val activity: Activity) {
                 repeat(20) { checkActive(operation); Thread.sleep(100) }
                 val result = raw("/api/account/device/poll?id=$id&verifier=$verifier", "GET", null, operation)
                 if (result.optBoolean("pending")) continue
+                if (expectedUserId != null) {
+                    val email = result.opt("email") as? String
+                    check(result.optBoolean("linkReady") && result.optString("provider") == provider && !email.isNullOrEmpty() && !result.has("token")) { "绑定账号验证未完成，请重新绑定。" }
+                    synchronized(lock) {
+                        checkActive(operation)
+                        check(version == authVersion.get()) { "账号状态已变化，请重新绑定。" }
+                        pendingLink = PendingLink(id, verifier, provider, expectedUserId, version, deadline)
+                    }
+                    return@execute JSONObject().put("linkReady", true).put("provider", provider).put("email", email)
+                }
                 check(result.opt("token") is String && result.opt("user") is JSONObject) { "浏览器登录尚未完成，请重试。" }
                 return@execute accept(result, version, operation)
             }
@@ -97,8 +115,30 @@ class AndroidAccount(private val activity: Activity) {
         }
     }
 
+    fun confirmLinkOAuth(provider: String, expectedUserId: String, callback: (JSONObject?, String?) -> Unit) {
+        val operation = BrowserLogin()
+        val link = synchronized(lock) {
+            val current = pendingLink
+            check(current != null && pendingLogin == null && current.provider == provider && current.expectedUserId == expectedUserId &&
+                current.version == authVersion.get() && System.nanoTime() < current.deadline) { "绑定请求已失效，请重新绑定。" }
+            pendingLink = null
+            pendingLogin = operation
+            current
+        }
+        execute(callback, { synchronized(lock) { if (pendingLogin === operation) pendingLogin = null } }) {
+            val body = JSONObject().put("id", link.id).put("verifier", link.verifier)
+            val result = raw("/api/account/device/link", "POST", body.toString(), operation)
+            val user = result.optJSONObject("user")
+            checkActive(operation)
+            check(link.version == authVersion.get() && result.optBoolean("ok") && user?.optString("id") == expectedUserId &&
+                !result.has("token")) { "账号状态已变化，请刷新绑定状态。" }
+            JSONObject().put("ok", true).put("user", user)
+        }
+    }
+
     fun cancelOAuth(): JSONObject {
         val connection = synchronized(lock) {
+            pendingLink = null
             pendingLogin?.let { it.canceled = true; it.connection }
         }
         connection?.disconnect()

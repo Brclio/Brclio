@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('brclio', Object.freeze({
   },
   accountRequest: input => ipcRenderer.invoke('brclio:account:request', input),
   accountOAuth: provider => ipcRenderer.invoke('brclio:account:oauth', provider),
+  accountLinkOAuth: (provider, expectedUserId) => ipcRenderer.invoke('brclio:account:oauth:link', provider, expectedUserId),
+  accountConfirmLinkOAuth: (provider, expectedUserId) => ipcRenderer.invoke('brclio:account:oauth:link:confirm', provider, expectedUserId),
   accountCancelOAuth: () => ipcRenderer.invoke('brclio:account:oauth:cancel'),
   accountGoogle: () => ipcRenderer.invoke('brclio:account:google'),
   accountCancelGoogle: () => ipcRenderer.invoke('brclio:account:google:cancel'),

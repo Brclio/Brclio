@@ -8,10 +8,12 @@
   const pageParams = new URLSearchParams(page ? location.search : '');
   const deviceId = pageParams.get('device') || '';
   const oauthError = pageParams.get('error');
+  const deviceLinkStatus = pageParams.get('link_device');
   const providers = { google: 'Google', github: 'GitHub' };
   const state = { user: null, csrf: '', enabledProviders: [], passwordEnabled: false, tab: 'login', busy: false, oauthPending: false, cloud: null, cloudLoaded: false, cooldown: 0, deviceApproved: false, existingEmail: '' };
   let profileOwner = null;
   let profileDirty = false;
+  let activeLink = null;
   const portableKeys = ['pathMode', 'quoteMode', 'separator', 'trailingSlash', 'joinWith'];
   const defaults = { pathMode: 'absolute', quoteMode: 'none', separator: 'native', trailingSlash: false, joinWith: 'newline' };
   const root = document.createElement('div');
@@ -61,11 +63,16 @@
             <div class="account-field"><label for="account-confirm-password">确认新密码</label><input class="account-input" id="account-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="再次输入新密码" required></div>
             <button class="account-button" id="account-save-password" type="submit">设置密码</button>
           </form>
-          <section id="account-google-link-settings" class="account-form account-password-form" hidden aria-labelledby="account-google-link-title">
-            <h3 class="account-form-title" id="account-google-link-title">Google 登录</h3>
-            <p class="account-note">请选择与此 Brclio 账号邮箱相同的 Google 账号。关联后即可用它登录。</p>
-            <button class="account-button account-button-secondary" id="account-link-google" type="button">关联 Google</button>
-          </section>
+          ${Object.entries(providers).map(([id, name]) => `<section id="account-${id}-link-settings" class="account-form account-password-form" aria-labelledby="account-${id}-link-title">
+            <h3 class="account-form-title" id="account-${id}-link-title">${name} 登录</h3>
+            <p class="account-note" id="account-${id}-link-status"></p>
+            <button class="account-button account-button-secondary" id="account-link-${id}" type="button" hidden>关联 ${name}</button>
+          </section>`).join('')}
+          <div class="account-device" id="account-link-review" hidden>
+            <p id="account-link-identity" role="status"></p>
+            <button class="account-button" id="account-confirm-link" type="button" aria-describedby="account-link-identity" hidden>确认关联</button>
+            <button class="account-cancel" id="account-cancel-link" type="button">取消关联</button>
+          </div>
         </div>
       </details>
       <div class="account-sync-heading"><h3>我的复制偏好</h3><span class="account-cloud-state" id="account-cloud-state">尚未同步</span></div>
@@ -146,8 +153,25 @@
       $('profile-username').hidden = !state.user.nickname || state.user.nickname === state.user.username;
       $('avatar').textContent = Array.from(name)[0].toUpperCase();
       const linked = linkedProviders();
-      $('google-link-settings').hidden = !page || Boolean(host) || Boolean(deviceId) ||
-        !state.enabledProviders.includes('google') || linked.includes('google');
+      for (const [id, name] of Object.entries(providers)) {
+        const bound = linked.includes(id);
+        const enabled = state.enabledProviders.includes(id);
+        $(id + '-link-settings').hidden = Boolean(deviceId);
+        $('link-' + id).hidden = bound || !enabled || (Boolean(host) && !host.accountLinkOAuth);
+        $(id + '-link-status').textContent = (bound ? '已关联' : '未关联') +
+          (!enabled ? ` · ${name} 登录暂不可用。` : bound ? ` · 可使用 ${name} 登录此账号。` :
+            host && !host.accountLinkOAuth ? ' · 请在网页账号设置中关联。' : ` · 关联后可使用 ${name} 登录此账号。`);
+      }
+      $('link-review').hidden = !activeLink;
+      if (activeLink) {
+        const name = providers[activeLink.provider];
+        $('link-identity').textContent = activeLink.email
+          ? `将 ${name} 账号 ${activeLink.email} 关联到当前 Brclio 账号 ${state.user.email}？`
+          : `请在系统浏览器中授权 ${name}，然后返回这里确认关联。`;
+        $('confirm-link').hidden = !activeLink.email;
+        $('confirm-link').disabled = state.busy;
+        $('cancel-link').disabled = Boolean(activeLink.confirming);
+      }
       $('oauth-onboarding').hidden = state.passwordEnabled || !linked.length;
       $('oauth-onboarding').textContent = `已关联 ${providerNames(linked, ' 和 ')}，可在账号设置中完善昵称、账号和密码。`;
       $('current-password-field').hidden = !state.passwordEnabled;
@@ -155,7 +179,7 @@
       $('current-password').required = state.passwordEnabled;
       $('current-password').disabled = state.busy || !state.passwordEnabled;
       const available = linked.filter(provider => state.enabledProviders.includes(provider));
-      $('password-hint').textContent = (state.passwordEnabled ? '修改密码需要验证当前密码。' : '设置密码后，可以使用账号或邮箱加密码登录。') + (available.length ? `你也可以使用 ${providerNames(available)} 登录。` : '');
+      $('password-hint').textContent = (state.passwordEnabled ? '已设置 · 可使用账号或邮箱加密码登录。修改密码需要验证当前密码。' : '未设置 · 设置后可使用账号或邮箱加密码登录。') + (available.length ? `你也可以使用 ${providerNames(available)} 登录。` : '');
       $('save-password').textContent = state.passwordEnabled ? '修改密码' : '设置密码';
       const local = Boolean(localPreferences());
       $('local-sync').hidden = !local; $('cloud-form').hidden = local;
@@ -165,6 +189,11 @@
       const updated = hasCloudPreferences ? state.cloud?.updatedAt : null;
       const date = updated ? new Date(updated) : null;
       $('sync-time').textContent = date && !Number.isNaN(date.getTime()) ? `云端保存时间：${date.toLocaleString('zh-CN')}` : state.cloudLoaded ? '点击保存或上传，将偏好带到其他设备。' : '';
+      if (activeLink?.email) {
+        for (const button of root.querySelectorAll('button')) {
+          if (button !== $('confirm-link') && button !== $('cancel-link') && !button.matches('.account-close')) button.disabled = true;
+        }
+      }
     }
     $('device').hidden = !deviceId;
     $('device-approve').hidden = !signedIn || state.deviceApproved;
@@ -197,6 +226,7 @@
     const owner = state.user?.id || null;
     const changed = owner !== profileOwner;
     if (changed) {
+      if (activeLink && activeLink.userId !== owner) cancelLink();
       clearPasswordFields();
       profileDirty = false;
       profileOwner = owner;
@@ -242,7 +272,7 @@
   async function afterSignIn() {
     $('login-password').value = ''; $('register-password').value = ''; $('code').value = '';
     await refreshSession();
-    if (oauthError === 'google_email_proof' && !$('google-link-settings').hidden) {
+    if (oauthError === 'google_email_proof' && !deviceId && !$('link-google').hidden) {
       $('settings').open = true;
       message('登录成功。请在账号设置中选择「关联 Google」。');
     } else message(deviceId ? '登录成功，请确认下方的客户端登录。' : '登录成功，你可以管理自己的云端偏好了。');
@@ -322,9 +352,63 @@
     if (host?.accountCancelOAuth) void host.accountCancelOAuth();
     else void host?.accountCancelGoogle?.();
   });
-  $('link-google').addEventListener('click', () => { void run(async () => {
-    await ensureCurrentUser();
-    location.assign('/api/account/google/start?link=1');
+  function cancelLink() {
+    const link = activeLink;
+    activeLink = null;
+    if (link?.nativeStarted) Promise.resolve(host.accountCancelOAuth?.()).catch(() => {});
+  }
+  for (const [provider, name] of Object.entries(providers)) {
+    $('link-' + provider).addEventListener('click', () => { void run(async () => {
+      if (activeLink || !state.user || deviceId) return;
+      const link = { provider, userId: state.user.id };
+      activeLink = link;
+      try {
+        await ensureCurrentUser();
+        if (activeLink !== link) return;
+        if (!state.enabledProviders.includes(provider) || linkedProviders().includes(provider)) return;
+        if (!host) {
+          location.assign(`/api/account/${provider}/start?` + new URLSearchParams({link: '1', expectedUserId: link.userId}));
+          return;
+        }
+        if (!host.accountLinkOAuth) throw new Error('请在网页账号设置中关联此登录方式。');
+        link.nativeStarted = true;
+        render();
+        const result = await host.accountLinkOAuth(provider, link.userId);
+        if (activeLink !== link || result?.redirecting) return;
+        if (!result?.linkReady || result.provider !== provider || typeof result.email !== 'string' || !result.email) throw new Error(`${name} 授权未完成，请重新关联。`);
+        await ensureCurrentUser();
+        if (activeLink !== link) return;
+        link.email = result.email;
+        message('请核对下方的第三方账号并确认关联。');
+        requestAnimationFrame(() => { if (activeLink === link) $('confirm-link').focus(); });
+      } catch (error) {
+        if (activeLink === link || state.user?.id !== link.userId) throw error;
+      } finally {
+        if (activeLink === link && !link.email) cancelLink();
+      }
+    }); });
+  }
+  $('cancel-link').addEventListener('click', () => {
+    if (!activeLink || activeLink.confirming) return;
+    cancelLink(); render(); message('已取消关联。');
+  });
+  $('confirm-link').addEventListener('click', () => { void run(async () => {
+    const link = activeLink;
+    if (!link?.email) return;
+    link.confirming = true;
+    render();
+    try {
+      await ensureCurrentUser();
+      if (activeLink !== link || state.user?.id !== link.userId) throw new Error('账号状态已变化，请重新发起关联。');
+      const result = await host.accountConfirmLinkOAuth(link.provider, link.userId);
+      if (!result?.ok || result.user?.id !== link.userId) throw new Error('无法确认关联结果，请刷新账号后查看。');
+      await refreshSession(false);
+      if (state.user?.id !== link.userId || !linkedProviders().includes(link.provider)) throw new Error('无法确认关联结果，请刷新账号后查看。');
+      activeLink = null;
+      message(`已关联 ${providers[link.provider]}，可使用它登录当前 Brclio 账号。`);
+    } finally {
+      if (activeLink === link) cancelLink();
+    }
   }); });
   $('logout').addEventListener('click', () => { void run(async () => {
     await ensureCurrentUser();
@@ -365,13 +449,30 @@
     });
     root.querySelector('.account-close').addEventListener('click', () => dialog.close());
     dialog.addEventListener('click', event => { if (event.target === dialog) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } });
-    dialog.addEventListener('close', () => { $('login-password').value = ''; $('register-password').value = ''; clearPasswordFields(); });
+    dialog.addEventListener('close', () => {
+      if (activeLink && !activeLink.confirming) cancelLink();
+      $('login-password').value = ''; $('register-password').value = ''; clearPasswordFields(); render();
+    });
   }
   render();
-  if (page) void run(async () => {
+  if (page && ['ready', 'error'].includes(deviceLinkStatus)) {
+    $('anonymous').hidden = true; $('device').hidden = true;
+    $('title').textContent = '关联客户端登录方式';
+    const ready = deviceLinkStatus === 'ready';
+    message(ready ? '第三方授权已完成。请返回发起关联的 Brclio 客户端，核对账号后点击「确认关联」。' :
+      '第三方授权未完成。请返回 Brclio 客户端取消本次关联，然后重新发起。', !ready);
+  } else if (page) void run(async () => {
     await refreshSession();
-    if (oauthError === 'google_email_proof') {
-      if (state.user && !$('google-link-settings').hidden) $('settings').open = true;
+    const linked = pageParams.get('linked');
+    const linkError = Object.keys(providers).find(id => oauthError === id + '_link');
+    if (Object.hasOwn(providers, linked) && linkedProviders().includes(linked)) {
+      $('settings').open = true;
+      message(`已关联 ${providers[linked]}，可使用它登录当前 Brclio 账号。`);
+    } else if (linkError) {
+      if (state.user) $('settings').open = true;
+      message(`${providers[linkError]} 关联未完成。请确认当前 Brclio 账号，重新授权并选择尚未关联其他 Brclio 账号的第三方账号。`, true);
+    } else if (oauthError === 'google_email_proof') {
+      if (state.user && !deviceId && !$('link-google').hidden) $('settings').open = true;
       const signIn = state.user ? '' : '新用户请在「注册新账号」用该邮箱接收验证码。已有账号请先用原来的方式登录。';
       const link = deviceId ? '请先在本页确认客户端登录，再打开网页「账号设置」选择「关联 Google」。' : '请在网页「账号设置」选择「关联 Google」。';
       message(`此 Google 账号使用的邮箱需要验证归属。${signIn}${link}`, true);

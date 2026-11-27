@@ -139,7 +139,8 @@ try {
   assert.equal(afterOrdinarySave.saved.quoteMode, 'single');
   await page.locator('#account-button').click();
   await page.locator('#account-apply:not(:disabled)').waitFor();
-  assert.equal(await page.locator('#account-google-link-settings').evaluate(element => element.hidden), true);
+  assert.equal(await page.locator('#account-google-link-settings').evaluate(element => element.hidden), false);
+  assert.match(await page.locator('#account-google-link-status').textContent(), /未关联/);
   await page.evaluate(() => { window.__accountDeferNextSave = true; });
   await page.locator('#account-apply').click();
   await page.waitForFunction(() => typeof window.__accountFinishDeferredSave === 'function');
@@ -212,11 +213,28 @@ try {
   const standaloneHTML = await readFile(new URL('../cloudflare/src/account.html', import.meta.url), 'utf8');
   await context.route(target => target.pathname === '/account', route => route.fulfill({ status: 200, contentType: 'text/html', body: standaloneHTML }));
   const device = 'device_fixture_' + 'a'.repeat(32);
-  await page.goto(url + '/account');
-  await page.locator('#account-signed-in').waitFor();
-  await page.locator('#account-settings summary').click();
-  await page.getByRole('button', { name: '关联 Google', exact: true }).click();
-  await page.waitForURL(url + '/api/account/google/start?link=1');
+  for (const provider of ['google', 'github']) {
+    await page.goto(url + '/account');
+    await page.locator('#account-signed-in').waitFor();
+    await page.locator('#account-settings summary').click();
+    await page.locator('#account-link-' + provider).click();
+    await page.waitForURL(url + '/api/account/' + provider + '/start?link=1&expectedUserId=test-user');
+    await page.goto(url + '/account?error=' + provider + '_link');
+    await page.locator('#account-message').filter({ hasText: '关联未完成' }).waitFor();
+    user.providers.push(provider);
+    await page.goto(url + '/account?linked=' + provider);
+    await page.locator('#account-message').filter({ hasText: '已关联' }).waitFor();
+    assert.match(await page.locator('#account-' + provider + '-link-status').innerText(), /已关联/);
+    assert.equal(await page.locator('#account-link-' + provider).isVisible(), false);
+    user.providers.pop();
+  }
+  for (const status of ['ready', 'error']) {
+    await page.goto(url + '/account?link_device=' + status);
+    await page.locator('#account-message').filter({ hasText: '请返回' }).waitFor();
+    assert.equal(await page.locator('#account-anonymous').isVisible(), false);
+    assert.equal(await page.locator('#account-signed-in').isVisible(), false);
+    assert.equal(await page.locator('#account-device').isVisible(), false);
+  }
   googleEnabled = false;
   await page.goto(url + '/account');
   await page.locator('#account-signed-in').waitFor();
@@ -273,6 +291,13 @@ try {
   googleEnabled = true; githubEnabled = true;
 
   const nativePage = await context.newPage();
+  const nativeConfirmations = [];
+  await nativePage.exposeFunction('__fixtureConfirmLink', (provider, owner) => {
+    assert.equal(owner, user.id);
+    nativeConfirmations.push(provider);
+    user.providers.push(provider);
+    return { ok: true, user };
+  });
   await nativePage.addInitScript(() => {
     const legacy = new URLSearchParams(location.search).has('legacy');
     let rejectPending;
@@ -280,7 +305,12 @@ try {
       accountGoogle: async () => { document.body.dataset.called = 'legacy-google'; return { redirecting: true }; },
       ...(legacy ? {} : {
         accountOAuth: provider => new Promise((_resolve, reject) => { document.body.dataset.called = provider; rejectPending = reject; }),
-        accountCancelOAuth: () => { rejectPending(new Error('已取消本次登录')); },
+        accountLinkOAuth: async (provider, owner) => {
+          document.body.dataset.linkOwner = owner;
+          return { pending: false, linkReady: true, provider, email: 'provider@different.example' };
+        },
+        accountConfirmLinkOAuth: window.__fixtureConfirmLink,
+        accountCancelOAuth: () => { rejectPending?.(new Error('已取消本次登录')); },
       }),
     };
   });
@@ -293,6 +323,31 @@ try {
   await nativePage.getByRole('button', { name: '使用 Google 继续' }).click();
   assert.equal(await nativePage.locator('body').getAttribute('data-called'), 'legacy-google');
   assert.equal(await nativePage.locator('#account-github').isVisible(), false);
+  user = { id: 'native-owner', username: 'native_owner', email: 'owner@example.com', providers: ['password'] };
+  passwordEnabled = true;
+  await nativePage.goto(url + '/account');
+  await nativePage.locator('#account-signed-in').waitFor();
+  await nativePage.locator('#account-settings summary').click();
+  await nativePage.locator('#account-link-github').click();
+  const linkReview = nativePage.locator('#account-link-review');
+  await linkReview.filter({ hasText: 'provider@different.example' }).waitFor();
+  assert.match(await linkReview.innerText(), /owner@example\.com/);
+  assert.equal(await nativePage.locator('body').getAttribute('data-link-owner'), user.id);
+  assert.deepEqual(nativeConfirmations, [], 'browser authorization must wait for confirmation in the original client');
+  await nativePage.locator('#account-cancel-link').click();
+  assert.equal(await linkReview.isVisible(), false);
+  assert.deepEqual(nativeConfirmations, []);
+  await nativePage.locator('#account-link-github').click();
+  await nativePage.locator('#account-confirm-link').click();
+  await nativePage.locator('#account-message').filter({ hasText: '已关联 GitHub' }).waitFor();
+  assert.match(await nativePage.locator('#account-github-link-status').innerText(), /已关联/);
+  assert.deepEqual(nativeConfirmations, ['github']);
+  await nativePage.locator('#account-link-google').click();
+  await linkReview.filter({ hasText: 'provider@different.example' }).waitFor();
+  user = { id: 'other-owner', username: 'other_owner', email: 'other@example.com', providers: ['password'] };
+  await nativePage.locator('#account-confirm-link').click();
+  await nativePage.locator('#account-message').filter({ hasText: '账号状态已变化' }).waitFor();
+  assert.deepEqual(nativeConfirmations, ['github'], 'switching accounts must discard the pending authorization');
   await nativePage.close();
 
   passwordEnabled = false;
@@ -429,5 +484,5 @@ try {
   await page.locator('#account-device-approve').click();
   await page.locator('#account-device-detail').filter({ hasText: '已确认客户端登录' }).waitFor();
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: ['email code and registration', 'password fields cleared after login', 'email password login and logout', 'portable preference upload and apply preserve local base folder', 'failed cloud apply preserves local memory, controls, preview, copied text and subsequent ordinary saves', 'a local edit after Escape wins over an older pending cloud apply in memory, persisted settings and controls', 'cross-tab account changes and in-flight response identity cannot silently apply another account data', 'CSRF protected mutations', 'standalone account preference editor', 'explicit authenticated device approval', 'Google third-party email registration and linking guidance preserves device approval', 'Google linking only in signed-in standalone account settings when available', 'GitHub availability in login and registration, disabled providers hidden', 'GitHub callback, device approval context and cancellation', 'native GitHub dispatch and legacy Google-only fallback', 'linked Google and GitHub profile settings', 'Google browser handoff and callback retain device context', 'Google accounts can edit nickname and username with draft preservation', 'first password setup, current password validation, password confirmation and secret field clearing', 'cross-tab identity changes abort profile edits and clear drafts', 'duplicate email gives a prefilled login action', 'nickname preferred in shared app header', 'canceled Google flow can complete client login with password fallback', '1440 / 900 / 390 / 320 settings layout'], consoleErrors: errors }, null, 2));
+  console.log(JSON.stringify({ passed: ['email code and registration', 'password fields cleared after login', 'email password login and logout', 'portable preference upload and apply preserve local base folder', 'failed cloud apply preserves local memory, controls, preview, copied text and subsequent ordinary saves', 'a local edit after Escape wins over an older pending cloud apply in memory, persisted settings and controls', 'cross-tab account changes and in-flight response identity cannot silently apply another account data', 'CSRF protected mutations', 'standalone account preference editor', 'explicit authenticated device approval', 'Google third-party email registration and linking guidance preserves device approval', 'explicit Google and GitHub account linking, provider status and callbacks', 'GitHub availability in login and registration, disabled providers hidden', 'GitHub callback, device approval context and cancellation', 'native GitHub dispatch, legacy Google-only fallback and provider linking with identity review, cancellation and owner checks', 'linked Google and GitHub profile settings', 'Google browser handoff and callback retain device context', 'Google accounts can edit nickname and username with draft preservation', 'first password setup, current password validation, password confirmation and secret field clearing', 'cross-tab identity changes abort profile edits and clear drafts', 'duplicate email gives a prefilled login action', 'nickname preferred in shared app header', 'canceled Google flow can complete client login with password fallback', '1440 / 900 / 390 / 320 settings layout'], consoleErrors: errors }, null, 2));
 } finally { await context.close(); await browser.close(); }

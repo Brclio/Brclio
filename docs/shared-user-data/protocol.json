@@ -58,9 +58,9 @@
   },
   "identity": {
     "version": 1,
-    "indexMaps": ["usernames", "emails", "google", "github", "verifications", "devices"],
+    "indexMaps": ["usernames", "emails", "google", "github", "verifications", "devices", "deviceLinks"],
     "identityMaps": ["usernames", "emails", "google", "github"],
-    "optionalLegacyIndexMaps": ["github"],
+    "optionalLegacyIndexMaps": ["github", "deviceLinks"],
     "identityMapValue": "userId",
     "credentialOwner": "identity-authority-only",
     "passwordPlaintext": "retained-as-requested",

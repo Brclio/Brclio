@@ -29,7 +29,7 @@ export async function handle(request, env, dependencies = {}, ctx) {
     return json({error: '用户数据正在迁移，请稍后重试；本地数据已保留', code: 'DATA_MIGRATION_READ_ONLY'}, 503, {'Retry-After': '120'});
   }
   if (path === '/account' && request.method === 'GET') return new Response(accountHTML, {headers: {
-    ...securityHeaders, 'Content-Type': 'text/html; charset=utf-8',
+    ...securityHeaders, 'Content-Type': 'text/html; charset=utf-8', 'Referrer-Policy': 'same-origin',
     'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
   }});
   if (path === '/account.js' && request.method === 'GET') return new Response(accountJS, {headers: {...securityHeaders, 'Content-Type': 'text/javascript; charset=utf-8'}});

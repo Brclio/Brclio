@@ -16,6 +16,10 @@ test('public health and admin shell disclose no credential or subscription value
   const r=await handle(request('/api/health'),env);assert.equal(r.status,200);assert.deepEqual(await r.json(),{ok:true,service:'brclio-client-services',proxyProtocol:'vless-tls-websocket'});
   const html=await handle(request('/admin'),env);assert.match(html.headers.get('content-security-policy'),/frame-ancestors 'none'/);const text=await html.text();assert.ok(!text.includes(env.ADMIN_PASSWORD));assert.ok(!text.includes(env.ADMIN_EMAIL));assert.match(text,/autocomplete="current-password"/);
 });
+test('account page supplies same-origin referrers for browsers without Fetch Metadata', async () => {
+  const response = await handle(request('/account'), env);
+  assert.equal(response.headers.get('Referrer-Policy'), 'same-origin');
+});
 test('migration maintenance blocks account and config writers before storage while health stays readable',async()=>{
   const frozen={...env,DATA_MIGRATION_READ_ONLY:'true'};
   for(const [path,method] of [['/api/account/login','POST'],['/api/account/register','POST'],['/api/account/data','PUT'],['/api/account/apps/miniapp/data','PUT'],['/api/account/google/callback?code=unused','GET'],['/api/account/github/callback?code=unused','GET'],['/api/account/device/poll?id=unused','GET'],['/api/admin/config','PUT']]) {

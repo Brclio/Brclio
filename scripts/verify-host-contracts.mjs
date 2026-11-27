@@ -502,6 +502,8 @@ try {
             break;
           case 'getPlatform': reply({ platform: 'android', capabilities: { filePicker: true, folderPicker: true, systemIntegration: false } }); break;
           case 'accountOAuth': window.__finishOAuth = () => reply(null, '浏览器登录已取消。'); break;
+          case 'accountLinkOAuth': reply({ linkReady: true, provider: request.payload.provider, email: 'selected@example.com' }); break;
+          case 'accountConfirmLinkOAuth': reply({ ok: true, user: { id: request.payload.expectedUserId } }); break;
           case 'accountCancelOAuth': window.__finishOAuth(); reply({ canceled: true }); break;
           case 'getSettings': window.__finishSettings = () => reply(window.__androidSaved); break;
           case 'getIntegrationStatus': reply({ supported: false, installed: false }); break;
@@ -531,6 +533,18 @@ try {
   assert.deepEqual(androidOAuth, { login: '浏览器登录已取消。', cancel: { canceled: true },
     requests: [{ method: 'accountOAuth', payload: { provider: 'github' } }, { method: 'accountCancelOAuth', payload: {} }] });
   report.push('Android GitHub sign-in and cancellation use the native account bridge');
+  const binding = await android.evaluate(async () => {
+    const preview = await window.BrclioHost.accountLinkOAuth('google', 'android-user');
+    const confirmed = await window.BrclioHost.accountConfirmLinkOAuth('google', 'android-user');
+    const requests = window.__nativeRequests.filter(r => ['accountLinkOAuth', 'accountConfirmLinkOAuth'].includes(r.method));
+    return { preview, confirmed, payloads: requests.map(r => r.payload) };
+  });
+  assert.deepEqual(binding, {
+    preview: { linkReady: true, provider: 'google', email: 'selected@example.com' },
+    confirmed: { ok: true, user: { id: 'android-user' } },
+    payloads: Array(2).fill({ provider: 'google', expectedUserId: 'android-user' }),
+  });
+  report.push('Android previews and confirms third-party binding for the selected Brclio account through distinct native operations');
   assert.equal(await android.locator('#path-preview').innerText(), '我的项目/');
   assert.equal(await android.locator('#sample-count').innerText(), '1 个文件夹');
   await android.locator('#copy-preview').click();
