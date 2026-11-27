@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld('brclioTerminal', Object.freeze({
   platform: process.platform,
   profiles: () => ipcRenderer.invoke(prefix + 'profiles'),
   create: options => ipcRenderer.invoke(prefix + 'create', options),
-  write: (id, data) => ipcRenderer.invoke(prefix + 'write', id, data),
+  write: (id, data, binary = false) => ipcRenderer.invoke(prefix + 'write', id, data, binary),
   resize: (id, cols, rows) => ipcRenderer.invoke(prefix + 'resize', id, cols, rows),
   close: id => ipcRenderer.invoke(prefix + 'close', id),
   ack: (id, count) => ipcRenderer.send(prefix + 'ack', id, count),

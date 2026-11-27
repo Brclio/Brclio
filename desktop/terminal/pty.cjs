@@ -139,9 +139,9 @@ function createPtySessions({ home, send, platform = process.platform, env = proc
   return {
     profiles: () => shellProfiles(platform, env).map(({ id, label }) => ({ id, label })),
     create, ack, close,
-    write(id, data) {
+    write(id, data, binary = false) {
       if (typeof data !== 'string' || data.length > MAX_INPUT) throw new Error('终端输入无效或过长。');
-      get(id).pty.write(data);
+      get(id).pty.write(binary === true ? Buffer.from(data, 'latin1') : data);
     },
     resize(id, cols, rows) {
       dimensions(cols, rows);

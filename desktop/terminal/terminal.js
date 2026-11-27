@@ -112,7 +112,7 @@
     }
   }
 
-  function sendInput(pane, data) {
+  function sendInput(pane, data, binary = false) {
     if (!data || !['starting', 'running'].includes(pane.state)) return;
     // Preserve order across PTY startup and large bracketed pastes.
     pane.input = pane.input.then(async () => {
@@ -121,7 +121,7 @@
       for (let offset = 0; offset < data.length;) {
         let end = Math.min(offset + 32768, data.length);
         if (end < data.length && /[\uD800-\uDBFF]/.test(data[end - 1])) end--;
-        await api.write(pane.id, data.slice(offset, end));
+        await api.write(pane.id, data.slice(offset, end), binary);
         offset = end;
       }
     }).catch(error => { if (panes.has(pane.id) && pane.state === 'running') report(error); });
@@ -171,6 +171,7 @@
       if (pane.state === 'running') api.resize(id, cols, rows).catch(error => { if (panes.has(id) && pane.state === 'running') report(error); });
     });
     terminal.onData(data => sendInput(pane, data));
+    terminal.onBinary(data => sendInput(pane, data, true));
     terminal.onSelectionChange(() => { if (activePane() === pane) refreshTools(); });
     terminal.onTitleChange(value => {
       pane.title = value.replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '').trim().slice(0, 160);
