@@ -67,9 +67,6 @@ jobs:
         env:
           BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
         run: node scripts/verify-terminal.cjs
-      - name: Verify the development build
-        timeout-minutes: 3
-        run: node scripts/verify-terminal.cjs
       - name: Save the verified test installer
         uses: actions/upload-artifact@v4
         with:
@@ -77,3 +74,6 @@ jobs:
           path: ${{ matrix.installer }}
           if-no-files-found: error
           retention-days: 7
+      - name: Verify the development build after packaging
+        timeout-minutes: 3
+        run: node scripts/verify-terminal.cjs
