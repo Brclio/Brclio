@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('brclio', Object.freeze({
       openTerminal: (mode = 'inline') => ipcRenderer.invoke('brclio:terminal:open', mode),
       setTerminalViewport: rect => ipcRenderer.invoke('brclio:terminal:viewport', rect),
       onTerminalPresentation,
+      onTerminalRequested(callback) {
+        const listener = () => callback();
+        ipcRenderer.on('brclio:terminal:requested', listener);
+        return () => ipcRenderer.removeListener('brclio:terminal:requested', listener);
+      },
     } : {}),
   xhsRequest: (action, input) => ipcRenderer.invoke('brclio:xhs:request', action, input),
   onXhsEvent: callback => {

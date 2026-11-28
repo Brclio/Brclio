@@ -16,19 +16,24 @@
   <script defer src="output-addons.js"></script>
   <script defer src="session-history.js"></script>
   <script defer src="pane-tools.js"></script>
+  <script defer src="tab-groups.js"></script>
   <script defer src="command-marks.js"></script>
   <script defer src="arrangements.js"></script>
   <script defer src="profiles.js"></script>
+  <script defer src="dynamic-controls.js"></script>
   <script defer src="shell-location.js"></script>
   <script defer src="triggers.js"></script>
   <script defer src="transcript.js"></script>
   <script defer src="buffer-tools.js"></script>
   <script defer src="advanced-paste.js"></script>
+  <script defer src="snippets.js"></script>
   <script defer src="smart-selection.js"></script>
+  <script defer src="keymap.js"></script>
   <script defer src="pane-inspector.js"></script>
   <script defer src="alert-controls.js"></script>
   <script defer src="connection.js"></script>
   <script defer src="remote-controls.js"></script>
+  <script defer src="vault-controls.js"></script>
   <script defer src="terminal.js"></script>
   <link rel="stylesheet" href="tmux.css">
   <script defer src="tmux-protocol.js"></script>
@@ -76,7 +81,7 @@
     <button id="find-close" aria-label="关闭查找" title="关闭查找（Esc）"><svg aria-hidden="true"><use href="#cross"/></svg></button>
   </div>
   <main id="workspace" aria-label="终端工作区">
-    <div id="empty" hidden><p>所有会话已关闭</p><button id="empty-new">新建标签</button></div>
+    <div id="empty" hidden><p id="empty-message">所有会话已关闭</p><button id="empty-new">新建标签</button><button id="empty-recall" hidden>找回隐藏标签</button></div>
   </main>
   <footer>
     <span id="status" role="status" aria-live="polite">正在打开终端…</span>
@@ -87,7 +92,9 @@
   </footer>
   <dialog id="actions-dialog" aria-labelledby="actions-title">
     <div class="dialog-head"><h2 id="actions-title">终端操作</h2><button id="actions-close">关闭</button></div>
-    <input type="search" id="actions-filter" aria-label="筛选终端操作" placeholder="筛选操作或设置">
+    <input type="search" id="actions-filter" aria-label="筛选终端操作" aria-controls="actions-list" placeholder="筛选操作或设置">
+    <p id="actions-empty" role="status" hidden>没有匹配的操作或设置</p>
+    <div id="actions-list">
     <fieldset><legend>tmux 控制模式</legend>
       <label>会话名<input id="tmux-name" value="Brclio" maxlength="64"></label>
       <button id="tmux-connect">连接或创建</button>
@@ -103,6 +110,11 @@
         <button id="broadcast-toggle" disabled>开启广播</button>
       </details>
     </fieldset>
+    <fieldset><legend>标签分组与隐藏标签</legend>
+      <label>当前标签分组<input id="group-name" maxlength="64" placeholder="无分组"></label><button id="group-set">设置分组</button>
+      <label>标签分组<select id="group-list"></select></label><button id="group-hide">收起分组</button><button id="group-show">展开分组</button>
+      <button id="tab-hide">隐藏当前标签</button><label>已隐藏的标签<select id="hidden-tabs"></select></label><button id="tab-show">找回标签</button>
+    </fieldset>
     <fieldset><legend>搜索与选择</legend>
       <label>搜索所有窗格<input id="buffer-query" type="search" maxlength="240"></label>
       <button id="buffer-search">搜索</button><button id="buffer-complete">从滚动记录补全</button>
@@ -113,6 +125,10 @@
     <fieldset><legend>导出当前窗格</legend>
       <select id="transcript-format" aria-label="导出格式"><option value="text">纯文本</option><option value="ansi">ANSI 格式</option><option value="html">HTML 文本</option></select>
       <button id="transcript-save">另存为文件…</button><span id="transcript-status" role="status"></span>
+    </fieldset>
+    <fieldset><legend>终端内快捷键</legend>
+      <label>操作<select id="keymap-action"></select></label><button id="keymap-record">录入组合键</button>
+      <div id="keymap-list"></div><span id="keymap-status" role="status"></span>
     </fieldset>
     <fieldset><legend>高级粘贴</legend>
       <button id="paste-read">读取剪贴板</button>
@@ -140,6 +156,26 @@
       <label>导入 iTerm2 配色<input id="preset-colors" type="file" accept=".itermcolors"></label>
       <button id="preset-apply">应用到当前窗格</button><button id="preset-save">保存为新会话默认配置</button>
       <span id="preset-status" role="status"></span>
+      <details id="dynamic-details"><summary>iTerm2 动态配置</summary>
+        <button type="button" id="dynamic-import">选择本地 JSON</button>
+        <label><input type="checkbox" id="dynamic-watch">跟踪所选文件的变化</label>
+        <select id="dynamic-list" aria-label="已导入的动态配置"></select>
+        <button type="button" id="dynamic-apply">应用到当前窗格</button>
+        <span id="dynamic-status" role="status"></span>
+      </details>
+    </fieldset>
+    <fieldset><legend>终端密码</legend>
+      <details id="vault-controls"><summary>管理终端密码库</summary>
+        <p>条目使用本机系统密钥加密。填入前会显示目标窗格。有些程序会在屏幕上显示输入。</p>
+        <button type="button" id="vault-unlock">解锁终端密码库</button>
+        <label>已保存的条目<select id="vault-list" aria-label="终端密码条目"></select></label>
+        <button type="button" id="vault-fill" disabled>填入当前窗格，不回车…</button><button type="button" id="vault-remove" disabled>删除条目</button>
+        <label>新名称<input id="vault-name" maxlength="80" autocomplete="off" spellcheck="false"></label>
+        <label>新密码<input id="vault-secret" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false"></label>
+        <button type="button" id="vault-add" disabled>保存新条目</button>
+        <button type="button" id="vault-update" disabled>更新所选条目</button>
+        <span id="vault-status" role="status"></span>
+      </details>
     </fieldset>
     <fieldset><legend>远程会话</legend>
       <details id="remote-connections"><summary>SSH / SFTP 连接</summary>
@@ -150,6 +186,7 @@
         <label>端口<input id="remote-port" type="number" min="1" max="65535" placeholder="使用 SSH 配置"></label>
         <button id="remote-save" type="button">保存或更新连接</button><button id="remote-remove" type="button" disabled>删除所选连接</button>
         <button id="remote-ssh" type="button" disabled>新建 SSH 标签</button><button id="remote-sftp" type="button" disabled>新建 SFTP 标签</button>
+        <button id="remote-companion" type="button" hidden>连接当前窗格的主机</button>
         <p>使用本机 OpenSSH 配置、密钥和代理。在终端中确认主机指纹并完成登录，SFTP 标签可交互传输文件。</p>
         <span id="remote-status" role="status"></span>
       </details>
@@ -188,6 +225,17 @@
       <button data-mark="add">添加标记</button><button data-mark="previous">上一个标记</button>
       <button data-mark="next">下一个标记</button><button data-mark="selectOutput">选取命令输出</button>
     </fieldset>
+    <fieldset><legend>剪藏与笔记</legend>
+      <details id="snippets-details"><summary>管理命名剪藏与笔记</summary>
+        <label>条目<select id="snippets-list"><option value="">新建条目</option></select></label>
+        <label>类型<select id="snippets-kind"><option value="snippet">剪藏</option><option value="note">笔记</option></select></label>
+        <label>名称<input id="snippets-name" maxlength="80"></label>
+        <label for="snippets-text">内容</label><textarea id="snippets-text" rows="4" maxlength="32768"></textarea>
+        <button type="button" id="snippets-save" disabled>保存条目</button><button type="button" id="snippets-remove" disabled>删除条目</button>
+        <button type="button" id="snippets-paste" disabled>粘贴到当前窗格</button>
+        <span id="snippets-status" role="status"></span>
+      </details>
+    </fieldset>
     <details id="history-details">
       <summary>即时回放与粘贴历史</summary>
       <p>仅在当前窗格启用。屏幕和粘贴内容可能含敏感文字，关闭记录或窗格时会清空。</p>
@@ -205,6 +253,7 @@
         <button type="button" id="paste-again">粘贴到当前窗格</button>
       </fieldset>
     </details>
+    </div>
   </dialog>
   <dialog id="tmux-dialog" aria-labelledby="tmux-title">
     <div class="dialog-head"><h2 id="tmux-title">tmux</h2><button id="tmux-detach">分离并返回</button></div>

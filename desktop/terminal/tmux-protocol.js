@@ -21,6 +21,7 @@
     function end(reason = 'tmux 已分离') {
       if (closed) return;
       closed = true;
+      clearTimeout(active?.timer);
       const error = new Error(reason);
       for (const item of [active, ...queue]) item?.reject(error);
       active = block = undefined;
@@ -32,6 +33,8 @@
     function pump() {
       if (!initialized || closed || active || !queue.length) return;
       active = queue.shift();
+      active.timer = setTimeout(() => end('tmux 响应超时，连接已分离。'), 12000);
+      active.timer.unref?.();
       Promise.resolve().then(() => { if (!closed) return write(active.text + '\n'); })
         .catch(error => end(error.message));
     }
@@ -59,6 +62,7 @@
         } else if (active && (reply.flags & 1)) {
           const request = active;
           active = undefined;
+          clearTimeout(request.timer);
           if (success) {
             try { request.received?.(reply.lines); request.resolve(reply.lines); }
             catch (error) { request.reject(error); }
@@ -106,10 +110,12 @@
       const m = /^(@\d+) (%\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (.*)$/.exec(line);
       if (!m) continue;
       const [left, top, width, height, totalWidth, totalHeight, x, y] = m.slice(3, 11).map(Number);
-      if (!width || !height || width > 1000 || height > 500 || !totalWidth || !totalHeight ||
+      if (![left, top, width, height, totalWidth, totalHeight, x, y].every(Number.isSafeInteger) ||
+          !width || !height || width > 1000 || height > 500 || !totalWidth || !totalHeight ||
           left + width > totalWidth || top + height > totalHeight || result.length >= 64 || cells + width * height > 1500000) continue;
       cells += width * height;
-      const name = new TextDecoder().decode(decodeBytes(m[11])).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '').slice(0, 100);
+      const name = new TextDecoder().decode(Uint8Array.from(m[11], ch => ch.charCodeAt(0)))
+        .replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '').slice(0, 100);
       result.push({ window: m[1], pane: m[2], left, top, width, height, totalWidth, totalHeight, x, y, name });
     }
     return result;

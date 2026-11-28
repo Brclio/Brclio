@@ -39,6 +39,10 @@ window.BrclioPaneInspector = function installInspector({ panes, activePane, acti
     }
   }
   $('filter').oninput = paneList;
+  dialog.addEventListener('close', () => {
+    $('panes').replaceChildren();
+    $('notes').replaceChildren();
+  });
   $('badge-set').onclick = () => {
     const pane = activePane(), state = records.get(pane);
     if (state) { state.template = $('badge').value; badge(pane); paneList(); }

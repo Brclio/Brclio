@@ -38,7 +38,7 @@
   status.id = 'terminal-alert-status';
   status.setAttribute('role', 'status');
   fieldset.append(legend, binding, record, clear, bellLabel, status);
-  dialog.append(fieldset);
+  document.getElementById('actions-list').append(fieldset);
 
   let config = { hotkey: null };
   function refresh(value) {

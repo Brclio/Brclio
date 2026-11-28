@@ -27,7 +27,7 @@ function createPtyService({ home, send, launch = forkService }) {
     }
     state.requests.clear();
     if (notify) {
-      for (const id of state.live) send('exit', { id, exitCode: -1, error: reason });
+      for (const id of state.live.keys()) send('exit', { id, exitCode: -1, error: reason });
     }
     state.live.clear();
     if (state.child.connected) state.child.disconnect();
@@ -48,7 +48,7 @@ function createPtyService({ home, send, launch = forkService }) {
 
   function start() {
     const child = launch(home);
-    const state = { child, requests: new Map(), live: new Set(), idle: null };
+    const state = { child, requests: new Map(), live: new Map(), idle: null };
     current = state;
     const lost = () => retire(state, serviceError, true);
     child.on('error', lost);
@@ -69,7 +69,11 @@ function createPtyService({ home, send, launch = forkService }) {
       if (message.error) {
         request.reject(new Error(message.error));
       } else {
-        if (request.method === 'create') state.live.add(message.result.id);
+        if (request.method === 'create') {
+          const host = request.id.connection?.host;
+          state.live.set(message.result.id, { shell: message.result.shell, pid: message.result.pid,
+            profile: request.id.profile || 'default', host: typeof host === 'string' ? host.trim() : undefined });
+        }
         if (request.method === 'close') state.live.delete(request.id);
         request.resolve(message.result);
       }
@@ -105,6 +109,7 @@ function createPtyService({ home, send, launch = forkService }) {
   return {
     profiles: () => call('profiles', []),
     create: options => call('create', [options]),
+    target: id => current?.live.get(id),
     write: (...args) => call('write', args),
     resize: (...args) => call('resize', args),
     close: id => call('close', [id]),

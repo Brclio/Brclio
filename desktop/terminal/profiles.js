@@ -140,6 +140,11 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
   edit(current);
   return { options, get current() { return current; },
     names: () => [...presets.keys()], applyAppearance: apply,
+    applyImported(pane, fields) {
+      const value = normalize(fields);
+      apply(pane, value);
+      return value;
+    },
     applyNamed(pane, name) {
       const value = presets.get(name);
       if (value) apply(pane, value);

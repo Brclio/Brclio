@@ -10,3 +10,13 @@
 @media (max-width: 600px) {
   #terminal-surface { height: 65dvh; }
 }
+
+@media (min-width: 601px) {
+  .app-sidebar:has([data-open-terminal]:not([hidden])) {
+    overflow: hidden;
+    .nav-main { min-height: 0; overflow-y: auto; }
+    .nav-main > * { flex-shrink: 0; }
+    .sidebar-note { padding-top: 4px; }
+    .platform-status { flex: none; }
+  }
+}

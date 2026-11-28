@@ -54,8 +54,8 @@ test('a real tmux -CC client maps separate panes, transports bytes and resize, t
   const env = { ...process.env, TMUX_TMPDIR: tmp, HOME: home, ZDOTDIR: home, HISTFILE: path.join(home, '.history') };
   t.after(() => {
     try { execFileSync(binary, ['kill-server'], { env, stdio: 'ignore' }); } catch {}
-    fs.rmSync(tmp, { recursive: true, force: true });
-    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 6, retryDelay: 100 });
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 6, retryDelay: 100 });
   });
   const received = new Map();
   let current, id, ready, finish;
@@ -117,7 +117,7 @@ test('the WSL pipe adapter handles a real unframed tmux -C byte stream and clean
   const env = { ...process.env, HOME: tmp, ZDOTDIR: tmp, TMUX_TMPDIR: tmp, TERM: 'xterm-256color' };
   t.after(() => {
     try { execFileSync(binary, ['kill-server'], { env, stdio: 'ignore' }); } catch {}
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 6, retryDelay: 100 });
   });
   const { wslPipe } = require('./terminal/tmux-launch.cjs');
   const proc = wslPipe(binary, argumentsFor('pipe', 'win32').slice(2), { cwd: tmp, env });

@@ -102,7 +102,7 @@ window.BrclioBufferTools = function installBufferTools({ panes, activePane, acti
     dialog.close();
     const buffer = pane.terminal.buffer.active;
     const cursor = (buffer.baseY + buffer.cursorY) * pane.terminal.cols + Math.min(buffer.cursorX, pane.terminal.cols - 1);
-    selection = { pane, cursor, anchor: cursor, cols: pane.terminal.cols };
+    selection = { paneId: pane.id, cursor, anchor: cursor, cols: pane.terminal.cols };
     pane.terminal.select(cursor % pane.terminal.cols, Math.floor(cursor / pane.terminal.cols), 1);
     pane.terminal.focus();
     message('键盘选择：方向键移动，Shift 扩选，Enter 复制，Esc 退出。');
@@ -110,8 +110,8 @@ window.BrclioBufferTools = function installBufferTools({ panes, activePane, acti
   byId('buffer-copy-mode').onclick = startCopy;
   return function keyboard(event) {
     if (!selection) return false;
-    const { pane } = selection;
-    if (pane !== activePane() || !panes.has(pane.id) || selection.cols !== pane.terminal.cols ||
+    const pane = panes.get(selection.paneId);
+    if (!pane || pane !== activePane() || selection.cols !== pane.terminal.cols ||
         !event.target.closest('.term-host')) { selection = undefined; return false; }
     event.preventDefault();
     event.stopImmediatePropagation();

@@ -3,17 +3,23 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { _electron: electron, expect } = require('@playwright/test');
 const { program } = require('../desktop/terminal/tmux-launch.cjs');
 
 async function main() {
   const binary = program(process.platform, process.env);
-  assert.ok(process.platform === 'darwin' && binary, '该桌面用例需要 macOS 和本机 tmux');
+  const windows = process.platform === 'win32';
+  assert.ok(binary && (process.platform === 'darwin' || windows), '需要 macOS tmux 或 Windows WSL + tmux');
   const root = path.resolve(__dirname, '..');
-  const temporary = await fs.mkdtemp('/tmp/brclio-tmux-ui-');
-  const env = { ...process.env, BRCLIO_USER_DATA: path.join(temporary, 'appdata'), TMUX_TMPDIR: temporary,
+  const temporary = await fs.mkdtemp(path.join(windows ? os.tmpdir() : '/tmp', 'brclio-tmux-ui-'));
+  const socketDirectory = windows ? execFileSync(binary, ['--exec', 'mktemp', '-d', '/tmp/brclio-tmux-ui-XXXXXXXX'],
+    { encoding: 'utf8', timeout: 30000 }).trim() : temporary;
+  if (windows) assert.match(socketDirectory, /^\/tmp\/brclio-tmux-ui-[A-Za-z0-9]+$/);
+  const env = { ...process.env, BRCLIO_USER_DATA: path.join(temporary, 'appdata'), TMUX_TMPDIR: socketDirectory,
     ZDOTDIR: temporary, HISTFILE: path.join(temporary, 'history'), HOME: temporary };
+  if (windows) env.WSLENV = [...(env.WSLENV || '').split(':').filter(item => item && !/^TMUX_TMPDIR(?:\/|$)/i.test(item)), 'TMUX_TMPDIR'].join(':');
   const executable = process.env.BRCLIO_SMOKE_EXECUTABLE;
   let app;
   try {
@@ -55,8 +61,9 @@ async function main() {
     console.log('Verified native tmux panes, independent terminal input, windows, detach and restore in Electron.');
   } finally {
     if (app) await app.close();
-    try { execFileSync(binary, ['kill-server'], { env, stdio: 'ignore' }); } catch {}
-    await fs.rm(temporary, { recursive: true, force: true });
+    try { execFileSync(binary, [...(windows ? ['--exec', 'tmux'] : []), 'kill-server'], { env, stdio: 'ignore' }); } catch {}
+    if (windows) execFileSync(binary, ['--exec', 'rm', '-rf', '--', socketDirectory], { env, timeout: 15000 });
+    await fs.rm(temporary, { recursive: true, force: true, maxRetries: 8, retryDelay: 150 });
   }
 }
 

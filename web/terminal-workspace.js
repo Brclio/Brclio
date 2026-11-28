@@ -70,6 +70,7 @@ window.BrclioTerminalWorkspace = function installTerminalWorkspace(host, navigat
   byId('terminal-return').onclick = () => open('inline');
   byId('terminal-show').onclick = () => open('window');
   host.onTerminalPresentation(changed);
+  host.onTerminalRequested?.(() => open('inline'));
   new ResizeObserver(updateViewport).observe(surface);
   const dialogs = new MutationObserver(updateViewport);
   dialogs.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['open'] });

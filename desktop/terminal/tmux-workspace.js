@@ -184,7 +184,21 @@
   for (const [id, flag] of [['right', '-h'], ['down', '-v']]) {
     $(id).onclick = () => { if (connection?.active) void send(connection, 'split-window ' + flag + ' -t ' + connection.active); };
   }
-  $('detach').onclick = () => dialog.close();
+  async function leave() {
+    const c = connection;
+    if (c?.leaving) return;
+    if (c?.ready) {
+      c.leaving = true;
+      let timeout;
+      try {
+        await Promise.race([c.control.command('detach-client').catch(() => {}),
+          new Promise(resolve => { timeout = setTimeout(resolve, 800); })]);
+      } finally { clearTimeout(timeout); }
+    }
+    if (dialog.open) dialog.close();
+  }
+  $('detach').onclick = leave;
+  dialog.addEventListener('cancel', event => { event.preventDefault(); void leave(); });
   dialog.addEventListener('close', detach);
   api.onData(({id, data}) => {
     const c = connection;

@@ -18,8 +18,10 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   let viewport = null;
   let focusOnShow = false;
   let recording = false;
+  let vault;
   const channels = [];
   const sessions = createPtyService({ home: app.getPath('home'), send });
+  const touchBar = process.platform === 'darwin' && require('./touch-bar.cjs').terminalTouchBar(id => send('toolbar-action', id));
 
   function send(channel, payload) {
     const contents = view?.webContents;
@@ -43,6 +45,13 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   }
 
   handle('profiles', sessions.profiles);
+  const dynamic = require('./dynamic-profiles.cjs').dynamicSource(value => send('dynamic-changed', value));
+  handle('dynamic-choose', follow => dynamic.choose(async () => {
+    const result = await dialog.showOpenDialog(owner, { title: '导入终端动态配置', properties: ['openFile'],
+      filters: [{ name: '动态配置 JSON', extensions: ['json'] }] });
+    return result.canceled ? null : result.filePaths[0];
+  }, follow));
+  handle('dynamic-track', dynamic.track);
   handle('create', sessions.create);
   handle('write', sessions.write);
   handle('resize', sessions.resize);
@@ -91,6 +100,48 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   });
   handle('bell', () => alerts.bell());
 
+  function passwordVault() {
+    if (!owner?.isFocused() || !view?.getVisible()) throw new Error('请先返回终端窗口。');
+    vault ??= require('./vault.cjs').createTerminalVault({
+      directory: app.getPath('userData'), storage: require('electron').safeStorage,
+    });
+    return vault;
+  }
+  handle('vault-list', () => passwordVault().list());
+  handle('vault-add', (name, password) => passwordVault().add(name, password));
+  handle('vault-update', (id, name, password) => passwordVault().update(id, name, password));
+  handle('vault-remove', id => passwordVault().remove(id));
+  handle('vault-fill', async (id, paneId) => {
+    const terminal = view;
+    const window = owner;
+    const target = sessions.target(paneId);
+    async function checkPane() {
+      if (!view || view !== terminal || !target || target.profile === 'tmux-control') throw new Error('当前窗格不支持填入。');
+      const selected = await terminal.webContents.executeJavaScript(
+        "document.querySelector('#actions-dialog[open] #vault-controls[open]') && document.querySelector('#workspace .panel:not([hidden]) .pane.active')?.dataset.id");
+      if (selected !== paneId || view !== terminal || owner !== window || !window?.isFocused() ||
+          !terminal.getVisible() || sessions.target(paneId) !== target) {
+        throw new Error('活动窗格已更改或会话已结束，请重新选择。');
+      }
+    }
+    return passwordVault().fill(id, async name => {
+      await checkPane();
+      const program = path.basename(target.shell).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/gu, '');
+      const host = ['ssh', 'sftp'].includes(target.profile) ? ' · ' + target.host : '';
+      const chosen = await dialog.showMessageBox(window, {
+        type: 'question', title: '填入终端密码', message: '将「' + name + '」填入当前窗格？',
+        detail: program + host + ' · PID ' + target.pid + ' · 会话 ' + paneId.slice(0, 8) +
+          '\n目标程序可能回显输入，回显的文字可能出现在屏幕记录中。填入后不会按回车。',
+        buttons: ['取消', '填入此窗格'], defaultId: 0, cancelId: 0, noLink: true,
+      });
+      return chosen.response === 1;
+    }, async value => {
+      await checkPane();
+      try { await sessions.write(paneId, value); }
+      catch { throw new Error('无法填入，请检查当前终端会话。'); }
+    });
+  });
+
   function acknowledge(event, id, count) {
     if (trusted(event)) sessions.ack(id, count);
   }
@@ -104,6 +155,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   }
 
   function removeView() {
+    if (touchBar) touchBar.detach();
     if (!owner) return;
     owner.removeListener('resize', layout);
     owner.removeListener('closed', ownerClosed);
@@ -112,6 +164,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   }
 
   function closeTerminal() {
+    dynamic.stop();
     if (!view) return;
     const contents = view.webContents;
     removeView();
@@ -148,12 +201,14 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
       if (!viewport || bounds.width < 1 || bounds.height < 1) {
         const wasFocused = view.webContents.isFocused();
         view.setVisible(false);
+        if (touchBar) touchBar.detach();
         if (wasFocused && owner.isFocused()) owner.webContents.focus();
         return;
       }
     }
     view.setBounds(bounds);
     view.setVisible(true);
+    if (touchBar && view.webContents.isFocused()) touchBar.attach(owner);
     if (focusOnShow && owner.isFocused()) {
       view.webContents.focus();
       focusOnShow = false;
@@ -185,6 +240,10 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     terminal.setBackgroundColor('#181b25');
     const contents = terminal.webContents;
     configureNavigation(contents);
+    if (touchBar) {
+      contents.on('focus', () => { if (view === terminal && owner && terminal.getVisible()) touchBar.attach(owner); });
+      contents.on('blur', () => { if (view === terminal) touchBar.detach(); });
+    }
     contents.session.setPermissionRequestHandler((_contents, _permission, respond) => respond(false));
     contents.session.setPermissionCheckHandler(() => false);
     contents.on('before-input-event', (_event, input) => {
@@ -194,7 +253,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
       contents.setIgnoreMenuShortcuts(recording || Boolean(shortcut));
     });
     contents.on('did-start-navigation', details => {
-      if (view === terminal && details.isMainFrame && !details.isSameDocument) sessions.closeAll();
+      if (view === terminal && details.isMainFrame && !details.isSameDocument) { dynamic.stop(); sessions.closeAll(); }
     });
     contents.on('render-process-gone', () => { if (view === terminal) closeTerminal(); });
     contents.once('destroyed', () => { if (view === terminal) closeTerminal(); });

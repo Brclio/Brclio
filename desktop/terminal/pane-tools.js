@@ -43,7 +43,11 @@
       $('tab-move-right').disabled = index < 0 || index === order.length - 1;
       $('broadcast-toggle').disabled = !broadcasting && members.size < 2;
       $('broadcast-toggle').textContent = broadcasting ? '停止广播' : '开启广播';
-      if (!$('broadcast-options').open || !$('actions-dialog').open) return;
+      if (!$('broadcast-options').open || !$('actions-dialog').open) {
+        if ($('broadcast-members').firstChild) $('broadcast-members').replaceChildren();
+        listKey = undefined;
+        return;
+      }
       const panes = [...(tab?.panes || [])];
       const key = panes.map(pane => [pane.id, pane.state, members.has(pane), broadcasting].join(':')).join('/');
       if (key === listKey) return;
@@ -227,7 +231,7 @@
       }
       refresh();
     };
-    $('actions-dialog').addEventListener('close', () => { $('broadcast-options').open = false; });
+    $('actions-dialog').addEventListener('close', () => { $('broadcast-options').open = false; refresh(); });
     return { refresh, toggleMax, attachTab, attachInput, paste, pasteOnly, shortcut };
   };
 })();

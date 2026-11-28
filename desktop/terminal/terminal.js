@@ -54,6 +54,7 @@
   }
   const appearance = window.BrclioTerminalProfiles({ theme, activePane, refit: fit, applySession,
     readSession: () => ({ shell: byId('profile').value, cwd: nextDirectory, integration: byId('shell-integration').checked }) });
+  window.BrclioDynamicControls({ api, activePane, panes, appearance });
   const locations = window.BrclioShellLocations(appearance, panes);
   const attachTriggers = window.BrclioTriggers({ api, panes, message,
     activate: pane => { selectTab(pane.tab); selectPane(pane); } });
@@ -61,6 +62,7 @@
     activate: pane => { selectTab(pane.tab); selectPane(pane); } });
 
   const paneTools = window.BrclioPaneTools({ tabs, getTab: () => currentTab, selectPane, sendInput, mac });
+  const tabGroups = window.BrclioTabGroups({ tabs, activeTab: () => currentTab, selectTab, clearSelection });
   function refreshTools() {
     paneTools.refresh();
     window.BrclioTerminalHistory.refresh();
@@ -68,7 +70,9 @@
     for (const id of ['split-right', 'split-down', 'close-pane', 'find']) byId(id).disabled = !pane;
     byId('paste').disabled = !pane || pane.state !== 'running';
     byId('copy').disabled = !pane?.terminal.hasSelection();
-    byId('empty').hidden = tabs.size > 0;
+    byId('empty').hidden = Boolean(currentTab);
+    byId('empty-recall').hidden = tabs.size === 0;
+    byId('empty-message').textContent = tabs.size ? '会话在隐藏的标签中继续运行' : '所有会话已关闭';
   }
 
   function updateLabel(pane) {
@@ -116,6 +120,7 @@
   }
 
   function selectTab(tab, focus = true) {
+    tab.header.hidden = false;
     currentTab = tab;
     paneTools.refresh();
     for (const other of tabs.values()) {
@@ -324,6 +329,20 @@
     if (wasRunning) api.close(pane.id).catch(error => { if (!closing) report(error); });
   }
 
+  function clearSelection() {
+    currentTab = null;
+    for (const tab of tabs.values()) {
+      tab.panel.hidden = true;
+      tab.button.setAttribute('aria-selected', 'false');
+      tab.button.tabIndex = -1;
+    }
+    byId('find-bar').hidden = true;
+    byId('find').setAttribute('aria-expanded', 'false');
+    message(tabs.size ? '当前标签已隐藏' : '当前没有会话');
+    refreshTools();
+    if (!byId('actions-dialog').open) byId('empty-new').focus();
+  }
+
   function closeTab(tab) {
     const list = [...tabs.values()];
     const index = list.indexOf(tab);
@@ -333,16 +352,10 @@
     tab.header.remove();
     tab.panel.remove();
     if (tab === currentTab) {
-      currentTab = null;
-      const next = list[index + 1] || list[index - 1];
+      const next = list.slice(index + 1).find(item => !item.header.hidden) ||
+        list.slice(0, index).reverse().find(item => !item.header.hidden);
       if (next) selectTab(next);
-      else {
-        byId('find-bar').hidden = true;
-        byId('find').setAttribute('aria-expanded', 'false');
-        message('当前没有会话');
-        byId('empty').hidden = false;
-        byId('empty-new').focus();
-      }
+      else clearSelection();
     }
     refreshTools();
   }
@@ -430,7 +443,7 @@
   }
 
   function cycleTab(delta, focusTab = false) {
-    const list = [...tabs.values()];
+    const list = tabGroups.visibleTabs();
     if (!list.length) return;
     const next = list[(list.indexOf(currentTab) + delta + list.length) % list.length];
     selectTab(next, !focusTab);
@@ -439,12 +452,12 @@
 
   function shortcuts(event) {
     if (document.querySelector('dialog[open]')) return;
-    if (byId('tmux-dialog').open) return;
     if (bufferKeyboard(event)) return;
-    if (event.isComposing || document.querySelector('dialog[open]')) return;
+    if (event.isComposing) return;
     const key = event.key.toLowerCase();
     const mod = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && event.shiftKey && !event.metaKey;
     const form = event.target.matches('input, select, textarea:not(.xterm-helper-textarea)');
+    if (!form && customKey(event)) return;
     if (!form && paneTools.shortcut(event)) return;
     let action;
     if (event.ctrlKey && !event.metaKey && !event.altKey && key === 'tab') action = () => cycleTab(event.shiftKey ? -1 : 1);
@@ -498,6 +511,11 @@
     },
   });
   byId('new-tab').onclick = byId('empty-new').onclick = () => newTab();
+  api.onToolbarAction?.(id => {
+    if (!document.querySelector('dialog[open]') && ['new-tab', 'split-right', 'split-down', 'find', 'terminal-actions'].includes(id)) {
+      byId(id).click();
+    }
+  });
   byId('split-right').onclick = () => splitPane('right');
   byId('split-down').onclick = () => splitPane('down');
   byId('close-pane').onclick = closeActive;
@@ -514,15 +532,56 @@
   byId('paste').onclick = () => paste().catch(report);
   byId('directory').onclick = () => chooseDirectory().catch(report);
   const actions = byId('actions-dialog');
+  const customKey = window.BrclioKeymap({
+    newTab: ['新建标签', newTab], close: ['关闭当前窗格', closeActive],
+    nextTab: ['下一个标签', () => cycleTab(1)], prevTab: ['上一个标签', () => cycleTab(-1)],
+    splitRight: ['左右分屏', () => splitPane('right')], splitDown: ['上下分屏', () => splitPane('down')],
+    find: ['搜索当前窗格', () => showSearch(true)], operations: ['打开终端操作', () => byId('terminal-actions').click()],
+    presentation: ['弹出或收回终端', () => byId('presentation').click()],
+    mark: ['添加标记', () => activePane()?.marks.add()],
+    nextMark: ['下一个标记', () => activePane()?.marks.next()], prevMark: ['上一个标记', () => activePane()?.marks.previous()],
+  });
   window.BrclioAdvancedPaste({ api, activePane, actions, paste: paneTools.pasteOnly });
-  function filterActions() {
-    const text = byId('actions-filter').value.trim().toLowerCase();
-    for (const group of actions.querySelectorAll('fieldset, details')) {
-      group.hidden = Boolean(text && !group.textContent.toLowerCase().includes(text));
+  window.BrclioSnippets({ activePane, actions, paste: paneTools.pasteOnly });
+  const filter = byId('actions-filter');
+  const actionList = byId('actions-list');
+  const actionGroups = [...actionList.querySelectorAll('fieldset, details')];
+  const actionLabels = new Map(actionGroups.map(group => {
+    // Index the controls once. Output previews, saved hosts and search result
+    // buttons can change while the dialog is open and are not action names.
+    const words = [];
+    for (const child of group.children) {
+      if (!child.matches('legend, summary, label, button, p:not([role]), select, textarea, input')) continue;
+      const label = child.cloneNode(true);
+      for (const select of label.querySelectorAll('select')) select.replaceChildren();
+      if (label.tagName !== 'SELECT') words.push(label.textContent);
+      words.push(child.getAttribute('aria-label') || '', child.getAttribute('placeholder') || '');
     }
+    for (const options of group.querySelectorAll('#transcript-format, #paste-convert, #preset-cursor, #trigger-action, #keymap-action')) {
+      if (options.closest('fieldset, details') === group) words.push(options.textContent);
+    }
+    return [group, words.join(' ').toLowerCase()];
+  }));
+  const detailsState = new Map();
+  function filterActions() {
+    const text = filter.value.trim().toLowerCase();
+    actionList.scrollTop = 0;
+    const matches = actionGroups.filter(group => actionLabels.get(group).includes(text));
+    for (const group of actionGroups) {
+      group.hidden = Boolean(text) && !matches.some(match => match.contains(group) || group.contains(match));
+      if (group.tagName !== 'DETAILS') continue;
+      if (text) {
+        if (!detailsState.has(group)) detailsState.set(group, group.open);
+        group.open = matches.some(match => group.contains(match)) || detailsState.get(group);
+      } else if (detailsState.has(group)) {
+        if (actions.open || !detailsState.get(group)) group.open = detailsState.get(group);
+        detailsState.delete(group);
+      }
+    }
+    byId('actions-empty').hidden = !text || matches.length > 0;
   }
-  byId('actions-filter').oninput = filterActions;
-  actions.addEventListener('close', () => { byId('actions-filter').value = ''; filterActions(); });
+  filter.oninput = filterActions;
+  actions.addEventListener('close', () => { filter.value = ''; filterActions(); });
   window.BrclioTranscript.bind(activePane, api);
   const bufferKeyboard = window.BrclioBufferTools({ panes, activePane, dialog: actions, copy: api.copy, paste: paneTools.pasteOnly, message,
     activate: pane => { selectTab(pane.tab); selectPane(pane); } });
@@ -534,13 +593,19 @@
       if (!done) message(action === 'selectOutput' ? '尚无带 Shell 集成标记的命令输出。' : '当前缓冲区没有可用标记。');
     };
   }
-  byId('terminal-actions').onclick = () => { inspector.refresh(); locations.render(); actions.showModal(); };
-  window.BrclioRemoteConnections.bind(api, (kind, name, connection) => {
+  byId('terminal-actions').onclick = () => { inspector.refresh(); locations.render(); tabGroups.render(); actions.showModal(); };
+  window.BrclioRemoteConnections.bind(api, activePane, (kind, name, connection) => {
     actions.close();
     newTab(name, { profile: kind, connection, cwd: nextDirectory, shellIntegration: false });
   });
+  window.BrclioVaultControls.bind(api, activePane);
   byId('actions-close').onclick = () => actions.close();
-  actions.addEventListener('close', () => activePane()?.terminal.focus());
+  actions.addEventListener('close', () => {
+    const focused = document.activeElement;
+    if (!actions.open && (focused === document.body || focused === byId('terminal-actions') || actions.contains(focused))) {
+      activePane()?.terminal.focus();
+    }
+  });
   const displayMode = mode => {
     const control = byId('presentation');
     control.dataset.mode = mode;

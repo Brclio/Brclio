@@ -6,6 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { _electron: electron, expect } = require('@playwright/test');
 const { verifyTerminalOutput, verifyShellImages } = require('./verify-terminal-output.cjs');
+const { verifyTerminalDevices } = require('./verify-terminal-devices.cjs');
+const { verifyDynamicProfiles } = require('./verify-terminal-dynamic.cjs');
 const { verifyTerminalHistory } = require('./verify-terminal-history.cjs');
 const { verifyPaneTools } = require('./verify-terminal-panes.cjs');
 
@@ -95,6 +97,8 @@ async function main() {
     };
     await terminal.locator('#new-tab').click();
     await verifyShellImages(terminal, command, windows);
+    await verifyTerminalDevices(app, terminal, command, windows);
+    await verifyDynamicProfiles(app, terminal);
     await verifyTerminalHistory(app, terminal, command);
     await verifyPaneTools(terminal, command, windows);
     await terminal.locator('#tabs .tab:has([aria-selected=true]) .tab-close').click();
@@ -160,7 +164,9 @@ async function main() {
     await command(windows ? "[Console]::WriteLine(('INTERRUPT-' + 'OK'))" : "printf 'INTERRUPT-%s\\n' OK");
     await expect(rows(active)).toContainText('INTERRUPT-OK', { timeout: 15000 });
     await require('./verify-terminal-alerts.cjs').verifyTerminalAlerts(app, terminal, command, windows);
+    await require('./verify-terminal-vault.cjs').verifyTerminalVault(app, terminal, command, windows);
     await require('./verify-terminal-profile.cjs').verifyProfileAndSearch(terminal);
+    await require('./verify-terminal-workspace-tools.cjs').verifyWorkspaceTools(terminal, command, windows);
     await terminal.locator('#terminal-actions').click();
     await terminal.locator('#trigger-pattern').fill('^BRCLIO-TRIGGER-OK');
     await terminal.locator('#trigger-add').click();

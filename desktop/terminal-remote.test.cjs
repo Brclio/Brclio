@@ -3,7 +3,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
+const { execFile } = require('node:child_process');
+const { once } = require('node:events');
+const fs = require('node:fs/promises');
+const net = require('node:net');
 const os = require('node:os');
+const path = require('node:path');
+const { promisify } = require('node:util');
 const { endpoint, store } = require('./terminal/connection.js');
 const openSSH = require('./terminal/remote-launch.cjs');
 const { createPtySessions } = require('./terminal/pty.cjs');
@@ -61,4 +67,40 @@ test('a remote tab starts the system client directly with its own local PTY', t 
     if (process.platform !== 'win32') assert.notEqual(options.env.SHELL, file);
   }
   t.after(() => sessions.closeAll());
+});
+
+test('installed system SSH and SFTP clients connect to a loopback SSH configuration alias', { timeout: 20000 }, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-ssh-client-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const received = [];
+  const server = net.createServer(socket => {
+    let line = '';
+    socket.setTimeout(4000, () => socket.destroy());
+    socket.on('error', () => {});
+    socket.write('SSH-2.0-BrclioTest\r\n');
+    socket.on('data', chunk => {
+      line += chunk.toString('ascii');
+      if (!line.includes('\n')) return;
+      received.push(line.slice(0, line.indexOf('\n')).trim());
+      // Stop at the protocol banner, before host keys or authentication.
+      socket.destroy();
+    });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const config = path.join(directory, 'config');
+  await fs.writeFile(config, [
+    'Host brclio-loopback-fixture', '  HostName 127.0.0.1', '  User test',
+    '  Port ' + server.address().port, '  ConnectTimeout 3', '  BatchMode yes', '',
+  ].join('\n'));
+  for (const kind of ['ssh', 'sftp']) {
+    const client = openSSH.program(kind);
+    if (!client) { t.diagnostic(kind + ' is not installed'); continue; }
+    const count = received.length;
+    await assert.rejects(promisify(execFile)(client, ['-F', config, ...openSSH.argumentsFor(kind, { host: 'brclio-loopback-fixture' })],
+      { timeout: 6000, windowsHide: true }));
+    assert.equal(received.length, count + 1, kind + ' reached the configured loopback endpoint');
+    assert.match(received.at(-1), /^SSH-2\.0-OpenSSH/);
+  }
 });

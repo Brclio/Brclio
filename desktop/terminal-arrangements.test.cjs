@@ -11,6 +11,13 @@ function storage() {
 
 function leaf(profile, cwd = null, shellIntegration = false) { return { profile, cwd, shellIntegration }; }
 function split(direction, fraction, first, second) { return { direction, fraction, first, second }; }
+
+test('reopening an arrangement requires a separate user action to start a remote connection', () => {
+  const layouts = store(storage());
+  const root = { ...leaf('ssh'), connection: { host: 'build-host', user: 'me' } };
+  layouts.save('remote', { tabs: [{ name: '工作', root }], activeTab: 0 });
+  assert.deepEqual(layouts.get('remote').tabs[0].root, leaf('default'));
+});
 const three = { tabs: [
   { name: '编译', activePane: 1, root: split('right', .35, leaf('zsh'), split('down', .7, leaf('bash', '/tmp/with spaces', true), leaf('default'))) },
   { name: '', activePane: 0, root: leaf('default') },

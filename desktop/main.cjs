@@ -41,6 +41,11 @@ const gotLock = app.requestSingleInstanceLock({ copyPaths: initialPaths, updateL
 let mainWindow;
 let terminalHost;
 let terminalAlerts;
+function terminalLaunchRequested(argv) {
+  return ['darwin', 'win32'].includes(process.platform) && argv.includes('--brclio-terminal') &&
+    !argv.some(arg => ['--copy-path', '--brclio-update-job', '--brclio-update-token'].includes(arg) || /^brclio:/i.test(arg));
+}
+let launchIntoTerminal = terminalLaunchRequested(process.argv);
 let rendererReady = false;
 let pendingUpdateLaunchArgs = updateLaunchArgs;
 let pendingPaths = [];
@@ -190,14 +195,21 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     if (pendingPaths.length) { mainWindow.webContents.send('brclio:paths', pendingPaths); pendingPaths = []; }
   });
+  const hideInlineTerminal = () => terminalHost?.setViewport(null);
+  if (launchIntoTerminal) {
+    launchIntoTerminal = false;
+    mainWindow.webContents.once('did-finish-load', () => mainWindow?.webContents.send('brclio:terminal:requested'));
+  }
+  mainWindow.webContents.on('did-start-loading', hideInlineTerminal);
+  mainWindow.webContents.on('render-process-gone', hideInlineTerminal);
+  mainWindow.once('closed', hideInlineTerminal);
   mainWindow.on('blur', resumeRecordingShortcut);
-  mainWindow.webContents.on('did-start-loading', () => { terminalHost?.setViewport(null); resumeRecordingShortcut(); });
+  mainWindow.webContents.on('did-start-loading', resumeRecordingShortcut);
   mainWindow.webContents.on('render-process-gone', () => {
-    terminalHost?.setViewport(null);
     softwareLogs.record('app.renderer', 'ERROR');
     resumeRecordingShortcut();
   });
-  mainWindow.on('closed', () => { terminalHost?.setViewport(null); account.cancelOAuth(); mainWindow = null; rendererReady = false; resumeRecordingShortcut(); });
+  mainWindow.on('closed', () => { account.cancelOAuth(); mainWindow = null; rendererReady = false; resumeRecordingShortcut(); });
   mainWindow.loadFile(indexPath);
   return mainWindow;
 }
@@ -359,6 +371,13 @@ function copyFromMenu(paths, { exitWhenIdle = true } = {}) {
 if (!gotLock) {
   app.quit();
 } else {
+  app.on('second-instance', (_event, argv) => {
+    if (!terminalLaunchRequested(argv)) return;
+    if (!mainWindow) launchIntoTerminal = true;
+    else if (mainWindow.webContents.isLoadingMainFrame()) {
+      mainWindow.webContents.once('did-finish-load', () => mainWindow?.webContents.send('brclio:terminal:requested'));
+    } else mainWindow.webContents.send('brclio:terminal:requested');
+  });
   app.on('open-url', (event, value) => {
     event.preventDefault();
     try {
@@ -437,6 +456,7 @@ if (!gotLock) {
       console.warn('小红书任务关闭失败：', error.message);
     }).then(() => softwareLogs.settle()).finally(() => { xhsQuitReady = true; app.quit(); });
   });
-  app.on('will-quit', () => { account.close(); terminalAlerts?.dispose(); shortcuts.dispose(); void updateProxy.close(); });
+  app.on('will-quit', () => terminalAlerts?.dispose());
+  app.on('will-quit', () => { account.close(); shortcuts.dispose(); void updateProxy.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }
