@@ -5,7 +5,7 @@
   const hosts = node ? require('./connection.js') : window.BrclioConnection;
   const forwards = node ? require('./forward-model.js') : window.BrclioForwardModel;
   const collections = ['hosts', 'forwards'];
-  const localCredentials = ['identityFile', 'certificateFile', 'agentForwarding'];
+  const localCredentials = ['identityFile', 'certificateFile', 'agentForwarding', 'environment', 'inheritGroup'];
   const empty = () => ({ hosts: [], forwards: [] });
   const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
   const sort = items => items.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
@@ -75,6 +75,7 @@
             const previous = key === 'hosts' ? prior : prior?.connection;
             const target = key === 'hosts' ? record : record.connection;
             if (!previous) continue;
+            if (key === 'hosts' && previous.inheritGroup && previous.group !== target.group) continue;
             const previousAddress = hosts.endpoint(previous);
             for (const field of localCredentials) delete previousAddress[field];
             if (equal(previousAddress, hosts.endpoint(target))) {

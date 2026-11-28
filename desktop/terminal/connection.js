@@ -61,6 +61,8 @@
 
   function endpoint(value) {
     const result = address(value);
+    const vars = environment(value.environment);
+    if (vars.length) result.environment = vars;
     if (value.jump != null && value.jump !== '') {
       if (typeof value.jump !== 'string' || value.jump.length > 2048) throw new Error('跳板地址格式无效。');
       const hops = value.jump.split(',');
@@ -89,14 +91,70 @@
     return value.trim();
   }
 
+  function environment(raw) {
+    if (raw == null || raw === '') return [];
+    if (typeof raw === 'string') {
+      raw = raw.split(/\r?\n/).filter(line => line !== '').map(line => {
+        const split = line.indexOf('=');
+        if (split < 0) throw new Error('环境变量每行填写一个 名称=值。');
+        return { name: line.slice(0, split), value: line.slice(split + 1) };
+      });
+    }
+    if (!Array.isArray(raw) || raw.length > 32) throw new Error('一个连接最多使用 32 个环境变量。');
+    const seen = new Set();
+    let length = 0;
+    return raw.map(item => {
+      const { name, value } = item || {};
+      if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name) || seen.has(name)) {
+        throw new Error('环境变量名称应为唯一的字母、数字或下划线，且不能以数字开头。');
+      }
+      if (typeof value !== 'string' || value.length > 512 || invisible.test(value)) throw new Error('环境变量值最多 512 个可显示字符。');
+      if ((length += name.length + value.length + 2) > 4096) throw new Error('连接的环境变量总长度超过 4096 个字符。');
+      seen.add(name);
+      return { name, value };
+    });
+  }
+
+  function groupPath(value) {
+    const parts = label(value, 120, '分组路径需要 1 到 120 个可显示的字符。').split('/').map(s => s.trim());
+    if (parts.some(part => !part)) throw new Error('分组路径中的每一级都需要名称。');
+    return parts.join('/');
+  }
+
+  function groupConfig(value) {
+    const group = groupPath(value?.group);
+    // Local identities, certificates and agent forwarding must be selected per host.
+    const { user, port, jump, environment } = endpoint({ host: 'group', user: value.user, port: value.port,
+      jump: value.jump, environment: value.environment });
+    return { group, ...(user && { user }), ...(port && { port }), ...(jump && { jump }), ...(environment && { environment }) };
+  }
+
+  function resolve(value, configs) {
+    const host = endpoint(value);
+    if (!value.group || !value.inheritGroup) return host;
+    const parts = groupPath(value.group).split('/');
+    const defaults = {};
+    const vars = new Map();
+    for (let i = 1; i <= parts.length; i++) {
+      const config = configs.find(item => item.group === parts.slice(0, i).join('/'));
+      if (!config) continue;
+      for (const field of ['user', 'port', 'jump']) if (config[field]) defaults[field] = config[field];
+      for (const item of config.environment || []) vars.set(item.name, item);
+    }
+    for (const item of host.environment || []) vars.set(item.name, item);
+    for (const field of ['user', 'port', 'jump']) if (!host[field] && defaults[field]) host[field] = defaults[field];
+    if (vars.size) host.environment = environment([...vars.values()]);
+    return host;
+  }
+
+  const routing = host => JSON.stringify([host.host, host.user, host.port, host.jump]);
+
   function named(record) {
     const name = label(record?.name, 64, '请输入 1 到 64 字的主机名称。');
     const result = { name, ...endpoint(record) };
     if (record.group) {
-      const path = label(record.group, 120, '分组名称过长或含不可显示的字符。');
-      const parts = path.split('/').map(s => s.trim());
-      if (parts.some(part => !part)) throw new Error('分组路径中的每一级都需要名称。');
-      result.group = parts.join('/');
+      result.group = groupPath(record.group);
+      if (record.inheritGroup === true) result.inheritGroup = true;
     }
     if (record.tags != null && record.tags !== '') {
       const tags = Array.isArray(record.tags) ? record.tags : typeof record.tags === 'string' ? record.tags.split(/[,，]/) : null;
@@ -111,6 +169,7 @@
   function recent(value) {
     if (!['ssh', 'sftp', 'files'].includes(value?.kind)) throw new Error('最近连接的协议无效。');
     const result = { kind: value.kind, ...endpoint(value) };
+    delete result.environment;
     if (value.name) result.name = label(value.name, 64, '最近连接的主机名称无效。');
     return result;
   }
@@ -122,12 +181,37 @@
       const library = raw == null ? { hosts: JSON.parse(storage.getItem(legacyKey) || '[]'), recent: [] } : JSON.parse(raw);
       if (!Array.isArray(library?.hosts) || library.hosts.length > 2048 ||
           !Array.isArray(library.recent) || library.recent.length > 24) throw new Error('已保存的主机库格式无效。');
-      return { hosts: library.hosts.map(named), recent: library.recent.map(recent) };
+      const configs = library.groupConfigs ?? [];
+      if (!Array.isArray(configs) || configs.length > 128) throw new Error('本机分组配置格式无效。');
+      return { hosts: library.hosts.map(named), recent: library.recent.map(recent), groupConfigs: configs.map(groupConfig) };
     }
     const write = library => storage.setItem(libraryKey, JSON.stringify(library));
     const notify = () => { if (typeof window === 'object') window.dispatchEvent(new Event('brclio-terminal-library-changed')); };
+    function updateGroups(group, item) {
+      const data = read();
+      const next = data.groupConfigs.filter(config => config.group !== group);
+      if (item) next.push(item);
+      if (next.length > 128) throw new Error('最多可保存 128 个分组配置。');
+      const changed = new Set();
+      for (const host of data.hosts) {
+        if (routing(resolve(host, data.groupConfigs)) === routing(resolve(host, next))) continue;
+        for (const field of ['identityFile', 'certificateFile', 'agentForwarding', 'environment']) delete host[field];
+        changed.add(host.name);
+      }
+      data.groupConfigs = next;
+      data.recent = data.recent.filter(entry => !changed.has(entry.name));
+      write(data);
+      notify();
+    }
     return {
       all: () => read().hosts,
+      groupConfigs: () => read().groupConfigs,
+      resolve: value => resolve(value, read().groupConfigs),
+      saveGroup(value) {
+        const item = groupConfig(value);
+        updateGroups(item.group, item);
+      },
+      removeGroup(path) { updateGroups(groupPath(path)); },
       recents: () => read().recent,
       replace(items) {
         if (!Array.isArray(items) || items.length > 2048) throw new Error('主机库格式无效。');
@@ -142,6 +226,7 @@
       save(value, previous = value?.name?.trim()) {
         const item = named(value);
         const library = read();
+        resolve(item, library.groupConfigs);
         if (item.name !== previous && library.hosts.some(host => host.name === item.name)) throw new Error('这个主机名称已被使用。');
         const index = library.hosts.findIndex(host => host.name === previous);
         if (index < 0) {
@@ -149,7 +234,8 @@
           library.hosts.push(item);
         } else {
           library.hosts[index] = item;
-          library.recent = library.recent.map(entry => entry.name === previous ? recent({ ...item, kind: entry.kind }) : entry);
+          library.recent = library.recent.map(entry => entry.name === previous ?
+            recent({ ...resolve(item, library.groupConfigs), name: item.name, kind: entry.kind }) : entry);
         }
         write(library);
         notify();
@@ -197,7 +283,7 @@
     }).sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite) || a.name.localeCompare(b.name));
   }
 
-  const api = { endpoint, quick, format, named, store, groups, select };
+  const api = { endpoint, quick, format, named, store, groups, select, groupPath, environment, resolve, routing };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else window.BrclioConnection = api;
 })();

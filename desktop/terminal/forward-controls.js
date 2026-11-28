@@ -83,7 +83,11 @@ window.BrclioForwardControls = (() => {
       const saved = hosts.all();
       const hostList = field('host-list');
       hostList.replaceChildren(new Option('手动填写', ''), ...saved.map(entry => new Option(entry.name, entry.name)));
-      const equivalent = entry => source && ['host', 'user', 'port', 'jump', 'identityFile'].every(k => (entry[k] || '') === (source[k] || ''));
+      const configs = hosts.groupConfigs();
+      const equivalent = entry => {
+        const host = window.BrclioConnection.resolve(entry, configs);
+        return source && ['host', 'user', 'port', 'jump', 'identityFile'].every(k => (host[k] || '') === (source[k] || ''));
+      };
       hostList.value = saved.find(equivalent)?.name || '';
       setHost(source);
       for (const key of ['name', 'listenPort', 'destinationPort']) field(key).value = item?.[key] ?? '';
@@ -107,7 +111,10 @@ window.BrclioForwardControls = (() => {
 
     field('list').onchange = guard(() => select(field('list').value));
     field('type').onchange = direction;
-    field('host-list').onchange = guard(() => setHost(hosts.all().find(entry => entry.name === field('host-list').value)));
+    field('host-list').onchange = guard(() => {
+      const saved = hosts.all().find(entry => entry.name === field('host-list').value);
+      setHost(saved ? hosts.resolve(saved) : undefined);
+    });
     for (const key of ['host','user','port']) field(key).oninput = () => {
       field('host-list').value = '';
       identity = {};

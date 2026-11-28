@@ -91,3 +91,22 @@ test('system ssh-keygen in a real PTY generates a protected Ed25519 key and iden
   const [workerCode] = await workerExit;
   assert.equal(workerCode, 0, 'the native PTY service retires after the keygen session exits');
 });
+
+test('native key generation restricts algorithms and binds the selected type to the one-use dialog grant', async t => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-key-type-'));
+  t.after(() => fs.rm(home,{recursive:true,force:true}));
+  const file = path.join(home,'fixture'), handlers = new Map();
+  const service = register({handle:(n,h) => handlers.set(n,h), getOwner:() => null, home,
+    dialog:{showSaveDialog:async () => ({filePath:file})}});
+  for (const algorithm of ['rsa','ecdsa','ecdsa-sk','ed25519-sk']) {
+    const grant = await handlers.get('identity-choose')({action:'generate',algorithm});
+    const session = service.prepare({profile:'ssh-keygen',connection:{token:grant.token,algorithm:'ignored'}});
+    assert.deepEqual(session.connection,{keyPath:file,algorithm});
+    let result;
+    try { result = keygen(session.connection,process.platform,process.env); }
+    catch (error) { if (/未找到/.test(error.message)) continue; throw error; }
+    assert.deepEqual(result.args.slice(0,2),['-t',algorithm]);
+    if (algorithm === 'rsa') assert.deepEqual(result.args.slice(2,4),['-b','4096']);
+  }
+  await assert.rejects(handlers.get('identity-choose')({action:'generate',algorithm:'other'}));
+});

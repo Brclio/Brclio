@@ -188,9 +188,10 @@ function createAccountClient({ directory, onSessionChange = () => {}, fetch = gl
   // This scoped entry point is only wired to the isolated terminal view.
   async function requestTerminal(input) {
     if (input.path === '/api/account/session') return request(input);
-    if (input.path !== '/api/account/apps/terminal/data') throw new Error('终端同步路径无效。');
+    const sharing = input.path === '/api/account/apps/terminal/shared-vaults' && input.method === 'POST';
+    if (!sharing && input.path !== '/api/account/apps/terminal/data') throw new Error('终端同步路径无效。');
     const version = authVersion;
-    const body = input.method === 'PUT' ? JSON.stringify(input.body) : undefined;
+    const body = sharing || input.method === 'PUT' ? JSON.stringify(input.body) : undefined;
     if (body && Buffer.byteLength(body) > MAX_BYTES) throw new Error('终端配置超过同步容量。');
     const value = await requestRaw(input.path, input.method || 'GET', body);
     if (version !== authVersion) throw new Error('账号状态已变化。');

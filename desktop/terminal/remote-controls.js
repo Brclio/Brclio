@@ -12,7 +12,12 @@ window.BrclioRemoteConnections = {
     let selected = '';
     let original = null;
     const authFields = ['host', 'user', 'port', 'jump'];
-    const addressDraft = () => JSON.stringify(authFields.map(field => byId(field).value.trim()));
+    const addressDraft = () => {
+      const parts = Object.fromEntries(authFields.map(field => [field, byId(field).value.trim()]));
+      const group = byId('group').value.trim(), inheritGroup = byId('inherit').checked;
+      try { return library.routing(storage.resolve({ ...parts, group, inheritGroup })); }
+      catch { return JSON.stringify([parts, group, inheritGroup]); }
+    };
     let authAddress = addressDraft();
     let activeRecent = null;
     let accountGeneration = 0;
@@ -20,9 +25,33 @@ window.BrclioRemoteConnections = {
     const status = value => { byId('status').textContent = value; };
     const form = () => ({
       ...Object.fromEntries(fields.map(field => [field, byId(field).value.trim()])),
+      inheritGroup: byId('inherit').checked,
+      environment: byId('environment').value,
       favorite: byId('favorite').checked,
       agentForwarding: byId('agent-forwarding').checked,
     });
+
+    const envText = items => typeof items === 'string' ? items : (items || []).map(item => item.name + '=' + item.value).join('\n');
+    function inheritedPreview() {
+      const group = byId('group').value.trim();
+      let text = '';
+      if (group && byId('inherit').checked) {
+        try {
+          const values = storage.resolve({ host: 'preview', group, inheritGroup: true });
+          text = [values.user && '用户 ' + values.user, values.port && '端口 ' + values.port,
+            values.jump && '跳板 ' + values.jump, values.environment?.map(item => item.name).join(', ')].filter(Boolean).join(' · ');
+        } catch { /* Incomplete group paths have no defaults to show yet. */ }
+      }
+      byId('inherited').textContent = text ? '分组默认值　' + text : '';
+    }
+
+    function showGroup(path) {
+      const config = storage.groupConfigs().find(entry => entry.group === path);
+      byId('config-path').value = path;
+      for (const field of ['user', 'port', 'jump']) byId('config-' + field).value = config?.[field] ?? '';
+      byId('config-environment').value = envText(config?.environment);
+      byId('config-remove').disabled = !config;
+    }
 
     function showItem(item, name = '') {
       selected = name;
@@ -33,8 +62,11 @@ window.BrclioRemoteConnections = {
       }
       byId('favorite').checked = !!item?.favorite;
       byId('agent-forwarding').checked = item?.agentForwarding === true;
+      byId('environment').value = envText(item?.environment);
+      byId('inherit').checked = item ? item.inheritGroup === true : true;
       authAddress = addressDraft();
-      byId('advanced').open = !!(item?.jump || item?.identityFile || item?.certificateFile || item?.agentForwarding);
+      inheritedPreview();
+      byId('advanced').open = !!(item?.jump || item?.identityFile || item?.certificateFile || item?.agentForwarding || item?.environment?.length);
       byId('editor-title').textContent = selected || '新建主机';
       byId('remove').disabled = byId('duplicate').disabled = !selected;
       byId('delete-check').hidden = true;
@@ -43,7 +75,8 @@ window.BrclioRemoteConnections = {
 
     function render() {
       const records = storage.all();
-      const paths = library.groups(records);
+      const configs = storage.groupConfigs();
+      const paths = library.groups([...records, ...configs]);
       const filter = byId('group-filter');
       const group = filter.value;
       filter.replaceChildren(new Option('全部分组', ''), ...paths.map(path => new Option(path, path)));
@@ -74,7 +107,7 @@ window.BrclioRemoteConnections = {
         const title = document.createElement('span');
         const subtitle = document.createElement('small');
         title.textContent = (item.favorite ? '★ ' : '') + (item.name || item.host);
-        subtitle.textContent = [recents ? kindLabels[item.kind] : item.group, library.format(item), ...(item.tags || [])].filter(Boolean).join(' · ');
+        subtitle.textContent = [recents ? kindLabels[item.kind] : item.group, library.format(library.resolve(item, configs)), ...(item.tags || [])].filter(Boolean).join(' · ');
         row.append(title, subtitle);
         row.onclick = () => {
           guarded(() => {
@@ -116,7 +149,7 @@ window.BrclioRemoteConnections = {
 
     async function connect(kind, value, name = '') {
       const epoch = accountGeneration;
-      const target = library.endpoint(value);
+      const target = storage.resolve(value);
       const program = kind === 'files' ? 'ssh' : kind;
       if (!available[program]) throw new Error('未找到 ' + program + '，请安装系统 OpenSSH 客户端。');
       if (kind === 'files') {
@@ -129,7 +162,7 @@ window.BrclioRemoteConnections = {
       dialog.close();
       const saved = storage.all().find(item => item.name === name);
       // A connection can use unsaved edits. Keep that exact destination in its history.
-      const matches = saved && JSON.stringify(library.endpoint(saved)) === JSON.stringify(target);
+      const matches = saved && JSON.stringify(storage.resolve(saved)) === JSON.stringify(target);
       storage.recordUse(kind, target, matches ? saved.name : '');
     }
 
@@ -149,6 +182,8 @@ window.BrclioRemoteConnections = {
       if (dialog.open) dialog.close();
       activeRecent = null;
       showItem();
+      showGroup('');
+      byId('group-editor').open = false;
       byId('quick').value = byId('search').value = '';
       byId('view').value = 'all';
       guarded(render);
@@ -186,15 +221,36 @@ window.BrclioRemoteConnections = {
       return connect(source.profile === 'ssh' ? 'sftp' : 'ssh', source.connection);
     });
 
-    for (const key of authFields) byId(key).addEventListener('input', () => {
+    function checkAddress() {
       const changed = authAddress !== addressDraft();
       authAddress = addressDraft();
-      if (changed && (byId('agent-forwarding').checked || byId('certificateFile').value)) {
+      if (changed && (byId('agent-forwarding').checked || byId('certificateFile').value || byId('environment').value || byId('identityFile').value)) {
         byId('agent-forwarding').checked = false;
-        byId('certificateFile').value = '';
-        status('SSH 目标已变更，请为新目标重新选择证书和代理转发设置。');
+        for (const field of ['identityFile', 'certificateFile', 'environment']) byId(field).value = '';
+        window.dispatchEvent(new Event('brclio-terminal-host-editor-changed'));
+        status('SSH 目标已变更，请为新目标重新选择身份、代理转发和环境变量。');
       }
+      inheritedPreview();
+    }
+    for (const key of [...authFields, 'group', 'inherit']) byId(key).addEventListener('input', checkAddress);
+    byId('config-path').addEventListener('input', () => guarded(() => showGroup(byId('config-path').value)));
+    byId('group-editor').querySelector('summary').addEventListener('click', () => {
+      if (!byId('group-editor').open) guarded(() => showGroup(byId('group').value.trim() || byId('group-filter').value));
     });
+    function editGroup(remove) {
+      const group = library.groupPath(byId('config-path').value);
+      const prior = selected && storage.all().find(item => item.name === selected);
+      if (remove) storage.removeGroup(group);
+      else storage.saveGroup({ group, ...Object.fromEntries(['user', 'port', 'jump', 'environment'].map(field =>
+        [field, byId('config-' + field).value])) });
+      if (selected && JSON.stringify(original) === JSON.stringify(prior)) original = storage.all().find(item => item.name === selected);
+      showGroup(group);
+      render();
+      status(remove ? '已清除本级分组设置。' : '已保存分组设置。');
+      checkAddress();
+    }
+    byId('config-remove').onclick = () => guarded(() => editGroup(true));
+    byId('config-save').onclick = () => guarded(() => editGroup(false));
     byId('choose-certificate').onclick = () => guarded(async () => {
       const generation = accountGeneration;
       const target = selected;
@@ -226,6 +282,7 @@ window.BrclioRemoteConnections = {
     byId('form').onsubmit = event => {
       event.preventDefault();
       guarded(() => {
+        checkAddress();
         if (original && JSON.stringify(storage.all().find(item => item.name === selected)) !== JSON.stringify(original)) {
           throw new Error('此主机的已保存配置已更新。请重新选择，或复制为新主机以保留当前编辑。');
         }
@@ -263,6 +320,9 @@ window.BrclioRemoteConnections = {
         return connect(target.protocol, target);
       });
     };
-    for (const kind of ['ssh', 'sftp', 'files']) byId(kind).onclick = () => guarded(() => connect(kind, form(), selected));
+    for (const kind of ['ssh', 'sftp', 'files']) byId(kind).onclick = () => guarded(() => {
+      checkAddress();
+      return connect(kind, form(), selected);
+    });
   },
 };

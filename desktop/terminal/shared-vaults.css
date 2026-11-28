@@ -1,0 +1,8 @@
+#shared-vault-dialog { width: min(620px, 86vw); }
+#shared-vault-dialog .shared-row { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+#shared-vault-dialog .shared-row > span { flex: 1 1 140px; overflow-wrap: anywhere; }
+#shared-vault-dialog :is(button, input, select) { border: 1px solid var(--border); border-radius: 4px; }
+#shared-vault-dialog :is(input, select) { min-width: 0; max-width: 100%; padding: 6px; background: var(--paper); color: var(--ink); }
+#shared-vault-dialog fieldset { margin: 10px 0; padding: 9px; border: 1px solid var(--border); }
+#shared-vault-dialog legend, #shared-vault-dialog p { color: var(--muted); }
+#shared-vault-dialog [role=status] { min-height: 1.2em; }

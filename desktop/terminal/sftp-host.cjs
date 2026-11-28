@@ -2,23 +2,13 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { endpoint } = require('./connection.js');
 const { program, argumentsFor } = require('./remote-launch.cjs');
 const { connectProtocol } = require('./sftp-protocol.cjs');
 const { prepareAskpass } = require('./sftp-askpass.cjs');
 
-function validateName(value, local = false) {
-  if (typeof value !== 'string' || !value || value === '.' || value === '..' || /[\/\0]/u.test(value) ||
-      Buffer.byteLength(value) > 1024) throw new Error('文件名无效。');
-  if (local && process.platform === 'win32' && (/[\\:*?"<>|\x00-\x1f]|[ .]$/u.test(value) ||
-      /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(value))) throw new Error('Windows 不支持这个文件名。');
-  return value;
-}
-function classify(mode) {
-  return ({ 0o040000: 'directory', 0o100000: 'file', 0o120000: 'link' })[mode & 0o170000] || 'other';
-}
+const { transferTree, endpointIO, validateName } = require('./sftp-transfer.cjs');
 
 async function startConnection(value, { configFile, askpass = prepareAskpass } = {}) {
   const target = endpoint(value);
@@ -46,7 +36,8 @@ async function startConnection(value, { configFile, askpass = prepareAskpass } =
   } catch (error) { await auth.cleanup(); throw error; }
 }
 
-function createBrowser({ start = startConnection, chooseLocal }) {
+const editor = require('./sftp-editor.cjs');
+function createBrowser({ start = startConnection, chooseLocal, launchEditor = editor.launchEditor, chooseEditor }) {
   let active = null;
   const current = id => {
     if (!active || active.id !== id) throw new Error('SFTP 会话已结束，请重新连接。');
@@ -54,91 +45,43 @@ function createBrowser({ start = startConnection, chooseLocal }) {
   };
   function close(id) {
     if (!active || (id && active.id !== id)) return;
-    active.net?.stop();
+    if (active.draft) void editor.discard(active.draft).catch(() => {});
+    active.pending?.stop();
+    for (const pane of Object.values(active.panes)) pane?.net?.stop();
     active = null;
   }
 
-  async function list(s, side, dir, root = s.root) {
-    const entries = [];
-    if (side === 'remote') {
-      const real = await s.net.realpath(dir);
-      if (!real || !real.startsWith('/') || real.includes('\0')) throw new Error('无效的远端目录。');
-      for (const item of await s.net.list(real)) {
-        if (!item.name || item.name === '.' || item.name === '..' || /[\/\0]/u.test(item.name)) continue;
-        entries.push({ name: item.name, kind: classify(item.mode), size: item.size ?? null });
-      }
-      dir = real;
+  async function list(s, pane, directory) {
+    const io = endpointIO(pane.net);
+    const dir = await io.realpath(directory);
+    if (pane.net) {
+      if (!dir || !dir.startsWith('/') || dir.includes('\0')) throw new Error('无效的远端目录。');
     } else {
-      const actual = await fs.realpath(dir);
-      const relative = path.relative(root, actual);
-      if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new Error('请重新选择本地根目录。');
-      const items = await fs.readdir(actual, { withFileTypes: true });
-      for (const item of items) {
-        entries.push({ name: item.name, kind: item.isDirectory() ? 'directory' : item.isFile() ? 'file' : item.isSymbolicLink() ? 'link' : 'other' });
-      }
-      dir = actual;
+      const rel = path.relative(pane.root, dir);
+      if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) throw new Error('请重新选择本地根目录。');
     }
+    const entries = (await io.list(dir)).filter(item => item.name && !/[\/\0]/u.test(item.name));
     entries.sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || a.name.localeCompare(b.name, 'zh-CN', { numeric: true }));
     if (active !== s) throw new Error('SFTP 会话已关闭。');
-    s[side] = { dir, entries, parent: side === 'local' ? dir !== root : path.posix.dirname(dir) !== dir };
-    return s[side];
+    const view = { dir, entries, parent: pane.net ? path.posix.dirname(dir) !== dir : dir !== pane.root };
+    Object.assign(pane, view);
+    return view;
   }
 
-  async function transfer(s, side, name) {
-    if (!s.local) throw new Error('请先选择本地文件夹。');
-    validateName(name, true);
-    const entry = s[side].entries.find(item => item.name === name && item.kind === 'file');
-    if (!entry) throw new Error('请选择一个普通文件。');
-    const local = path.join(s.local.dir, name);
-    const remote = path.posix.join(s.remote.dir, name);
-    const tempName = '.brclio-transfer-' + randomUUID() + '.tmp';
-    const state = { bytes: 0, size: null, canceled: false };
-    s.transfer = state;
-    const assertActive = () => {
-      if (active !== s) throw new Error('SFTP 会话已关闭。');
-      if (state.canceled) throw new Error('已取消传输。');
-    };
-    const progress = bytes => { state.bytes = bytes; };
+  async function connect(s, side, target) {
+    const net = await start(target);
+    net.ready.catch(() => {});
     try {
-      // Check the directory identity again: a user may replace or rename it while the browser is open.
-      if (await fs.realpath(s.local.dir) !== s.local.dir) throw new Error('本地目录已改变，请重新选择。');
-      if (side === 'local') {
-        if (s.remote.entries.some(item => item.name === name)) throw new Error('远端已存在同名项目。');
-        if (!(await fs.lstat(local)).isFile()) throw new Error('源文件已改变，请刷新。');
-        const file = await fs.open(local, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-        const temp = path.posix.join(s.remote.dir, tempName);
-        try {
-          const stat = await file.stat();
-          if (!stat.isFile()) throw new Error('请选择普通文件。');
-          state.size = stat.size;
-          await s.net.upload(temp, file, progress, assertActive);
-          assertActive();
-          await s.net.rename(temp, remote);
-        } catch (error) {
-          await s.net.remove(temp).catch(() => {});
-          throw error;
-        } finally { await file.close(); }
-      } else {
-        if (s.local.entries.some(item => item.name === name)) throw new Error('本地已存在同名项目。');
-        const stat = await s.net.stat(remote);
-        if (classify(stat.mode) !== 'file') throw new Error('源文件已改变，请刷新。');
-        state.size = stat.size;
-        const temp = path.join(s.local.dir, tempName);
-        const file = await fs.open(temp, 'wx', 0o600);
-        try {
-          try { await s.net.download(remote, file, progress, assertActive); }
-          finally { await file.close(); }
-          assertActive();
-          // link publishes the finished file atomically and refuses replacement. FAT volumes lack hard links.
-          try { await fs.link(temp, local); }
-          catch (error) {
-            if (!['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'ENOSYS'].includes(error.code)) throw error;
-            await fs.copyFile(temp, local, fs.constants.COPYFILE_EXCL);
-          }
-        } finally { await fs.rm(temp, { force: true }); }
-      }
-      return await list(s, side === 'local' ? 'remote' : 'local', side === 'local' ? s.remote.dir : s.local.dir);
-    } finally { s.transfer = null; }
+      if (active !== s) throw new Error('连接已取消。');
+      s.pending = net;
+      await net.ready;
+      const pane = { net };
+      const view = await list(s, pane, '.');
+      s.panes[side]?.net?.stop();
+      s.panes[side] = pane;
+      return view;
+    } catch (error) { net.stop(); throw error; }
+    finally { s.pending = null; }
   }
 
   async function action(op, p = {}) {
@@ -146,53 +89,96 @@ function createBrowser({ start = startConnection, chooseLocal }) {
     if (op === 'close') { close(p.id); return; }
     if (op === 'open') {
       if (active) throw new Error('请先关闭当前 SFTP 连接。');
-      const s = { id: p.id, busy: true };
+      const s = { id: p.id, busy: true, panes: {}, applications: new Map() };
       active = s;
-      try {
-        const net = await start(p.target);
-        if (active !== s) { net.ready.catch(() => {}); net.stop(); throw new Error('连接已取消。'); }
-        s.net = net;
-        await net.ready;
-        return await list(s, 'remote', '.');
-      } catch (error) { if (active === s) close(s.id); throw error; }
+      try { return await connect(s, 'remote', p.target); }
+      catch (error) { if (active === s) close(s.id); throw error; }
       finally { s.busy = false; }
     }
     const s = current(p.id);
-    if (op === 'progress') return s.transfer && { bytes: s.transfer.bytes, size: s.transfer.size };
+    if (op === 'progress') {
+      if (!s.transfer) return null;
+      const { bytes, size, current, files } = s.transfer;
+      return { bytes, size, current, files };
+    }
     if (op === 'cancel') { if (s.transfer) s.transfer.canceled = true; return; }
     if (s.busy) throw new Error('请等待当前操作完成。');
     s.busy = true;
     try {
+      const check = () => { if (active !== s) throw new Error('SFTP 会话已关闭。'); };
+      if (s.draft) {
+        if (op === 'edit-status') return await editor.draftStamp(s.draft) !== s.draft.initialStamp;
+        if (!['edit-discard', 'edit-save'].includes(op)) throw new Error('请先结束当前文件编辑。');
+        const saved = op === 'edit-save' && await editor.saveDraft(s.draft, check);
+        await editor.discard(s.draft);
+        s.draft = null;
+        return saved;
+      }
+      const side = p.side ?? (op === 'choose' ? 'local' : null);
+      if (!['local', 'remote'].includes(side)) throw new Error('请先选择目录。');
+      if (op === 'connect') return await connect(s, side, p.target);
       if (op === 'choose') {
         const directory = await chooseLocal();
         if (!directory) return null;
-        const root = await fs.realpath(directory);
-        const result = await list(s, 'local', root, root);
-        s.root = root;
+        const pane = { root: await fs.realpath(directory) };
+        const result = await list(s, pane, pane.root);
+        s.panes[side]?.net?.stop();
+        s.panes[side] = pane;
         return result;
       }
-      const side = p.side;
-      if (!['local', 'remote'].includes(side) || !s[side]) throw new Error('请先选择目录。');
-      const directory = s[side];
-      const paths = side === 'local' ? path : path.posix;
-      if (op === 'list') return await list(s, side, directory.dir);
-      if (op === 'parent') return await list(s, side, directory.parent ? paths.dirname(directory.dir) : directory.dir);
-      const name = validateName(p.name, side === 'local');
-      if (op === 'enter') {
-        if (!directory.entries.some(item => item.name === name && (item.kind === 'directory' || item.kind === 'link'))) throw new Error('请选择目录。');
-        return await list(s, side, paths.join(directory.dir, name));
+      const pane = s.panes[side];
+      if (!pane) throw new Error('请先选择目录。');
+      const paths = pane.net ? path.posix : path;
+      if (op === 'list') return await list(s, pane, pane.dir);
+      if (op === 'parent') return await list(s, pane, pane.parent ? paths.dirname(pane.dir) : pane.dir);
+      if (op === 'goto') {
+        if (typeof p.path !== 'string' || !paths.isAbsolute(p.path) || p.path.includes('\0') || p.path.length > 4096) throw new Error('请输入完整的目录路径。');
+        return await list(s, pane, p.path);
       }
-      if (op === 'transfer') return await transfer(s, side, name);
-      if (side === 'remote') {
-        const file = paths.join(directory.dir, name);
-        if (op === 'mkdir') await s.net.mkdir(file);
-        else if (op === 'rename') await s.net.rename(file, paths.join(directory.dir, validateName(p.newName)));
+      const name = validateName(p.name, !pane.net);
+      if (op === 'edit-file') {
+        const ext = path.posix.extname(name).toLowerCase();
+        let app = s.applications.get(ext);
+        if (p.choose === true) {
+          app = await chooseEditor();
+          if (!app) return false;
+        }
+        const draft = await editor.openDraft(pane, name, async file => {
+          check(); await launchEditor(file, app);
+        }, check);
+        try {
+          check();
+          s.draft = draft;
+          if (app) s.applications.set(ext, app);
+          return true;
+        } catch (error) { await editor.discard(draft); throw error; }
+      }
+      if (op === 'enter') {
+        if (!pane.entries.some(item => item.name === name && ['directory', 'link'].includes(item.kind))) throw new Error('请选择目录。');
+        return await list(s, pane, paths.join(pane.dir, name));
+      }
+      if (op === 'transfer') {
+        const other = s.panes[side === 'local' ? 'remote' : 'local'];
+        if (!other) throw new Error('请先选择目标目录。');
+        const state = { bytes: 0, files: 0, size: null, current: '', canceled: false };
+        s.transfer = state;
+        try {
+          await transferTree(pane, other, name, state, () => {
+            if (active !== s || state.canceled) throw new Error('已取消传输。');
+          });
+          return await list(s, other, other.dir);
+        } finally { s.transfer = null; }
+      }
+      if (pane.net) {
+        const file = paths.join(pane.dir, name);
+        if (op === 'mkdir') await pane.net.mkdir(file);
+        else if (op === 'rename') await pane.net.rename(file, paths.join(pane.dir, validateName(p.newName)));
         else if (op === 'remove') {
-          const item = directory.entries.find(item => item.name === name);
+          const item = pane.entries.find(item => item.name === name);
           if (!item) throw new Error('请重新选择远端项目。');
-          await s.net.remove(file, item.kind === 'directory');
+          await pane.net.remove(file, item.kind === 'directory');
         } else throw new Error('不支持此操作。');
-        return await list(s, side, directory.dir);
+        return await list(s, pane, pane.dir);
       }
       throw new Error('不支持此操作。');
     } finally { s.busy = false; }
@@ -201,7 +187,16 @@ function createBrowser({ start = startConnection, chooseLocal }) {
 }
 
 function registerSftp({ handle, dialog, getOwner }) {
-  const browser = createBrowser({ chooseLocal: async () => {
+  const browser = createBrowser({ chooseEditor: async () => {
+    const mac = process.platform === 'darwin';
+    const result = await dialog.showOpenDialog(getOwner(), { title: '选择用于编辑远端文件的应用',
+      ...(mac ? { defaultPath: '/Applications' } : {}), properties: ['openFile'],
+      filters: [{ name: '编辑器', extensions: [mac ? 'app' : 'exe'] }] });
+    if (result.canceled) return null;
+    const app = result.filePaths[0];
+    if (!app || !path.isAbsolute(app) || path.extname(app).toLowerCase() !== (mac ? '.app' : '.exe')) throw new Error('请选择编辑器应用。');
+    return app;
+  }, chooseLocal: async () => {
     const result = await dialog.showOpenDialog(getOwner(), { title: '选择 SFTP 本地目录', properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0];
   } });

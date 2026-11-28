@@ -199,3 +199,18 @@ test('Windows PowerShell wraps an existing prompt and reader, keeps native exit 
   assert.ok(result.stdout.includes(osc(133, 'D;1')), result.stdout);
   assert.ok(result.stdout.includes('NativeExit=23'), result.stdout);
 });
+
+test('opt-in command search captures visible shell input between B and C across wraps without recording interactive prompts or output', async t => {
+  const terminal = new Terminal({ allowProposedApi:true, cols:12, rows:8 });
+  const commands = [];
+  let enabled = false;
+  const marks = attach(terminal,undefined,{ enabled:() => enabled, add:text => commands.push(text) });
+  t.after(() => { marks.dispose(); terminal.dispose(); });
+  const prompt = osc(133,'A') + '$ ' + osc(133,'B');
+  const run = input => prompt + input + '\r\n' + osc(133,'C') + 'Password: \r\noutput\r\n' + osc(133,'D;0');
+  await write(terminal,run('before'));
+  enabled = true;
+  await write(terminal,run('echo example command'));
+  await write(terminal,prompt + 'aborted\r\n' + osc(133,'D;130'));
+  assert.deepEqual(commands,['echo example command']);
+});

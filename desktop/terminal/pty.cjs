@@ -111,7 +111,7 @@ function createPtySessions({ home, send, platform = process.platform, env = proc
     else if (mosh) args = mosh.args;
     else if (keygen) args = keygen.args;
     else if (forwarding) args = require('./forward-model.js').argumentsFor(connection);
-    else if (remote) args = openSSH.argumentsFor(profile, connection);
+    else if (remote) args = openSSH.argumentsFor(profile, connection, profile === 'ssh', { file: selected.file, env: options.env });
     else if (control) args = tmux.argumentsFor(tmuxSession, platform);
     else args = shellArguments(selected.file, platform, shellIntegration === true, options.env);
     if (control) options.encoding = 'latin1';

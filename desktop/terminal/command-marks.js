@@ -2,8 +2,8 @@
 
 (() => {
   // Each pane owns its markers. xterm moves or disposes them when scrollback
-  // reflows, is trimmed, or is cleared. No command text leaves the pane.
-  function attach(terminal, commandFinished) {
+  // reflows, is trimmed, or is cleared. Command recall is separately opt-in.
+  function attach(terminal, commandFinished, commandHistory) {
     const history = [];
     let command;
     let navigated;
@@ -14,6 +14,7 @@
       if (command === record) command = undefined;
       if (navigated === record) navigated = undefined;
       record.mark.dispose();
+      record.inputStart?.mark?.dispose();
       record.start?.mark.dispose();
       record.end?.mark.dispose();
     }
@@ -74,6 +75,21 @@
       forget(command);
     }
 
+    function captureInput(record) {
+      const start = resolve(record?.inputStart), end = resolve(record?.start);
+      if (!start || !end || start.row > end.row || end.row - start.row > 32) return;
+      const parts = [];
+      for (let row = start.row; row <= end.row; row++) {
+        const line = terminal.buffer.normal.getLine(row);
+        if (!line) return;
+        // Enter moves the cursor to the next row before many shells send OSC C.
+        if (row === end.row && row > start.row && end.column === 0) break;
+        if (row > start.row && !line.isWrapped) return;
+        parts.push(line.translateToString(row === end.row || !terminal.buffer.normal.getLine(row + 1)?.isWrapped, row === start.row ? start.column : 0, row === end.row ? end.column : terminal.cols));
+      }
+      commandHistory.add(parts.join(''));
+    }
+
     function onCommand(data) {
       // Parameters are optional. Consume only plain FinalTerm A/B/C/D.
       const separator = data.indexOf(';');
@@ -91,9 +107,16 @@
         command = mark('prompt');
       } else if (code === 'B' && command) {
         command.input = true;
+        command.inputStart?.mark?.dispose();
+        command.inputStart = commandHistory?.enabled() ? position() : undefined;
       } else if (code === 'C') {
         if (!command) command = mark('prompt');
-        if (command && !command.start) command.start = position();
+        if (command && !command.start) {
+          command.start = position();
+          if (command.inputStart && commandHistory?.enabled()) captureInput(command);
+          command.inputStart?.mark?.dispose();
+          command.inputStart = undefined;
+        }
       } else if (code === 'D' && command) {
         if (command.start) {
           command.end = position();

@@ -51,6 +51,11 @@
   <script defer src="sftp-browser.js"></script>
   <script defer src="sync-model.js"></script>
   <script defer src="sync-controls.js"></script>
+  <link rel="stylesheet" href="shared-vaults.css">
+  <script defer src="shared-vaults.js"></script>
+  <script defer src="host-import.js"></script>
+  <script defer src="command-library.js"></script>
+  <script defer src="host-import-ui.js"></script>
   <script defer src="connection-center.js"></script>
   <script defer src="terminal.js"></script>
   <link rel="stylesheet" href="tmux.css">
@@ -119,8 +124,10 @@
       <button data-center="devices"><strong>其他协议</strong><small>Telnet、Mosh 和串口</small></button>
     </div></section>
     <section aria-label="连接设置"><h3>连接设置</h3><div class="connection-links">
+      <button data-center="commands">命令历史与补全</button>
+      <button data-center="importHosts">导入主机</button>
       <button data-center="identities">SSH 身份</button><button data-center="trust">主机指纹</button>
-      <button data-center="logs">会话日志与书签</button><button data-center="passwords">本机密码库</button><button data-center="sync">账号同步</button>
+      <button data-center="logs">会话日志与书签</button><button data-center="passwords">本机密码库</button><button data-center="sharing">共享主机库</button><button data-center="sync">账号同步</button>
     </div></section>
   </dialog>
   <dialog id="device-dialog" class="connection-sheet" aria-labelledby="device-title">
@@ -252,6 +259,15 @@
                 </div>
                 <div class="host-results" id="remote-list" aria-label="匹配的主机"></div>
                 <div class="host-row"><button id="remote-new" type="button">＋ 新建主机</button><button id="remote-clear-recent" type="button" hidden>清空最近记录</button></div>
+                <details class="host-group-editor" id="remote-group-editor"><summary>分组默认设置</summary>
+                  <label>分组路径<input id="remote-config-path" maxlength="120" list="remote-groups" placeholder="例如 工作/测试"></label>
+                  <label>SSH 用户名<input id="remote-config-user" maxlength="128" placeholder="继承上一级"></label>
+                  <label>SSH 端口<input id="remote-config-port" type="number" min="1" max="65535" placeholder="继承上一级"></label>
+                  <label>跳板链<input id="remote-config-jump" maxlength="2048" placeholder="user@jump:22" spellcheck="false"></label>
+                  <label>SSH 环境变量<textarea id="remote-config-environment" rows="3" maxlength="4096" placeholder="LANG=zh_CN.UTF-8" spellcheck="false"></textarea></label>
+                  <p>本机当前账号使用。子分组和主机可以覆盖上一级的设置。修改连接目标后，受影响主机需重新选择身份和主机环境变量。</p>
+                  <div class="host-row"><button type="button" id="remote-config-save">保存分组设置</button><button type="button" id="remote-config-remove" disabled>清除本级设置</button></div>
+                </details>
               </section>
               <form class="host-editor" id="remote-form" autocomplete="off">
                 <h3 id="remote-editor-title">新建主机</h3>
@@ -266,6 +282,8 @@
                   <label>标签<input id="remote-tags" maxlength="655" placeholder="用逗号分隔"></label>
                 </div>
                 <datalist id="remote-groups"></datalist>
+                <label class="host-favorite"><input id="remote-inherit" type="checkbox" checked> 使用本机分组默认设置</label>
+                <small id="remote-inherited"></small>
                 <label class="host-favorite"><input id="remote-favorite" type="checkbox"> 收藏主机</label>
                 <details id="remote-advanced"><summary>跳板、身份和 SSH 认证</summary>
                   <label>跳板链<input id="remote-jump" maxlength="2048" placeholder="user@jump:22，多跳用逗号分隔" spellcheck="false"></label>
@@ -274,6 +292,8 @@
                   <label>SSH 用户证书<input id="remote-certificateFile" maxlength="1024" placeholder="例如 ~/.ssh/id_ed25519-cert.pub" spellcheck="false"></label>
                   <button id="remote-choose-certificate" type="button">选择证书文件</button>
                   <label class="host-favorite"><input id="remote-agent-forwarding" type="checkbox"> 向此主机转发 SSH 认证代理</label>
+                  <label>SSH 环境变量（当前账号本机）<textarea id="remote-environment" rows="3" maxlength="4096" placeholder="每行一个 名称=值" spellcheck="false"></textarea></label>
+                  <small>同名变量以主机设置为准。服务器需通过 AcceptEnv 接受这些变量。</small>
                   <small>证书路径和代理转发设置仅保存在本机，应用于此主机的 SSH 终端。启用代理转发后，远端可在连接期间请求本机代理签名。</small>
                 </details>
                 <div class="host-row host-launch"><button id="remote-ssh" type="button" disabled>SSH 终端</button><button id="remote-files" type="button">浏览文件</button><button id="remote-sftp" type="button" disabled>SFTP 命令行</button></div>

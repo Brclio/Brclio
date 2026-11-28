@@ -30,6 +30,40 @@
     return { items: [...names.values()], mapped };
   }
 
+  function mergeHostGroups(destination, source) {
+    const current = destination.groupConfigs || [], incoming = source.groupConfigs || [];
+    if (!current.length && !incoming.length) return { hosts: source.hosts, groupConfigs: [] };
+    const root = group => group.split('/')[0];
+    const roots = data => new Set([...data.hosts, ...(data.groupConfigs || [])].filter(item => item.group).map(item => root(item.group)));
+    const currentRoots = roots(destination), fromRoots = roots(source);
+    const used = new Set([...currentRoots, ...fromRoots]);
+    const renames = new Map();
+    const settings = (configs, name) => configs.filter(item => root(item.group) === name).sort((a, b) => a.group.localeCompare(b.group));
+    for (const name of fromRoots) {
+      if (!currentRoots.has(name) || JSON.stringify(settings(current, name)) === JSON.stringify(settings(incoming, name))) continue;
+      // Keep the two trees distinct so imported hosts cannot acquire a different
+      // route or inherit another tree's environment during a local account move.
+      let renamed;
+      for (let n = 1; ; n++) {
+        renamed = name.slice(0, 44) + ' (本机 ' + n + ')';
+        if (!used.has(renamed)) break;
+      }
+      used.add(renamed);
+      renames.set(name, renamed);
+    }
+    function remap(item) {
+      if (!item.group) return item;
+      const old = root(item.group);
+      if (!renames.has(old)) return item;
+      const group = renames.get(old) + item.group.slice(old.length);
+      if (group.length > 120) throw new Error('迁移时分组路径过长，请缩短本机分组名称。');
+      return { ...item, group };
+    }
+    const configs = new Map([...current, ...incoming.map(remap)].map(item => [item.group, item]));
+    if (configs.size > 128) throw new Error('移入后超过 128 个分组配置。');
+    return { hosts: source.hosts.map(remap), groupConfigs: [...configs.values()] };
+  }
+
   function combineExtras(key, existing, imported) {
     if (!Array.isArray(existing) || !Array.isArray(imported)) throw new Error('本机终端资料格式无效。');
     if (key === arrangements) return combined(existing, imported, Infinity).items;
@@ -96,7 +130,7 @@
       },
       hasUnbound() {
         const library = hosts(raw);
-        return !!(library.hosts.length || library.recent.length || parse(raw, forwardKey, []).length || parse(raw, identityKey, []).length ||
+        return !!(library.hosts.length || library.recent.length || library.groupConfigs?.length || parse(raw, forwardKey, []).length || parse(raw, identityKey, []).length ||
           parse(raw, profiles, {}).presets?.length || extras.some(key => { const value = raw.getItem(key); return value !== null && value !== '[]'; }));
       },
       snapshotUnbound() {
@@ -120,11 +154,13 @@
         if (revision && storage.getItem(receipt) === JSON.stringify(revision)) return;
         const input = { getItem: key => snapshot[key] ?? null };
         const source = hosts(input), destination = hosts(storage);
-        const merged = combined(destination.hosts, source.hosts, 2048);
+        const { hosts: importedHosts, groupConfigs } = mergeHostGroups(destination, source);
+        const merged = combined(destination.hosts, importedHosts, 2048);
         const recent = [...destination.recent, ...source.recent.map(item =>
           item.name && merged.mapped.has(item.name) ? { ...item, name: merged.mapped.get(item.name) } : item)];
         const values = [
-          [hostKey, { hosts: merged.items, recent: [...new Map(recent.map(item => [JSON.stringify(item), item])).values()].slice(0, 24) }],
+          [hostKey, { hosts: merged.items, recent: [...new Map(recent.map(item => [JSON.stringify(item), item])).values()].slice(0, 24),
+            ...(groupConfigs.length && { groupConfigs }) }],
           [forwardKey, combined(parse(storage, forwardKey, []), parse(input, forwardKey, []), 128).items],
           [identityKey, combined(parse(storage, identityKey, []), parse(input, identityKey, []), 128).items],
         ];

@@ -27,8 +27,19 @@ function keygenProgram(platform, env) {
   return file;
 }
 
+const algorithms = new Map([
+  ['ed25519', []], ['rsa', ['-b', '4096']], ['ecdsa', ['-b', '521']],
+  ['ecdsa-sk', []], ['ed25519-sk', []],
+]);
+
+function algorithm(value = 'ed25519') {
+  if (!algorithms.has(value)) throw new Error('不支持的 SSH 密钥类型。');
+  return value;
+}
+
 function keygen(value, platform, env) {
-  return { file: keygenProgram(platform, env), args: ['-t', 'ed25519', '-a', '64', '-f', newPath(value?.keyPath)] };
+  const type = algorithm(value?.algorithm);
+  return { file: keygenProgram(platform, env), args: ['-t', type, ...algorithms.get(type), '-a', '64', '-f', newPath(value?.keyPath)] };
 }
 
 async function publicPart(file) {
@@ -92,14 +103,15 @@ function register({ handle, dialog, getOwner, home }) {
       if (mode === 'existing' && /\.pub$/i.test(file)) throw new Error('请选择私钥本身。');
       return { path: file };
     }
-    if (mode !== 'generate') throw new Error('未知的密钥选择方式。');
-    const result = await dialog.showSaveDialog(getOwner(), { title: '保存新 Ed25519 密钥', defaultPath: path.join(home, 'brclio_ed25519'), properties: ['showHiddenFiles'] });
+    const type = algorithm(typeof mode === 'object' && mode !== null ? mode.algorithm : undefined);
+    if (mode !== 'generate' && mode?.action !== 'generate') throw new Error('未知的密钥选择方式。');
+    const result = await dialog.showSaveDialog(getOwner(), { title: '保存新 SSH 密钥 · ' + type, defaultPath: path.join(home, 'brclio_' + type), properties: ['showHiddenFiles'] });
     if (result.canceled || !result.filePath) return null;
     const file = newPath(result.filePath);
     for (const [token, grant] of grants) if (grant.expires < Date.now()) grants.delete(token);
     if (grants.size >= 16) throw new Error('密钥生成窗口过多，请稍后再试。');
     const token = randomUUID();
-    grants.set(token, { file, expires: Date.now() + 60000 });
+    grants.set(token, { file, type, expires: Date.now() + 60000 });
     return { path: file, token };
   });
   return { prepare(options) {
@@ -108,7 +120,7 @@ function register({ handle, dialog, getOwner, home }) {
     const grant = grants.get(token);
     grants.delete(token);
     if (!grant || grant.expires < Date.now()) throw new Error('请重新选择新密钥的保存位置。');
-    return { ...options, connection: { keyPath: newPath(grant.file) } };
+    return { ...options, connection: { keyPath: newPath(grant.file), ...(grant.type !== 'ed25519' && { algorithm: grant.type }) } };
   } };
 }
 

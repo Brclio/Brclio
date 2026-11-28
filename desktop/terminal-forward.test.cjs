@@ -117,6 +117,7 @@ test('native PTYs forward real loopback traffic through local, remote and dynami
     const serverConfig = path.join(directory, 'sshd.conf');
     await fs.writeFile(serverConfig, [
       'ListenAddress 127.0.0.1', 'Port ' + port, 'HostKey "' + hostKey + '"', 'AuthorizedKeysFile "' + userKey + '.pub"',
+      'AcceptEnv BRCLIO_LITERAL_FIXTURE',
       'TrustedUserCAKeys "' + ca + '.pub"', 'PidFile "' + path.join(directory, 'pid') + '"', 'UsePAM no', 'StrictModes no', 'PasswordAuthentication no', 'AllowTcpForwarding yes', '',
     ].join('\n'));
     const daemon = spawn('/usr/sbin/sshd', ['-D','-e','-f',serverConfig], { stdio: 'ignore' });
@@ -148,6 +149,13 @@ test('native PTYs forward real loopback traffic through local, remote and dynami
     await assert.rejects(command(address, 'true'), /Permission denied/);
     await command({ ...address, certificateFile }, 'test -z "$SSH_AUTH_SOCK"');
     await command({ ...address, certificateFile, agentForwarding: true }, 'test -S "$SSH_AUTH_SOCK"');
+    const file = program('ssh');
+    const env = { ...process.env };
+    const literal = 'host %h ${HOME} "$HOME" # literal';
+    const withEnvironment = { ...address, certificateFile, environment: [{ name: 'BRCLIO_LITERAL_FIXTURE', value: literal }] };
+    const args = argumentsFor('ssh', withEnvironment, true, { file, env });
+    const delivered = await run(file, ['-F', config, ...args, 'printenv BRCLIO_LITERAL_FIXTURE'], { env, timeout: 5000 });
+    assert.equal(delivered.stdout.trimEnd(), literal);
 
     const echo = net.createServer(socket => { socket.on('error', () => {}); socket.pipe(socket); });
     const echoPort = await listen(echo);

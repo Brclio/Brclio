@@ -91,6 +91,7 @@ jobs:
         run: |
           node scripts/verify-terminal-sync.cjs
           node scripts/verify-terminal-account-switch.cjs
+          node scripts/verify-terminal-shared-vaults.cjs
           node scripts/verify-terminal-local-logs.cjs
       - name: Exercise the graphical file browser with the local SFTP subsystem
         run: node scripts/verify-terminal-sftp.cjs

@@ -3,7 +3,7 @@
 // SFTP v3 packets are length-prefixed binary data on an SSH subsystem.
 // Paths and file bytes never enter a shell or the interactive sftp language.
 const FX = {
-  init: 1, version: 2, open: 3, close: 4, read: 5, write: 6, lstat: 7, fstat: 8,
+  init: 1, version: 2, open: 3, close: 4, read: 5, write: 6, lstat: 7, fstat: 8, setstat: 9,
   opendir: 11, readdir: 12, remove: 13, mkdir: 14, rmdir: 15, realpath: 16, rename: 18,
   status: 101, handle: 102, data: 103, name: 104, attrs: 105,
 };
@@ -30,7 +30,7 @@ function reader(bytes) {
     const flags = uint32();
     const result = {};
     if (flags & 1) result.size = Number(take(8).readBigUInt64BE());
-    if (flags & 2) take(8);
+    if (flags & 2) { result.uid = uint32(); result.gid = uint32(); }
     if (flags & 4) result.mode = uint32();
     if (flags & 8) { uint32(); result.mtime = uint32(); }
     if (flags & 0x80000000) {
@@ -150,6 +150,33 @@ function connectProtocol(child, terminate = () => child.kill()) {
       if (completed) await closing; else await closing.catch(() => {});
     }
   }
+  async function withFile(p, writing, fn) {
+    const fields = writing ? [str(p), u32(2 | 8 | 32), u32(4), u32(0o600)] : [str(p), u32(1), u32(0)];
+    return withHandle(FX.open, fields, async handle => {
+      let offset = 0;
+      if (!writing) {
+        const attrs = (await request(FX.fstat, FX.attrs, [str(handle)])).attrs();
+        if ((attrs.mode & 0o170000) !== 0o100000) throw new Error('请选择普通文件。');
+      }
+      return fn({
+        async read(buffer) {
+          const length = Math.min(buffer.length, BLOCK);
+          const response = await request(FX.read, FX.data, [str(handle), u64(offset), u32(length)], true);
+          if (!response) return { bytesRead: 0 };
+          const data = response.string();
+          if (!data.length || data.length > length) throw new Error('SFTP 文件分块无效。');
+          data.copy(buffer);
+          offset += data.length;
+          return { bytesRead: data.length };
+        },
+        async write(buffer, start, length) {
+          await request(FX.write, FX.status, [str(handle), u64(offset), str(buffer.subarray(start, start + length))]);
+          offset += length;
+          return { bytesWritten: length };
+        },
+      });
+    });
+  }
   return {
     ready, stop,
     async realpath(path) {
@@ -169,45 +196,35 @@ function connectProtocol(child, terminate = () => child.kill()) {
         }
       });
     },
-    async upload(remote, local, progress, assertActive) {
-      return withHandle(FX.open, [str(remote), u32(2 | 8 | 32), u32(4), u32(0o600)], async handle => {
-        let offset = 0;
-        const buffer = Buffer.alloc(BLOCK);
-        for (;;) {
-          assertActive();
-          const { bytesRead } = await local.read(buffer);
-          if (!bytesRead) return;
-          await request(FX.write, FX.status, [str(handle), u64(offset), str(buffer.subarray(0, bytesRead))]);
-          offset += bytesRead;
-          progress(offset);
-        }
-      });
-    },
-    async download(remote, local, progress, assertActive) {
-      return withHandle(FX.open, [str(remote), u32(1), u32(0)], async handle => {
-        let offset = 0;
-        for (;;) {
-          assertActive();
-          const response = await request(FX.read, FX.data, [str(handle), u64(offset), u32(BLOCK)], true);
-          if (!response) return;
-          const data = response.string();
-          if (!data.length || data.length > BLOCK) throw new Error('SFTP 文件分块无效。');
-          let written = 0;
-          while (written < data.length) {
-            const { bytesWritten } = await local.write(data, written, data.length - written);
-            if (!bytesWritten) throw new Error('无法写入本地文件。');
-            written += bytesWritten;
-          }
-          offset += data.length;
-          progress(offset);
-        }
-      });
-    },
+    withFile,
+    upload: (remote, local, progress, assertActive) => withFile(remote, true,
+      sink => copyBytes(local, sink, progress, assertActive)),
+    download: (remote, local, progress, assertActive) => withFile(remote, false,
+      source => copyBytes(source, local, progress, assertActive)),
     stat: async p => (await request(FX.lstat, FX.attrs, [str(p)])).attrs(),
+    chmod: (p, mode) => request(FX.setstat, FX.status, [str(p), u32(4), u32(mode)]),
     mkdir: p => request(FX.mkdir, FX.status, [str(p), u32(0)]),
     remove: (p, directory = false) => request(directory ? FX.rmdir : FX.remove, FX.status, [str(p)]),
     rename: (from, to) => request(FX.rename, FX.status, [str(from), str(to)]),
   };
 }
 
-module.exports = { connectProtocol };
+async function copyBytes(source, sink, progress, assertActive) {
+  const buffer = Buffer.alloc(BLOCK);
+  let total = 0;
+  for (;;) {
+    assertActive();
+    const { bytesRead } = await source.read(buffer);
+    if (!bytesRead) return total;
+    let written = 0;
+    while (written < bytesRead) {
+      assertActive();
+      const { bytesWritten } = await sink.write(buffer, written, bytesRead - written);
+      if (!bytesWritten) throw new Error('无法写入目标文件。');
+      written += bytesWritten;
+    }
+    total += bytesRead;
+    progress(total);
+  }
+}
+module.exports = { connectProtocol, copyBytes };

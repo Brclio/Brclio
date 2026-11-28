@@ -44,3 +44,8 @@
 }
 
 #remote-library .host-files-primary { font-weight: 600; color: var(--blue-dark); border-color: var(--blue); }
+#remote-library .host-group-editor { border-top: 1px solid var(--border); padding-top: 8px; }
+#remote-library .host-group-editor label { display: grid; gap: 3px; margin: 6px 0; }
+#remote-library .host-group-editor p, #remote-library #remote-inherited { color: var(--muted); font-size: 12px; }
+#remote-library #remote-inherited:empty { display: none; }
+#remote-library textarea { resize: vertical; padding: 6px; background: var(--cream); color: inherit; border: 1px solid var(--border); border-radius: 4px; }

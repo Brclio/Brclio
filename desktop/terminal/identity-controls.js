@@ -15,10 +15,11 @@ window.BrclioIdentityControls = (() => {
         <label class="forward-wide">本机身份<select id="identity-list"></select></label>
         <label>身份名称<input id="identity-name" maxlength="64"></label>
         <label>SSH 用户名<input id="identity-user" maxlength="128" autocomplete="off" spellcheck="false"></label>
+        <label class="forward-wide">新密钥类型<select id="identity-algorithm"><option value="ed25519">Ed25519</option><option value="rsa">RSA 4096</option><option value="ecdsa">ECDSA P-521</option><option value="ecdsa-sk">FIDO2 安全密钥 · ECDSA</option><option value="ed25519-sk">FIDO2 安全密钥 · Ed25519</option></select></label>
         <label class="forward-wide">私钥文件路径<input id="identity-path" readonly></label>
       </div>
-      <p class="forward-hint">私钥保存在你选择的位置。生成新密钥时，在 OpenSSH 标签中输入并确认保护口令。</p>
-      <div class="network-actions"><button type="button" data-id-action="choose">选择已有私钥</button><button type="button" data-id-action="generate">生成 Ed25519 密钥</button><button type="button" data-id-action="save">保存身份</button><button type="button" data-id-action="public">查看公钥</button><button type="button" data-id-action="copy" hidden>复制公钥</button><button type="button" data-id-action="remove">移除身份引用</button></div>
+      <p class="forward-hint">私钥保存在你选择的位置。生成新密钥时，在 OpenSSH 标签中输入并确认保护口令。使用 FIDO2 时，请插入支持所选算法的安全密钥，按 OpenSSH 提示操作。</p>
+      <div class="network-actions"><button type="button" data-id-action="choose">选择已有私钥</button><button type="button" data-id-action="generate">生成密钥</button><button type="button" data-id-action="save">保存身份</button><button type="button" data-id-action="public">查看公钥</button><button type="button" data-id-action="copy" hidden>复制公钥</button><button type="button" data-id-action="remove">移除身份引用</button></div>
       <p id="identity-status" role="status"></p><p id="identity-fingerprint"></p>`;
     document.body.append(dialog);
     const field = name => dialog.querySelector('#identity-' + name);
@@ -83,7 +84,7 @@ window.BrclioIdentityControls = (() => {
       const token = version;
       const prototype = window.BrclioIdentities.record({ name: field('name').value, user: field('user').value, path: '/generated' });
       if (bank.all().some(item => item.name === prototype.name) || [...pending.values()].some(item => item.record.name === prototype.name)) throw new Error('请为新身份使用不同的名称。');
-      const target = await api.chooseIdentity('generate');
+      const target = await api.chooseIdentity({ action: 'generate', algorithm: field('algorithm').value });
       if (!target || token !== version) return;
       const record = { ...prototype, path: target.path };
       const pane = newTab('生成密钥 · ' + record.name, { profile: 'ssh-keygen', connection: { token: target.token }, shellIntegration: false });
@@ -119,7 +120,7 @@ window.BrclioIdentityControls = (() => {
       preset.onchange = () => {
         const item = bank.all().find(entry => entry.name === preset.value);
         if (!item) return;
-        for (const [key, value] of [['remote-identityFile', item.path], ['remote-user', item.user]]) {
+        for (const [key, value] of [['remote-user', item.user], ['remote-identityFile', item.path]]) {
           if (!value) continue;
           const input = document.getElementById(key);
           input.value = value;

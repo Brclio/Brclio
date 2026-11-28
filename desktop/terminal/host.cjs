@@ -53,6 +53,15 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   require('./known-hosts.cjs').register({ handle, home: app.getPath('home'), confirm: async (message, detail) =>
     (await dialog.showMessageBox(owner, { type: 'question', message, detail, buttons: ['取消', '移除此记录'],
       defaultId: 0, cancelId: 0, noLink: true })).response === 1 });
+  handle('cloud-inventory', async provider => {
+    const target = view;
+    if (!['aws','digitalocean','azure'].includes(provider)) throw new Error('未知的云服务。');
+    const confirm = await dialog.showMessageBox(owner, { type:'question', message:'从本机已登录的云账号读取主机清单？',
+      detail:'服务：' + provider + '。预览后可选择导入的主机。', buttons:['取消','读取清单'], defaultId:0,cancelId:0,noLink:true });
+    if (confirm.response !== 1 || target !== view) return null;
+    const result = await require('./cloud-inventory.cjs').fetchInventory(provider);
+    return target === view ? result : null;
+  });
   handle('serial-ports', () => require('./device-session.cjs').serialPorts());
   const { syncAccount, localIdentity } = require('./sync-account.cjs');
   const identity = localIdentity(app.getPath('userData'));
@@ -67,6 +76,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
       const user = await localUser();
       return !viewScope?.temporary && user?.id === viewScope?.userId ? user?.id : undefined;
     } });
+  require('./shared-vault-host.cjs').registerSharedVault({handle, accountRequest, localUser, scope: () => viewScope});
   handle('sync-config', async (op, payload) => {
     const targetView = view;
     if (viewScope?.temporary) {

@@ -23,3 +23,8 @@
   .sftp-panes { grid-template-columns: 1fr; }
   .sftp-pane select { height: 110px; }
 }
+.sftp-pane .sftp-bookmarks { width: auto; max-width: 100%; min-height: 0; height: auto; margin: 0; }
+.sftp-edit { flex-wrap: wrap; }
+.sftp-edit label { min-width: 0; }
+.sftp-edit input { max-width: 100%; }
+.sftp-tools button[draggable="true"] { cursor: grab; }

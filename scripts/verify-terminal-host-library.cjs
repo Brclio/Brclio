@@ -21,7 +21,24 @@ async function verifyHostLibrary(terminal) {
   await dialog.locator('#remote-group').fill('工作/开发');
   await dialog.locator('#remote-tags').fill('Build, Test');
   await dialog.locator('#remote-favorite').check();
+  await dialog.locator('#remote-group-editor summary').click();
+  await dialog.locator('#remote-config-path').fill('工作');
+  await dialog.locator('#remote-config-port').fill('2222');
+  await dialog.locator('#remote-config-environment').fill('COLOR=parent');
+  await dialog.locator('#remote-config-save').click();
+  await expect(dialog.locator('#remote-status')).toContainText('已保存分组设置');
+  await dialog.locator('#remote-inherit').check();
+  await expect(dialog.locator('#remote-inherited')).toContainText('2222');
+  await dialog.locator('#remote-advanced summary').click();
+  await dialog.locator('#remote-environment').fill('COLOR=host');
   await dialog.locator('#remote-save').click();
+  const resolved = await terminal.evaluate(() => {
+    const bank = window.BrclioConnection.store(localStorage);
+    return bank.resolve(bank.all().find(item => item.name === '开发主机'));
+  });
+  assert.equal(resolved.port, 2222);
+  assert.deepEqual(resolved.environment, [{ name: 'COLOR', value: 'host' }]);
+  await dialog.locator('#remote-group-editor summary').click();
   await dialog.locator('#remote-view').selectOption('favorite');
   await dialog.locator('#remote-group-filter').selectOption('工作');
   await dialog.locator('#remote-search').fill('test build');

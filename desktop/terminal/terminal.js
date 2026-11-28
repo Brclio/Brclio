@@ -194,7 +194,7 @@
     pane.marks = BrclioCommandMarks.attach(terminal, code => {
       pane.commandExit = code;
       statusBar.refresh(pane);
-    });
+    }, window.BrclioCommandLibrary?.recorder(launch));
     locations.attach(pane);
     pane.disposeTriggers = attachTriggers(pane);
     inspector.attach(pane);
@@ -495,6 +495,7 @@
     for (const control of document.querySelectorAll('button, select')) control.disabled = true;
     return;
   }
+  window.BrclioCommandLibrary.bind(activePane, paneTools.pasteOnly);
   window.BrclioTerminalHistory.bind(activePane, paneTools.pasteOnly);
   const removeData = api.onData(({id, data}) => {
     const pane = panes.get(id);

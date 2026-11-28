@@ -12,8 +12,11 @@ window.BrclioConnectionCenter = { bind({ api, newTab }) {
     forward: () => window.BrclioForwardControls.open(),
     logs: () => window.BrclioLocalLogs.open(),
     trust: () => window.BrclioKnownHosts.open(),
+    commands: () => window.BrclioCommandLibrary.open(),
+    importHosts: () => window.BrclioHostImportDialog.open(),
     identities: () => window.BrclioIdentityControls.open(),
     sync: () => window.BrclioTerminalSync.open(),
+    sharing: () => window.BrclioSharedVaults.open(),
     devices: () => { devices.showModal(); showProtocol(); },
     passwords: () => {
       $('terminal-actions').click();

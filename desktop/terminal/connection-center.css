@@ -15,3 +15,6 @@
 #device-connect { color: var(--blue-dark); background: #ebf2f7; }
 #serial-fields { border: 1px solid var(--border); }
 #device-feedback { color: var(--blue-dark); }
+
+#import-preview { display: grid; gap: 4px; max-height: 30vh; overflow: auto; }
+#import-preview label { overflow-wrap: anywhere; }
