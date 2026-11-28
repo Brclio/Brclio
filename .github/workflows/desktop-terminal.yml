@@ -74,14 +74,6 @@ jobs:
         env:
           HOMEBREW_NO_AUTO_UPDATE: '1'
         run: command -v tmux || brew install tmux
-      - name: Provide tmux inside WSL for Windows control-mode tests
-        if: matrix.platform == 'win'
-        uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
-        with:
-          distribution: Alpine-3.22
-          additional-packages: tmux
-          set-as-default: 'true'
-          use-cache: 'false'
       - run: npm run sync
       - run: node --test desktop/terminal-*.test.cjs
         shell: bash
@@ -96,6 +88,15 @@ jobs:
         env:
           BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
         run: node scripts/verify-terminal.cjs
+      - name: Provide tmux inside WSL for Windows control-mode tests
+        if: matrix.platform == 'win'
+        uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
+        with:
+          distribution: Alpine-3.22
+          wsl-version: '1'
+          additional-packages: tmux
+          set-as-default: 'true'
+          use-cache: 'false'
       - name: Exercise the packaged tmux control-mode workspace
         timeout-minutes: 3
         env:
