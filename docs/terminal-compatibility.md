@@ -87,7 +87,7 @@
 | 环境 | 可验证行为与限制 |
 | --- | --- |
 | macOS zsh | 登录模式加载原有 .zshenv、.zprofile、.zshrc、.zlogin。precmd/preexec 提供命令结束与输出边界。实际 PTY 回归覆盖带单引号的路径、定制 prompt、上一条命令返回 23、下一条命令读到 23 以及退出码 19。 |
-| macOS / Linux Bash | macOS 系统 Bash 3.2 支持提示符导航。Bash 4.4 及以上通过 PS0 补充命令开始边界。两种 Mac 架构与 Ubuntu 的真实 PTY 回归验证了原登录文件及提示符、原有 PROMPT_COMMAND 与下一条命令均收到退出状态 23，Shell 最终以 19 退出。用户启动文件重置这些变量时可能不产生标记。Linux 验收限于该后端测试。 |
+| macOS / Linux Bash | macOS 系统 Bash 3.2 支持提示符导航，并用提示符的命令编号核实用户已提交的可见单行输入。Bash 4.4 及以上通过 PS0 补充命令开始边界。两种 Mac 架构与 Ubuntu 的真实 PTY 回归验证了原登录文件及提示符、原有 PROMPT_COMMAND 与下一条命令均收到退出状态 23，Shell 最终以 19 退出。用户启动文件重置这些变量时可能不产生标记。Linux 验收限于该后端测试。 |
 | Windows PowerShell / PowerShell 7 | 继续加载本机配置。支持时包装现有 prompt 与 PSConsoleHostReadLine。无 PSReadLine 时只标记提示符；执行策略及受限语言模式可能阻止启动集成。Windows x64 原生回归已验证自定义提示、读取器、成功/失败标记及原生命令退出码。完整 ConPTY/PSReadLine 组合需按系统版本实测。 |
 | Windows cmd.exe | 保留原有 PROMPT 并加入提示符首尾标记。缺少可靠的命令执行前后钩子，默认无法自动划定命令输出范围。 |
 | 其他登录 Shell、嵌套 Shell、SSH | 本地会话仍按原 Shell 启动。若相应 Shell 自行发送兼容控制序列，渲染器可处理。fish、tcsh、xonsh 和远端安装不在内置辅助脚本覆盖范围。 |

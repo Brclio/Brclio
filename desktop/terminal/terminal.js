@@ -233,6 +233,7 @@
     selectPane(pane);
     function start(options) {
       pane.launch = options;
+      window.BrclioSftp.attachSession(pane,heading);
       if (pane.state !== 'starting') setState(pane,'starting','正在启动会话…');
       const initial = {id,cols:terminal.cols,rows:terminal.rows,profile:options.profile,shellIntegration:options.shellIntegration};
       if (options.cwd) initial.cwd = options.cwd;
@@ -638,6 +639,7 @@
     if (kind === 'ssh') snippets.startup(startupSnippet, pane);
   });
   const activateConnection = pane => { selectTab(pane.tab); selectPane(pane); };
+  window.BrclioSftp.bindTerminals({panes,newTab,activate:activateConnection});
   window.BrclioForwardControls.bind({ newTab, activate: activateConnection, stop(pane) { activateConnection(pane); closeActive(); } });
   window.BrclioIdentityControls.bind({ newTab, activate: activateConnection, stop(pane) { activateConnection(pane); closeActive(); } });
   window.BrclioTerminalSync.bind(api);

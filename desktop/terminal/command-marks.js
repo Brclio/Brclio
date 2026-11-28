@@ -8,6 +8,7 @@
     let command;
     let navigated;
     let navigationTop;
+    let legacySubmission;
     const normal = () => terminal.buffer.active.type === 'normal';
 
     function forget(record) {
@@ -115,6 +116,7 @@
         command.inputStart?.mark?.dispose();
         command.inputStart = commandHistory?.enabled() || commandHistory?.suggestions?.() ? position() : undefined;
       } else if (code === 'C') {
+        legacySubmission = undefined;
         if (!command) command = mark('prompt');
         if (command && !command.start) {
           command.start = position();
@@ -129,6 +131,7 @@
           command.inputStart = undefined;
         }
       } else if (code === 'D' && command) {
+        legacySubmission = undefined;
         if (command.start) {
           command.end = position();
           command = undefined;
@@ -140,6 +143,21 @@
     const handlers = [
       terminal.parser.registerOscHandler(133, onCommand),
       terminal.parser.registerOscHandler(1337, data => {
+        if (data === 'BrclioBashContinuation') {
+          if (legacySubmission) legacySubmission.text = undefined;
+          return true;
+        }
+        const count = /^BrclioBashCommand=(\d{1,10})$/.exec(data);
+        if (count) {
+          if (normal() && command && !command.start) {
+            command.bashNumber = Number(count[1]);
+            if (legacySubmission?.text && command.bashNumber === legacySubmission.number + 1 && commandHistory?.enabled()) {
+              commandHistory.add(legacySubmission.text);
+            }
+          }
+          legacySubmission = undefined;
+          return true;
+        }
         if (data !== 'SetMark') return false;
         mark('manual');
         return true;
@@ -192,7 +210,13 @@
       next: () => navigate(false),
       selectOutput,
       acceptVisibleInput() {
-        if (command && commandHistory?.enabled()) command.accepted = inputPrefix();
+        if (!command || !commandHistory?.enabled()) return;
+        if (command.bashNumber !== undefined) {
+          // A running program can ask for input. Keep the first echoed command
+          // and never sample a later answer. The secondary shell prompt marks
+          // multiline submissions ambiguous and discards that candidate.
+          if (!legacySubmission) legacySubmission = {number:command.bashNumber,text:inputPrefix()};
+        } else command.accepted = inputPrefix();
       },
       inputPrefix,
       dispose() {

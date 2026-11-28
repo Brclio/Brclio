@@ -100,6 +100,7 @@ async function verifyTransferControls() {
     await fs.mkdir(path.join(remote, '目录', 'empty'), { recursive: true });
     await fs.writeFile(path.join(remote, '目录', '.hidden'), 'dot');
     await fs.writeFile(path.join(local, '上传测试.txt'), 'Brclio SFTP 浏览器');
+    for (const name of ['batch-a.txt','batch-b.txt']) await fs.writeFile(path.join(local,name),name);
     await fs.writeFile(path.join(root, '桌面拖入.txt'), 'dropped');
     chrome = await chromium.launch(chromeOptions);
     const page = await chrome.newPage();
@@ -119,20 +120,33 @@ async function verifyTransferControls() {
     await page.goto(require('node:url').pathToFileURL(__filename).href);
     await page.evaluate(() => {
       document.body.replaceChildren();
-      window.brclioTerminal = { sftp: window.sftpFixture, sftpDrop: (id,side,file) => window.nativeDropFixture(id,side,file.name) };
+      window.brclioTerminal = { sftp: window.sftpFixture, copy: value=>{window.copiedPath=value;},
+        sftpDrop: (id,side,file) => window.nativeDropFixture(id,side,file.name) };
     });
-    for (const file of ['connection.js', 'sync-partitions.js', 'sftp-browser.js']) {
+    for (const file of ['connection.js', 'sync-partitions.js', 'sftp-navigation.js', 'sftp-browser.js']) {
       await page.addScriptTag({ path: path.join(__dirname, '../desktop/terminal', file) });
     }
     await page.addStyleTag({ path: path.join(__dirname, '../desktop/terminal/sftp-browser.css') });
     await page.evaluate(() => {
       window.BrclioTerminalPartitions.activate('fixture-owner');
-      window.BrclioSftp.open({ host: 'fixture' });
+      const pane={launch:{profile:'ssh',connection:{host:'fixture'}},state:'running',stateLabel:document.createElement('span')};
+      const heading=document.createElement('div');document.body.append(heading);
+      window.BrclioSftp.bindTerminals({panes:new Map([['source',pane]]),activate:p=>{window.returnedToSource=p===pane;},
+        newTab:(_,options)=>{window.createdSsh=options.connection;}});
+      window.BrclioSftp.attachSession(pane,heading);
     });
+    await page.getByRole('button',{name:'打开同主机 SFTP 文件'}).click();
     const dialog = page.getByRole('dialog', { name: 'SFTP 文件管理' });
     const localList = dialog.getByRole('listbox', { name: '本地文件列表' });
     const remoteList = dialog.getByRole('listbox', { name: '远端文件列表' });
     await dialog.getByRole('button', { name: '选择目录' }).click();
+    await expect(localList.getByRole('option')).toHaveCount(3);
+    await localList.press(process.platform === 'darwin' ? 'Meta+a' : 'Control+a');
+    assert.equal(await localList.evaluate(list => list.selectedOptions.length),3);
+    await localList.selectOption(['batch-a.txt','batch-b.txt']);
+    await dialog.getByRole('button', { name: '上传到远端' }).click();
+    await expect(dialog.getByRole('status')).toContainText('上传完成');
+    for (const name of ['batch-a.txt','batch-b.txt']) assert.equal(await fs.readFile(path.join(remote,name),'utf8'),name);
     await localList.selectOption('上传测试.txt');
     await dialog.getByRole('button', { name: '上传到远端' }).click();
     await expect(dialog.getByRole('status')).toContainText('上传完成');
@@ -145,7 +159,61 @@ async function verifyTransferControls() {
     await expect(dialog.getByRole('status')).toContainText('下载完成');
     assert.equal(await fs.readFile(path.join(local, '下载测试.txt'), 'utf8'), 'Brclio SFTP 浏览器');
     const left = dialog.locator('.sftp-pane').first(), right = dialog.locator('.sftp-pane').last();
+    await fs.mkdir(path.join(local, '路径甲'));
+    await fs.writeFile(path.join(local, '路径甲', 'Note.TXT'), 'navigation');
+    await left.getByRole('button',{name:'刷新'}).click();
+    const back = left.getByRole('button', { name:'后退', exact:true });
+    const forward = left.getByRole('button', { name:'前进', exact:true });
+    const filter = left.getByRole('searchbox', { name:'筛选文件名' });
+    await expect(back).toBeDisabled();
+    await localList.selectOption(['batch-a.txt','batch-b.txt']);
+    await filter.fill('BATCH-B');
+    await expect(localList).toHaveValues(['batch-b.txt']);
+    await filter.fill('');
+    await expect(localList).toHaveValues(['batch-b.txt']);
+    await localList.selectOption('路径甲');
+    await left.getByRole('button', {name:'打开目录'}).click();
+    await expect(localList.locator('option')).toHaveCount(1);
+    await filter.fill('nOtE');
+    await expect(localList.getByRole('option',{name:/Note.TXT/})).toBeVisible();
+    await filter.fill('未匹配');
+    await expect(left.getByText('没有匹配的文件或目录')).toBeVisible();
+    await expect(right.getByRole('option',{name:/下载测试/})).toBeVisible();
+    await filter.fill('');
+    await back.click();
+    await expect(localList.getByRole('option',{name:/上传测试/})).toBeVisible();
+    await left.getByRole('button',{name:'刷新'}).click();
+    await forward.click();
+    await expect(localList.getByRole('option',{name:/Note.TXT/})).toBeVisible();
+    await back.click();
+    await expect(forward).toBeEnabled();
+    await fs.rename(path.join(local,'路径甲'), path.join(local,'路径乙'));
+    await forward.click();
+    await expect(dialog.getByRole('status')).toContainText(/ENOENT|cannot find|找不到/i);
+    await expect(forward).toBeEnabled();
+    await expect(localList.getByRole('option',{name:/上传测试/})).toBeVisible();
+    await left.getByRole('button',{name:'刷新'}).click();
+    await localList.selectOption('路径乙');
+    await left.getByRole('button',{name:'打开目录'}).click();
+    await expect(forward).toBeDisabled();
+    await filter.fill('note');
     await remoteList.selectOption('下载测试.txt');
+    await expect(right.locator('.sftp-properties')).toBeVisible();
+    await expect(right.locator('.sftp-properties dd').first()).toContainText(/\d/);
+    await expect(right.locator('.sftp-properties dd').last()).toHaveText(/^[0-7]{4}$/);
+    await right.getByRole('button',{name:'复制完整路径'}).click();
+    await expect(dialog.getByRole('status')).toHaveText('已复制完整路径。');
+    assert.equal(await page.evaluate(()=>window.copiedPath),path.posix.join(await right.locator('.sftp-path').innerText(),'下载测试.txt'));
+    if (process.platform!=='win32') {
+      await right.getByRole('button',{name:'编辑权限'}).click();
+      await dialog.getByLabel('读写执行权限（八进制）').fill('640');
+      await dialog.getByRole('button',{name:'保存权限'}).click();
+      await expect.poll(async()=>(await fs.stat(path.join(remote,'下载测试.txt'))).mode & 0o777).toBe(0o640);
+    }
+    await right.getByRole('button',{name:'同主机 SSH 终端'}).click();
+    await expect(dialog).toBeHidden();assert.equal(await page.evaluate(()=>window.returnedToSource),true);
+    await page.getByRole('button',{name:'打开同主机 SFTP 文件'}).click();
+    await expect(remoteList).toHaveValue('下载测试.txt');
     await right.getByRole('button', { name: '选择编辑器…' }).click();
     await expect(dialog.getByRole('button', { name: '上传已保存的修改' })).toBeVisible();
     await fs.writeFile(editingFile, '新内容');
@@ -163,6 +231,12 @@ async function verifyTransferControls() {
     await left.getByRole('button', { name: '切换位置' }).click();
     await dialog.getByRole('textbox', { name: 'SFTP 地址' }).fill('second');
     await dialog.getByRole('button', { name: '连接', exact: true }).click();
+    await expect(left.getByRole('heading')).toHaveText('second');
+    await expect(filter).toHaveValue('');
+    await expect(back).toBeDisabled();
+    await left.getByRole('button',{name:'同主机 SSH 终端'}).click();
+    await expect(dialog).toBeHidden();assert.equal(await page.evaluate(()=>window.createdSsh?.host),'second');
+    await page.getByRole('button',{name:'打开同主机 SFTP 文件'}).click();
     await expect(left.getByRole('heading')).toHaveText('second');
     await page.evaluate(() => {
       const input = document.createElement('input'); input.type = 'file'; input.id = 'os-drop-fixture'; document.body.append(input);
@@ -192,6 +266,10 @@ async function verifyTransferControls() {
     await left.getByRole('button', { name: '收藏当前目录' }).click();
     await expect(left.getByRole('button', { name: '取消收藏' })).toBeVisible();
     await left.getByRole('button', { name: '上一级' }).click();
+    await back.click();
+    await expect(localList.getByRole('option',{name:/hidden/})).toHaveCount(1);
+    await forward.click();
+    await expect(localList.getByRole('option',{name:/桌面拖入/})).toHaveCount(1);
     const bookmark = left.getByRole('combobox', { name: '收藏的目录' });
     await bookmark.selectOption({ index: 1 });
     await expect(localList.getByRole('option', { name: /hidden/ })).toHaveCount(1);

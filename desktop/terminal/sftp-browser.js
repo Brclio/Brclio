@@ -1,7 +1,7 @@
 'use strict';
 
 window.BrclioSftp = (() => {
-  let active, closing;
+  let active, closing, parked, terminals;
   const node = (tag, text, props = {}) => Object.assign(document.createElement(tag), { textContent: text }, props);
   function button(text, action) {
     const b = node('button', text, { type: 'button' });
@@ -14,7 +14,28 @@ window.BrclioSftp = (() => {
     if (value < 1048576) return (value / 1024).toFixed(1) + ' KiB';
     return (value / 1048576).toFixed(1) + ' MiB';
   }
-  async function open(value) {
+  const route = target => JSON.stringify(window.BrclioConnection.endpoint(target));
+  function attachSession(pane,heading) {
+    if (pane.launch?.profile !== 'ssh' || !pane.launch.connection) return;
+    const owner=window.BrclioTerminalPartitions?.owner;
+    pane.sftpOwner=owner;
+    const files=button('SFTP 文件',()=>{
+      if (owner===window.BrclioTerminalPartitions?.owner) void open(pane.launch.connection,pane).catch(e=>{pane.stateLabel.textContent=e.message;});
+    });
+    files.setAttribute('aria-label','打开同主机 SFTP 文件');
+    heading.append(files);
+  }
+  async function open(value,sourcePane) {
+    if (parked) {
+      const session=parked;
+      await session.ready;
+      if (parked===session) {
+        if (session.matches(value)) {
+          parked=null; active=session.dialog; active.showModal(); return;
+        }
+        session.dispose();
+      }
+    }
     if (active && !active.open) {
       const previous = active;
       await new Promise(resolve => previous.addEventListener('close',resolve,{once:true}));
@@ -67,10 +88,24 @@ window.BrclioSftp = (() => {
     let dragFrom = null;
     let draftPoll = null;
     const library = window.BrclioConnection;
+    const navigation = window.BrclioSftpNavigation;
     const partition = window.BrclioTerminalPartitions;
     const owner = partition?.owner;
     const bookmarksKey = 'brclio.terminal.sftp-bookmarks.v1';
     const sideOf = side => side === 'local' ? 'remote' : 'local';
+    function switchToShell(side) {
+      if (busy || editing || owner!==partition?.owner) return;
+      const target=panes[side].target;
+      const matchesPane=pane=>pane?.sftpOwner===owner && pane.state==='running' && pane.launch.profile==='ssh' &&
+        route(pane.launch.connection)===route(target);
+      const existing=matchesPane(sourcePane) ? sourcePane : Array.from(terminals.panes.values()).find(matchesPane);
+      const ready=new Promise(resolve=>dialog.addEventListener('close',resolve,{once:true}));
+      parked={dialog,ready,dispose,matches:value=>owner===partition?.owner && (!value ||
+        Object.values(panes).some(pane=>pane.target && route(pane.target)===route(value)))};
+      dialog.close();
+      if (existing) terminals.activate(existing);
+      else terminals.newTab('SSH · '+library.format(target),{profile:'ssh',connection:target,shellIntegration:false});
+    }
     function bookmarkStorage() {
       if (partition && owner !== partition.owner) throw new Error('账号已更改，请重新打开 SFTP。');
       return partition?.storage || localStorage;
@@ -165,12 +200,25 @@ window.BrclioSftp = (() => {
     }
     function refreshControls() {
       for (const [side, pane] of Object.entries(panes)) {
-        const entry = pane.data?.entries.find(item => item.name === pane.selected);
+        const selected = Array.from(pane.select.selectedOptions);
+        const entry = selected.length === 1 ? pane.data?.entries.find(item => item.name === pane.selected) : null;
         pane.select.disabled = busy || !pane.data;
+        pane.ssh.hidden = !terminals || !pane.target;
+        pane.ssh.disabled = busy || !pane.data || !!editing;
+        pane.copyPath.disabled = busy || !entry;
+        pane.permissions.hidden = !pane.target;
+        pane.permissions.disabled = busy || !Number.isInteger(entry?.mode) || !['file','directory'].includes(entry?.kind);
         pane.choose && (pane.choose.disabled = busy || !connected);
         pane.up.disabled = busy || !pane.data?.parent;
+        pane.back.disabled = busy || !pane.history.target(-1);
+        pane.forward.disabled = busy || !pane.history.target(1);
+        pane.filter.disabled = busy || !pane.data;
+        const properties = navigation.properties(entry);
+        pane.modified.textContent = properties.modified || '—';
+        pane.mode.textContent = properties.mode || '—';
+        pane.properties.hidden = !properties.modified && !properties.mode;
         pane.refresh.disabled = busy || !pane.data;
-        pane.transfer.disabled = busy || !['file', 'directory'].includes(entry?.kind) || !panes[sideOf(side)]?.data;
+        pane.transfer.disabled = busy || !selected.length || selected.some(option => !['file','directory'].includes(option.dataset.kind)) || !panes[sideOf(side)]?.data;
         pane.enter.disabled = busy || !['directory', 'link'].includes(entry?.kind);
         pane.switch.disabled = busy || !connected;
         pane.goto.disabled = pane.star.disabled = busy || !pane.data;
@@ -192,23 +240,29 @@ window.BrclioSftp = (() => {
       close.disabled = transferInProgress || !!draftPoll;
       editors.disabled = busy || !connected || !!editing;
     }
-    function paint(side, data) {
+    function paint(side, data, step = 0) {
       if (!data) return;
       const pane = panes[side];
-      const chosen = pane.data?.dir === data.dir ? pane.selected : '';
+      if (!pane.data) {
+        pane.history = navigation.history();
+        pane.filter.value = '';
+      }
+      pane.history.visit(data.dir, step);
+      const chosen = new Set(pane.data?.dir === data.dir ? Array.from(pane.select.selectedOptions, option => option.value) : []);
       pane.data = data;
       pane.path.textContent = data.dir;
       pane.path.title = data.dir;
-      const items = data.entries.filter(item => pane.showHidden || !item.name.startsWith('.')).map(item => {
+      const items = navigation.filter(data.entries, pane.filter.value, pane.showHidden).map(item => {
         const label = item.kind === 'directory' ? '目录' : item.kind === 'link' ? '链接' : item.kind === 'file' ? '文件' : '其他';
         const option = new Option(label + '　' + item.name + (item.kind === 'file' && item.size != null ? '　' + size(item.size) : ''), item.name);
+        option.dataset.kind = item.kind;
+        option.selected = chosen.has(item.name);
         return option;
       });
       pane.select.replaceChildren(...items);
-      pane.select.value = chosen || '';
       pane.selected = pane.select.value;
       pane.empty.hidden = !!items.length;
-      pane.empty.textContent = data.entries.length ? '仅包含隐藏项目' : '此目录为空';
+      pane.empty.textContent = !data.entries.length ? '此目录为空' : pane.filter.value ? '没有匹配的文件或目录' : '仅包含隐藏项目';
     }
     async function run(fn) {
       if (busy || editing) return;
@@ -224,6 +278,28 @@ window.BrclioSftp = (() => {
     }
     function listOp(side, op, extra = {}) {
       return run(async () => { paint(side, await call(op, { side, ...extra })); });
+    }
+    function followHistory(side, step) {
+      return run(async () => {
+        const path = panes[side].history.target(step);
+        if (path !== null) paint(side, await call('goto', { side, path }), step);
+      });
+    }
+    function editPermissions(side) {
+      if (editing || busy) return;
+      const pane=panes[side], name=pane.selected, item=pane.data.entries.find(entry=>entry.name===name);
+      if (!item || !Number.isInteger(item.mode)) return;
+      const form=editing=node('form','',{className:'sftp-edit'}), label=node('label','读写执行权限（八进制）');
+      const input=node('input','',{required:true,pattern:'[0-7]{3}',maxLength:3,value:(item.mode & 0o777).toString(8).padStart(3,'0')});
+      const dismiss=()=>{form.remove();editing=null;main.inert=false;pane.select.focus();};
+      label.append(input);
+      form.append(node('span',name),label,button('取消',dismiss),node('button','保存权限',{type:'submit'}));
+      form.onsubmit=event=>{
+        event.preventDefault();
+        const mode=Number.parseInt(input.value,8);
+        dismiss();void listOp(side,'permissions',{name,mode,previous:item.mode});
+      };
+      main.inert=true;dialog.insertBefore(form,controls);input.focus();input.select();
     }
     function edit(side, op) {
       if (editing || busy) return;
@@ -321,20 +397,24 @@ window.BrclioSftp = (() => {
       const box = node('section', '', { className: 'sftp-pane' });
       const title = node('h3', local ? '本机' : '远端');
       const path = node('p', local || !target ? '尚未选择文件夹' : '正在连接…', { className: 'sftp-path' });
-      const select = node('select', '', { size: 12, ariaLabel: local ? '本地文件列表' : '远端文件列表' });
+      const select = node('select', '', { size: 12, multiple:true, ariaLabel: local ? '本地文件列表' : '远端文件列表' });
       const empty = node('small', '', { hidden: true });
       const pane = panes[side] = { title, path, select, empty, data: null, selected: '', showHidden: false,
         target: local ? null : target, scope: local || !target ? '' : remoteScope(target) };
       const toolbar = node('div', '', { className: 'sftp-tools' });
+      pane.history = navigation.history();
       if (local) {
         pane.choose = button('选择目录', () => run(() => chooseLocal(side)));
         toolbar.append(pane.choose);
       }
       pane.switch = button('切换位置', () => editLocation(side, 'endpoint'));
-      toolbar.append(pane.switch);
+      pane.ssh = button('同主机 SSH 终端', () => switchToShell(side));
+      toolbar.append(pane.switch,pane.ssh);
       pane.up = button('上一级', () => listOp(side, 'parent'));
       pane.refresh = button('刷新', () => listOp(side, 'list'));
-      toolbar.append(pane.up, pane.refresh);
+      pane.back = button('后退', () => followHistory(side, -1));
+      pane.forward = button('前进', () => followHistory(side, 1));
+      toolbar.append(pane.back, pane.forward, pane.up, pane.refresh);
       pane.enter = button('打开目录', () => listOp(side, 'enter', { name: pane.selected }));
       pane.goto = button('前往路径', () => editLocation(side, 'path'));
       pane.hiddenToggle = button('显示隐藏项目', () => {
@@ -350,19 +430,51 @@ window.BrclioSftp = (() => {
         if (pane.bookmarks.value) void listOp(side, 'goto', { path: pane.bookmarks.value });
       };
       toolbar.append(pane.enter, pane.goto, pane.hiddenToggle, pane.star, pane.bookmarks);
+      pane.filter = node('input', '', { type: 'search', className: 'sftp-filter', placeholder: '筛选文件名', ariaLabel: '筛选文件名' });
+      pane.filter.oninput = () => { paint(side, pane.data); refreshControls(); };
+      pane.properties = node('dl', '', { className: 'sftp-properties', hidden: true });
+      pane.modified = node('dd', '');
+      pane.mode = node('dd', '');
+      pane.properties.append(node('dt', '修改时间'), pane.modified, node('dt', '权限'), pane.mode);
       select.onchange = () => { pane.selected = select.value; refreshControls(); };
       select.ondblclick = () => { if (!pane.enter.disabled) pane.enter.click(); else if (pane.target && !pane.editFile.disabled) pane.editFile.click(); };
       select.onkeydown = e => {
+        if (e.key.toLowerCase() === 'a' && (e.metaKey || e.ctrlKey) && !e.altKey) {
+          e.preventDefault();
+          for (const option of select.options) option.selected = true;
+          select.onchange();
+        }
         if (e.key === 'Enter' && !pane.enter.disabled) { e.preventDefault(); pane.enter.click(); }
       };
       const actions = node('div', '', { className: 'sftp-tools' });
       pane.transfer = button(local ? '上传到远端 →' : '← 下载到本机', () => {
         const label = !pane.target && panes[sideOf(side)].target ? '上传' : pane.target && !panes[sideOf(side)].target ? '下载' : '复制';
-        return transfer(label, async () => paint(sideOf(side), await call('transfer', { side, name: pane.selected })));
+        const names = Array.from(select.selectedOptions,option => option.value);
+        return transfer(label, async () => {
+          const dest = panes[sideOf(side)];
+          const occupied = new Set(dest.data.entries.map(item => item.name));
+          const conflict = names.find(name => occupied.has(name));
+          if (conflict) throw new Error('目标目录已存在同名项目：' + conflict);
+          let completed = 0;
+          try {
+            for (const name of names) {
+              if (canceled) throw new Error('已取消剩余项目。');
+              paint(sideOf(side), await call('transfer',{side,name}));
+              completed++;
+            }
+          } catch (error) {
+            if (!completed) throw error;
+            throw new Error('已' + label + ' ' + completed + '/' + names.length + ' 项。' + error.message);
+          }
+        });
       });
       pane.editFile = button('编辑文件', () => editFile(side, false));
       pane.editWith = button('选择编辑器…', () => editFile(side, true));
-      actions.append(pane.transfer, pane.editFile, pane.editWith);
+      pane.permissions = button('编辑权限', () => editPermissions(side));
+      pane.copyPath = button('复制完整路径', () => run(async () => {
+        const path=await call('path',{side,name:pane.selected});await api.copy(path);return '已复制完整路径。';
+      }));
+      actions.append(pane.transfer, pane.editFile, pane.editWith, pane.permissions, pane.copyPath);
       for (const source of [select, pane.transfer]) {
         source.ondragstart = event => {
           if (pane.transfer.disabled) { event.preventDefault(); return; }
@@ -395,12 +507,16 @@ window.BrclioSftp = (() => {
       select.oncontextmenu = event => {
         event.preventDefault();
         if (busy || editing) return;
-        if (event.target.tagName === 'OPTION') { select.value = event.target.value; pane.selected = select.value; refreshControls(); }
+        if (event.target.tagName === 'OPTION' && !event.target.selected) {
+          select.value = event.target.value;
+          pane.selected = select.value;
+          refreshControls();
+        }
         if (!pane.selected) return;
         const menu = node('div', '', { className: 'sftp-tools', role: 'menu' });
         const dismiss = () => menu.remove();
         for (const [label, control] of [['复制到目标目录', pane.transfer], ['打开目录', pane.enter], ['编辑文件', pane.editFile],
-          ['选择编辑器…', pane.editWith], ['重命名', pane.rename], ['删除', pane.remove]]) {
+          ['选择编辑器…', pane.editWith], ['复制完整路径',pane.copyPath], ['编辑权限',pane.permissions], ['重命名', pane.rename], ['删除', pane.remove]]) {
           if (!control || control.disabled || control.hidden) continue;
           const cmd = button(label, () => { dismiss(); control.click(); });
           cmd.setAttribute('role', 'menuitem'); menu.append(cmd);
@@ -416,20 +532,31 @@ window.BrclioSftp = (() => {
           actions.append(pane[op]);
         }
       }
-      box.append(title, path, toolbar, select, empty, actions);
+      box.append(title, path, toolbar, pane.filter, select, empty, pane.properties, actions);
       main.append(box);
     }
     makePane('local');
     makePane('remote');
     document.body.append(dialog);
     dialog.addEventListener('cancel', event => { if (transferInProgress || draftPoll) event.preventDefault(); });
-    dialog.addEventListener('close', () => {
-      active = null;
+    let disposed=false;
+    function dispose() {
+      if (disposed) return;
+      disposed=true;
+      if (active===dialog) active=null;
+      if (parked?.dialog===dialog) parked=null;
+      window.removeEventListener('brclio-terminal-account-changed',accountChanged);
       clearInterval(draftPoll);
       clearInterval(progressTimer);
       closing = call('close').catch(() => {});
       dialog.remove();
-    }, { once: true });
+    }
+    function accountChanged() { if (dialog.open) dialog.close(); else dispose(); }
+    window.addEventListener('brclio-terminal-account-changed',accountChanged);
+    dialog.addEventListener('close', () => {
+      if (parked?.dialog===dialog) { active=null; return; }
+      dispose();
+    });
     dialog.showModal();
     void run(async () => {
       if (!target) {
@@ -443,5 +570,5 @@ window.BrclioSftp = (() => {
       return '已连接。可选择本机目录，或切换位置连接另一台主机。';
     });
   }
-  return { open };
+  return { open,attachSession,bindTerminals(context) { terminals=context; } };
 })();

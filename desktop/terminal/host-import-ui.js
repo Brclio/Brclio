@@ -51,7 +51,7 @@ window.BrclioHostImportDialog = (() => {
         const label = document.createElement('label'), checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.disabled = existing.has(item.name);
-        checkbox.checked = !checkbox.disabled && !putty;
+        checkbox.checked = !checkbox.disabled && !putty && format !== 'ansible';
         if (checkbox.checked) selected.set(item.name,item);
         if (checkbox.disabled) duplicates++;
         checkbox.onchange = () => {
@@ -73,7 +73,7 @@ window.BrclioHostImportDialog = (() => {
     dialog.setAttribute('aria-labelledby','import-title');
     dialog.innerHTML = `
       <div class="dialog-head"><h2 id="import-title">导入主机</h2><button id="import-close" type="button">关闭</button></div>
-      <div class="forward-grid"><label>来源<select id="import-format"><option value="openssh">OpenSSH config</option><option value="csv">CSV 主机表</option><option value="putty">PuTTY 注册表导出 (.reg)</option><option value="securecrt">SecureCRT 设置 XML / 会话 INI</option><option value="mobaxterm">MobaXterm 书签 (.mxtsessions / .moba / INI)</option><option value="aws">AWS EC2</option><option value="azure">Microsoft Azure</option><option value="digitalocean">DigitalOcean</option></select></label>
+      <div class="forward-grid"><label>来源<select id="import-format"><option value="openssh">OpenSSH config</option><option value="csv">CSV 主机表</option><option value="ansible">Ansible inventory JSON</option><option value="putty">PuTTY 注册表导出 (.reg)</option><option value="securecrt">SecureCRT 设置 XML / 会话 INI</option><option value="mobaxterm">MobaXterm 书签 (.mxtsessions / .moba / INI)</option><option value="aws">AWS EC2</option><option value="azure">Microsoft Azure</option><option value="digitalocean">DigitalOcean</option></select></label>
       <label id="import-file-label">配置文件<input id="import-file" type="file"></label><button type="button" id="import-cloud" hidden>读取当前云账号清单</button></div>
       <p class="forward-hint">选中的连接资料将加入当前主机库。已开启账号同步的主机会随个人配置同步。密码和私钥文件内容不参与导入。</p>
       <div id="import-preview"></div><p id="import-status" role="status"></p>

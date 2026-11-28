@@ -28,3 +28,7 @@
 .sftp-edit label { min-width: 0; }
 .sftp-edit input { max-width: 100%; }
 .sftp-tools button[draggable="true"] { cursor: grab; }
+.sftp-pane .sftp-filter { box-sizing: border-box; width: 100%; margin-top: 8px; }
+.sftp-properties { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; margin: 0 0 8px; font-size: 12px; }
+.sftp-properties dt { color: var(--muted); }
+.sftp-properties dd { grid-row: 2; margin: 0; font-variant-numeric: tabular-nums; }

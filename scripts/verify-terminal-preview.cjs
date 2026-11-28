@@ -15,6 +15,32 @@ async function verify(executablePath) {
     const home = await app.firstWindow();
     await home.waitForURL('file://**/web/index.html',{timeout:60000});
     await expect(home.locator('#view-terminal')).toBeVisible({timeout:60000});
+    const homeWindow = await app.browserWindow(home);
+    await homeWindow.evaluate(win => win.setContentSize(1220,850));
+    const footer = home.locator('.platform-status');
+    await expect(footer).toBeInViewport({ratio:1});
+    await expect.poll(() => footer.evaluate(row =>
+      Math.abs(innerHeight-row.getBoundingClientRect().bottom-parseFloat(getComputedStyle(row.closest('.app-sidebar')).paddingBottom))
+    )).toBeLessThan(0.5);
+    const terminalPage = () => app.windows().find(page => page.url().endsWith('/desktop/terminal/index.html'));
+    await expect.poll(() => Boolean(terminalPage()),{timeout:30000}).toBe(true);
+    const terminal = terminalPage(), pane = terminal.locator('.pane.active:visible');
+    const windowCount = () => app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().length);
+    await expect.poll(windowCount).toBe(1);
+    await expect(pane).toHaveAttribute('data-state','running',{timeout:20000});
+    const windows = process.platform === 'win32';
+    await expect(pane.locator('.xterm-rows')).toContainText(windows ? /PS [^>]*>/ : /[%#$]/,{timeout:20000});
+    const session = await pane.getAttribute('data-id');
+    await pane.locator('textarea').focus();
+    await terminal.keyboard.type(windows ? "[Console]::WriteLine(('PREVIEW-' + 'READY'))" : "printf 'PREVIEW-%s\\n' READY");
+    await terminal.keyboard.press('Enter');
+    await expect(pane.locator('.xterm-rows')).toContainText('PREVIEW-READY');
+    await terminal.locator('#presentation').click();
+    await expect.poll(windowCount).toBe(2);
+    await terminal.locator('#presentation').click();
+    await expect.poll(windowCount).toBe(1);
+    await expect(pane).toHaveAttribute('data-id',session);
+    await expect(pane.locator('.xterm-rows')).toContainText('PREVIEW-READY');
     const result = await app.evaluate(({app,globalShortcut}) => ({
       title:app.getName(),data:app.getPath('userData'),hotkey:globalShortcut.isRegistered('Alt+P'),
     }));

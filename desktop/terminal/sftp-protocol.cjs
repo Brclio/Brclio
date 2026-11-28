@@ -202,6 +202,8 @@ function connectProtocol(child, terminate = () => child.kill()) {
     download: (remote, local, progress, assertActive) => withFile(remote, false,
       source => copyBytes(source, local, progress, assertActive)),
     stat: async p => (await request(FX.lstat, FX.attrs, [str(p)])).attrs(),
+    // The extension applies attributes to the final path component without following symlinks.
+    chmodNoFollow: (p, mode) => request(200, FX.status, [str('lsetstat@openssh.com'), str(p), u32(4), u32(mode)]),
     chmod: (p, mode) => request(FX.setstat, FX.status, [str(p), u32(4), u32(mode)]),
     mkdir: p => request(FX.mkdir, FX.status, [str(p), u32(0)]),
     remove: (p, directory = false) => request(directory ? FX.rmdir : FX.remove, FX.status, [str(p)]),

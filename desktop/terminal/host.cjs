@@ -161,7 +161,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     clipboard.writeText(text);
   });
   handle('paste', () => clipboard.readText());
-  handle('remote-kex', () => require('./post-quantum.cjs').capabilities(require('./remote-launch.cjs').program('ssh')));
+  handle('remote-kex', () => require('./post-quantum.cjs').installedCapabilities());
   handle('remote-clients', () => {
     const { program } = require('./remote-launch.cjs');
     return { ssh: Boolean(program('ssh')), sftp: Boolean(program('sftp')) };

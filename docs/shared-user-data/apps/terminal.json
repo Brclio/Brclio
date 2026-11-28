@@ -25,5 +25,38 @@
     "sync": "opt-in per account and device",
     "hostFields": ["name", "host", "port", "user", "group", "tags", "favorite", "jump"],
     "forwardFields": ["name", "type", "connection", "listenHost", "listenPort", "destinationHost", "destinationPort"]
+  },
+  "personalSnippets": {
+    "path": "users/{userId}/apps/terminal-snippets/data.json",
+    "route": "/api/account/apps/terminal/snippets",
+    "methods": ["GET", "PUT"],
+    "recordFields": ["version", "revision", "updatedAt", "data"],
+    "itemFields": ["id", "kind", "name", "package", "template", "text"],
+    "maximumItems": 200,
+    "maximumDataBytes": 114688,
+    "sync": "separate opt-in per account and device"
+  },
+  "sharedVaults": {
+    "route": "/api/account/apps/terminal/shared-vaults",
+    "method": "POST",
+    "userIndex": "users/{userId}/apps/terminal-vault-list/data.json",
+    "vault": "users/{ownerId}/apps/terminal-vault-{vaultIdWithoutHyphens}/data.json",
+    "grants": ["owner", "editor", "reader"],
+    "invitationStates": ["invited", "active"],
+    "maximumMembersInAdditionToOwner": 8,
+    "shareableHostFields": ["name", "host", "port", "user"],
+    "ownerManagementAuditLimit": 64
+  },
+  "logCopies": {
+    "route": "/api/account/apps/terminal/log-copies",
+    "method": "POST",
+    "personalIndex": "users/{userId}/apps/tlog-personal/data.json",
+    "sharedIndex": "users/{ownerId}/apps/tlog-index-{vaultIdWithoutHyphens}/data.json",
+    "copy": "users/{ownerId}/apps/tlog-data-{copyIdWithoutHyphens}/data.json",
+    "content": "explicitly exported on device with a separate passphrase, AES-256-GCM and scrypt",
+    "maximumCopiesPerIndex": 32,
+    "retentionDays": [1, 7, 30, 90, 365],
+    "sharedReadAuditFields": ["actor", "event", "id", "time"],
+    "sharedReadAuditLimit": 64
   }
 }

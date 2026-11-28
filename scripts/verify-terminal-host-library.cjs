@@ -78,6 +78,10 @@ async function verifyHostLibrary(terminal) {
   await dialog.locator('#remote-remove').click();
   await dialog.locator('#remote-delete-confirm').click();
   await expect(rows).toHaveCount(1);
+  await dialog.locator('#remote-new').click();
+  await expect(dialog.locator('#remote-kex')).toHaveValue('system');
+  await rows.filter({hasText:'开发主机'}).click();
+  await expect(dialog.locator('#remote-kex')).toHaveValue('required');
   await dialog.locator('#remote-quick').fill('ssh://invalid.fixture:99999');
   await dialog.locator('#remote-quick-connect').click();
   await expect(dialog.locator('#remote-status')).toContainText('65535');

@@ -22,6 +22,42 @@ const id = 'brclio-sftp-fixture';
 const daemon = process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32', 'OpenSSH', 'sftp-server.exe') :
   process.platform === 'darwin' ? '/usr/libexec/sftp-server' : '/usr/lib/openssh/sftp-server';
 
+test('selected SFTP paths and remote permission edits check mode changes and avoid links', { timeout:30000 }, async t=>{
+  try { await fs.access(daemon); } catch { t.skip('OpenSSH server component unavailable'); return; }
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'brclio-sftp-mode-'));
+  const file=path.join(root,'mode test.txt'), folder=path.join(root,'dir');
+  await fs.writeFile(file,'sample',{mode:0o640});await fs.mkdir(folder);
+  const service=createBrowser({chooseLocal:async()=>root,
+    start:()=>connectProtocol(spawn(daemon,[],{cwd:root,windowsHide:true}))});
+  t.after(()=>cleanup(service,root));
+  const call=(op,p={})=>service.action(op,{id,side:'remote',...p});
+  let view=await call('open');const read=name=>view.entries.find(item=>item.name===name).mode;
+  assert.equal(await call('path',{name:'mode test.txt'}),path.posix.join(view.dir,'mode test.txt'));
+  await call('choose',{side:'local'});
+  assert.equal(await call('path',{side:'local',name:'mode test.txt'}),await fs.realpath(file));
+  await assert.rejects(call('path',{name:'../mode test.txt'}),/文件名/);
+  await assert.rejects(call('permissions',{name:'mode test.txt',mode:0o4644,previous:read('mode test.txt')}),/三位/);
+  if (process.platform==='win32') {
+    // NTFS ACLs can expose synthetic Unix mode bits. Never report success if the server did not apply the requested mode.
+    try {
+      view=await call('permissions',{name:'mode test.txt',mode:0o644,previous:read('mode test.txt')});
+      assert.equal(read('mode test.txt') & 0o777,0o644);
+    } catch (e) { assert.match(e.message,/权限|unsupported|operation|failure|denied/i); }
+    return;
+  }
+  await fs.chmod(file,0o604);
+  await assert.rejects(call('permissions',{name:'mode test.txt',mode:0o600,previous:read('mode test.txt')}),/已变更/);
+  view=await call('list');
+  view=await call('permissions',{name:'mode test.txt',mode:0o640,previous:read('mode test.txt')});
+  assert.equal((await fs.stat(file)).mode & 0o777,0o640);
+  await fs.chmod(folder,0o1755);view=await call('list');
+  view=await call('permissions',{name:'dir',mode:0o750,previous:read('dir')});
+  assert.equal((await fs.stat(folder)).mode & 0o7777,0o1750);
+  await fs.symlink(file,path.join(root,'link'));view=await call('list');
+  await assert.rejects(call('permissions',{name:'link',mode:0o777,previous:read('link')}),/请选择/);
+  assert.equal((await fs.stat(file)).mode & 0o777,0o640);
+});
+
 test('real SFTP subsystem browses, uploads, downloads and modifies only selected files', { timeout: 30000 }, async t => {
   try { await fs.access(daemon); } catch { t.skip('OpenSSH server component unavailable'); return; }
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-sftp-test-'));

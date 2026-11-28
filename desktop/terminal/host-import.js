@@ -161,7 +161,8 @@
       names.add(item.name); hosts.push(item);
     };
     const sessions = typeof module === 'object' ? require('./host-import-sessions.js') : window.BrclioSessionImport;
-    const readers = new Map([['csv',csv],['openssh',config],['putty',putty],['securecrt',sessions.securecrt],['mobaxterm',sessions.moba]]);
+    const ansible = typeof module === 'object' ? require('./host-import-ansible.js') : window.BrclioAnsibleImport;
+    const readers = new Map([['ansible',ansible],['csv',csv],['openssh',config],['putty',putty],['securecrt',sessions.securecrt],['mobaxterm',sessions.moba]]);
     if (!readers.has(format)) throw new Error('不支持的导入格式。');
     readers.get(format)(text.replace(/^\uFEFF/,''), add, warn, fileName);
     return { hosts, notices:[...notices], skipped };

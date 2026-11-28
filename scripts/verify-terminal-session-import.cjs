@@ -35,6 +35,20 @@ async function verifySessionImports(page, app) {
   await expect(preview.locator('label')).toHaveText(/Café · tester@moba.import.test:2200 · Lab\/Local/);
   await apply.click();
   await expect(page.locator('#import-status')).toContainText('已导入 1 台');
+  await format.selectOption('ansible');
+  const ansible = {all:{children:['lab']},lab:{children:['routers']},routers:{hosts:['R1','R2']},
+    _meta:{hostvars:{R1:{ansible_host:'r1.ansible.test',ansible_user:'operator',ansible_port:2222,ansible_password:'fixture-private'},
+      R2:{ansible_host:'r2.ansible.test'}}}};
+  await file.setInputFiles({name:'inventory.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(ansible))});
+  await expect(preview.getByRole('checkbox')).toHaveCount(2);
+  await expect(apply).toBeDisabled();
+  await preview.getByRole('checkbox',{name:/R1 · operator@r1.ansible.test:2222 · lab\/routers/}).check();
+  await apply.click();
+  const imported = await page.evaluate(() => window.BrclioConnection.store(localStorage).all().filter(h => h.host.endsWith('.ansible.test')));
+  assert.deepEqual(imported,[{name:'R1',host:'r1.ansible.test',user:'operator',port:2222,group:'lab/routers'}]);
+  await file.setInputFiles({name:'cycle.json',mimeType:'application/json',buffer:Buffer.from('{"a":{"children":["a"]}}')});
+  await expect(page.locator('#import-status')).toContainText('循环');
+  await expect(apply).toBeDisabled();
   const dir = await fs.mkdtemp(path.join(os.tmpdir(),'brclio-putty-picker-'));
   const original = await app.evaluateHandle(({dialog}) => dialog.showOpenDialog);
   try {

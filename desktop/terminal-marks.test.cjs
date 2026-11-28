@@ -246,3 +246,24 @@ test('a line editor can erase the accepted visible line before preexec without r
   await write(terminal,'\r\n' + osc(133,'D;130'));
   assert.deepEqual(commands,['pwd']);
 });
+
+test('legacy Bash records an echoed submission only when the next prompt reports an executed command', async t => {
+  const terminal = new Terminal({allowProposedApi:true,cols:40,rows:12});
+  const saved = [], marks = attach(terminal,undefined,{enabled:() => true,add:line => saved.push(line)});
+  t.after(() => {marks.dispose();terminal.dispose();});
+  const prompt = n => osc(133,'A') + '$ ' + osc(1337,'BrclioBashCommand=' + n) + osc(133,'B');
+  await write(terminal,prompt(1) + 'pwd'); marks.acceptVisibleInput();
+  assert.deepEqual(saved,[]);
+  await write(terminal,'\r\n/tmp\r\n' + prompt(2));
+  await write(terminal,'canceled'); marks.acceptVisibleInput();
+  await write(terminal,'\r\n' + prompt(2));
+  await write(terminal,'compound'); marks.acceptVisibleInput();
+  await write(terminal,'\r\n> ' + osc(1337,'BrclioBashContinuation') + 'continuation'); marks.acceptVisibleInput();
+  await write(terminal,'\r\n' + prompt(3));
+  await write(terminal,'\x1b[8mconcealed\x1b[0m'); marks.acceptVisibleInput();
+  await write(terminal,'\r\n' + prompt(4));
+  await write(terminal,'read reply'); marks.acceptVisibleInput();
+  await write(terminal,'\r\n' + 'visible reply'); marks.acceptVisibleInput();
+  await write(terminal,'\r\n' + prompt(5));
+  assert.deepEqual(saved,['pwd','read reply']);
+});

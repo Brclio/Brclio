@@ -27,10 +27,27 @@ test('strict KEX only permits exact recognized hybrids, blocks multiplex reuse, 
   assert.throws(() => connections.endpoint({host:'example',requirePostQuantum:'yes'}),/无效/);
   assert.deepEqual(ssh.argumentsFor('ssh',{host:'example'}),['-a','--','example']);
 });
+test('Windows strict mode probes only the two OpenSSH installation roots and selects the first supporting client', () => {
+  const env = {SystemRoot:'D:\\Windows', ProgramFiles:'D:\\Program Files', PATH:'E:\\Downloads;F:\\userbin'};
+  const [system, installed] = pq.candidates('win32',env);
+  assert.equal(system,'D:\\Windows\\System32\\OpenSSH\\ssh.exe');
+  assert.equal(installed,'D:\\Program Files\\OpenSSH\\ssh.exe');
+  const seen = [];
+  const probe = file => {
+    seen.push(file);
+    return {status:0,stdout:file === installed ? 'mlkem768x25519-sha256' : 'curve25519-sha256'};
+  };
+  const selected = pq.strictClient('ssh','win32',env,probe);
+  assert.deepEqual(seen,[system,installed]);
+  assert.equal(selected.file,installed);
+  assert.ok(ssh.argumentsFor('ssh',target,false,selected).includes('KexAlgorithms=mlkem768x25519-sha256'));
+  assert.ok(forwards.argumentsFor(rule,selected).includes('KexAlgorithms=mlkem768x25519-sha256'));
+  assert.equal(pq.strictClient('ssh','win32',env,() => ({status:0,stdout:'mlkem768x25519-sha256'})).file,system);
+  assert.throws(() => pq.strictClient('ssh','win32',env,() => ({status:0,stdout:'curve25519-sha256'})),/后量子/);
+});
 test('native probes and SSH, CLI SFTP, graphical subsystem and forwarding arguments use the same available hybrids',async t => {
-  const file = ssh.program('ssh');
-  if (!file) return t.skip('System OpenSSH client is unavailable.');
-  const {algorithms} = await pq.capabilities(file);
+  if (!ssh.program('ssh')) return t.skip('System OpenSSH client is unavailable.');
+  const {algorithms,file} = await pq.installedCapabilities();
   t.diagnostic('Local ssh -Q kex reports: ' + (algorithms.join(', ') || 'no supported hybrid KEX'));
   const calls = [() => ssh.argumentsFor('ssh',target,true,{file}), () => ssh.argumentsFor('sftp',target,false),
     () => ssh.argumentsFor('ssh',target,false,{file}), () => forwards.argumentsFor(rule,{file})];
@@ -67,9 +84,8 @@ test('saved tunnels follow the explicitly selected matching host and local polic
 });
 
 test('native loopback completes hybrid SSH key exchange and rejects a classical-only endpoint', {timeout:30000},async t => {
-  const file = ssh.program('ssh');
-  if (!file) return t.skip('No system OpenSSH client.');
-  const {algorithms} = await pq.capabilities(file);
+  if (!ssh.program('ssh')) return t.skip('No system OpenSSH client.');
+  const {algorithms,file} = await pq.installedCapabilities();
   if (!algorithms.length) return t.skip('Native OpenSSH advertised no hybrid KEX; rejection is verified separately.');
   const windows = process.platform === 'win32';
   const daemon = windows ? path.join(path.dirname(file),'sshd.exe') : '/usr/sbin/sshd';

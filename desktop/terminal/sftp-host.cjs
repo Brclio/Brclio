@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { endpoint } = require('./connection.js');
-const { program, argumentsFor } = require('./remote-launch.cjs');
+const { clientFor, argumentsFor } = require('./remote-launch.cjs');
 const { connectProtocol } = require('./sftp-protocol.cjs');
 const { prepareAskpass } = require('./sftp-askpass.cjs');
 
@@ -12,14 +12,15 @@ const { transferTree, endpointIO, validateName } = require('./sftp-transfer.cjs'
 
 async function startConnection(value, { configFile, askpass = prepareAskpass } = {}) {
   const target = endpoint(value);
-  const executable = program('ssh');
+  const client = clientFor('ssh',target);
+  const executable = client.file;
   if (!executable) throw new Error('请安装系统 OpenSSH 客户端。');
   const auth = await askpass();
   try {
     const env = { ...process.env, SSH_ASKPASS_REQUIRE: 'force', SSH_ASKPASS: auth.file,
       DISPLAY: process.env.DISPLAY || 'brclio', BRCLIO_SFTP_TARGET: target.host };
     const args = ['-T', '-o', 'StrictHostKeyChecking=ask', '-o', 'ClearAllForwardings=yes', '-o', 'ConnectionAttempts=1',
-      '-o', 'ConnectTimeout=15', '-o', 'NumberOfPasswordPrompts=2', '-s', ...argumentsFor('ssh', target, false, {file: executable, env, configFile}), 'sftp'];
+      '-o', 'ConnectTimeout=15', '-o', 'NumberOfPasswordPrompts=2', '-s', ...argumentsFor('ssh', target, false, {...client, env, configFile}), 'sftp'];
     if (configFile) args.unshift('-F', configFile);
     const child = spawn(executable, args, { shell: false, windowsHide: true, detached: process.platform !== 'win32',
       env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -167,6 +168,26 @@ function createBrowser({ start = startConnection, chooseLocal, launchEditor = ed
         } finally { s.transfer = null; }
       }
       const name = validateName(p.name, !pane.net);
+      if (op === 'path') {
+        if (!pane.entries.some(item=>item.name===name)) throw new Error('请重新选择项目。');
+        return paths.join(pane.dir,name);
+      }
+      if (op === 'permissions') {
+        const item=pane.entries.find(item=>item.name===name);
+        if (!pane.net || !['file','directory'].includes(item?.kind) || !Number.isInteger(item.mode) ||
+            !Number.isInteger(p.mode) || p.mode<0 || p.mode>0o777 || p.previous!==item.mode)
+          throw new Error('请选择远端文件或目录，并输入三位八进制权限。');
+        const file=paths.join(pane.dir,name), attrs=await pane.net.stat(file);
+        if (attrs.mode!==p.previous || await pane.net.realpath(file)!==file) throw new Error('项目或权限已变更，请刷新。');
+        const mode=(attrs.mode & 0o7000) | p.mode;
+        if ((attrs.mode & 0o7777)!==mode) {
+          try { await pane.net.chmodNoFollow(file,mode); }
+          catch (e) { if (e.sftpCode===8) throw new Error('此 SFTP 服务器不支持安全修改权限。'); throw e; }
+          const actual=await pane.net.stat(file);
+          if ((actual.mode & 0o7777)!==mode) throw new Error('服务器返回的权限与请求不同，请刷新查看。');
+        }
+        return await list(s,pane,pane.dir);
+      }
       if (op === 'edit-file') {
         const ext = path.posix.extname(name).toLowerCase();
         let app = await s.applications.get(ext);

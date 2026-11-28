@@ -35,6 +35,29 @@ test('PuTTY import extracts user-selected SSH sessions from registry exports, pr
   assert.throws(() => parse('csv','a'.repeat(1024*1024+1)));
 });
 
+test('Ansible import follows nested and referenced groups, resolves literal SSH fields and discards other variables', () => {
+  const input = {
+    all:{vars:{ansible_user:'default'},children:{lab:{vars:{ansible_port:2222},children:{web:null}},oncall:{hosts:['app']}}},
+    web:{hosts:{app:{ansible_user:'inline'},templated:{ansible_host:'{{ input }}'},windows:{ansible_connection:'winrm'}}},
+    _meta:{hostvars:{app:{ansible_user:'deployer',ansible_host:'app.example',ansible_password:'private',ansible_ssh_private_key_file:'/keys/private',
+      ansible_ssh_common_args:'credential material',ansible_ssh_executable:'/program'},plain:{ansible_host:'plain.example'}}},
+  };
+  const parsed = parse('ansible',JSON.stringify(input));
+  assert.deepEqual(parsed.hosts,[{name:'app',host:'app.example',user:'deployer',port:2222,group:'oncall',tags:['web']},
+    {name:'plain',host:'plain.example',user:'default',port:null}]);
+  assert.equal(JSON.stringify(parsed).includes('private'),false);
+  assert.equal(JSON.stringify(parsed).includes('/program'),false);
+  assert.ok(parsed.notices.some(item => item.includes('非 SSH')));
+  assert.ok(parsed.notices.some(item => item.includes('模板')));
+  const basic = parse('ansible',JSON.stringify({all:{children:['lab']},lab:{children:['web']},web:{hosts:['router']},
+    _meta:{hostvars:{router:{ansible_port:2022,ansible_host:'router.example'}}}}));
+  assert.deepEqual(basic.hosts,[{name:'router',host:'router.example',user:'',port:2022,group:'lab/web'}]);
+  const exported = {all:{hosts:{My_Router:{ansible_host:'router.example',brclio_label:'My Router',brclio_group:'Lab/QA'}}}};
+  assert.deepEqual(parse('ansible',JSON.stringify(exported)).hosts,[{name:'My Router',host:'router.example',user:'',port:null,group:'Lab/QA'}]);
+  assert.throws(() => parse('ansible',JSON.stringify({all:{children:['a']},a:{children:['b']},b:{children:['a'],hosts:['bad']}})),/循环/);
+  assert.throws(() => parse('ansible','{"plugin":"aws_ec2"}'),/Ansible/);
+});
+
 test('MobaXterm plaintext SSH bookmarks retain their folder and login without touching credentials or tunnel sections', () => {
   const result = parse('mobaxterm', [
     '[Passwords]','secret=#109#0%excluded.example.test%22%hidden',

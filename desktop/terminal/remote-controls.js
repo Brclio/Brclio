@@ -94,6 +94,8 @@ window.BrclioRemoteConnections = {
       }
       byId('favorite').checked = !!item?.favorite;
       byId('agent-forwarding').checked = item?.agentForwarding === true;
+      byId('kex').value = item?.requirePostQuantum ? 'required' : 'system';
+      byId('kex-status').textContent = '';
       byId('environment').value = envText(item?.environment);
       byId('inherit').checked = item ? item.inheritGroup === true : true;
       snippetChoices(item?.startupSnippet || '');
@@ -173,9 +175,9 @@ window.BrclioRemoteConnections = {
 
     byId('kex-check').onclick = async () => {
       try {
-        const {algorithms} = await api.remoteKex();
-        byId('kex-status').textContent = algorithms.length ? '本机支持：' + algorithms.join('、') + '。实际算法由目标服务器协商。' :
-          '本机 OpenSSH 未列出受支持的后量子混合算法。';
+        const {algorithms,file,checked} = await api.remoteKex();
+        byId('kex-status').textContent = algorithms.length ? '本机严格模式使用 ' + file + '。支持 ' + algorithms.join('、') + '。实际算法由目标服务器协商。' :
+          '本机 OpenSSH 未列出受支持的后量子混合算法。已检查 ' + checked.join('、') + '。';
       } catch (error) {byId('kex-status').textContent = error.message;}
     };
     async function clients() {

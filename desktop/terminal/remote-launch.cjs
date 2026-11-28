@@ -60,12 +60,12 @@ function setEnvOption(items, session) {
 function argumentsFor(kind, value, interactive = kind === 'ssh', session) {
   const target = endpoint(value);
   const { host, port, user, jump, identityFile, certificateFile, agentForwarding, environment } = target;
-  const args = target.proxy ? require('./ssh-proxy-launch.cjs').options(target, session, kind === 'ssh' ? session?.file : program('ssh')) : [];
-  if (target.requirePostQuantum) {
-    const ssh = kind === 'ssh' && session?.file || program('ssh');
-    const options = require('./post-quantum.cjs').required(ssh);
-    if (kind === 'sftp') args.push('-S',ssh);
-    args.push(...options);
+  const strict = target.requirePostQuantum && (session?.kex ? session : clientFor(kind,target));
+  const args = target.proxy ? require('./ssh-proxy-launch.cjs').options(target, session,
+    strict?.sshFile || (kind === 'ssh' ? session?.file : program('ssh'))) : [];
+  if (strict) {
+    if (kind === 'sftp') args.push('-S',strict.sshFile);
+    args.push(...strict.kex);
   }
   if (jump) args.push('-J', jump);
   if (identityFile) args.push('-i', identityFile);
@@ -89,4 +89,10 @@ function argumentsFor(kind, value, interactive = kind === 'ssh', session) {
   return [...args, '--', host.includes(':') ? '[' + host + ']' : host];
 }
 
-module.exports = { program, argumentsFor };
+function clientFor(kind, target, platform = process.platform, env = process.env) {
+  if (!['ssh','sftp'].includes(kind)) throw new Error('请选择 SSH 或 SFTP。');
+  if (target?.requirePostQuantum === true) return require('./post-quantum.cjs').strictClient(kind,platform,env);
+  return {file:program(kind,platform,env)};
+}
+
+module.exports = { program, argumentsFor, clientFor };

@@ -49,7 +49,7 @@ function endpointIO(net) {
   return {
     ...net, paths: path.posix, publish: net.rename,
     list: async dir => (await net.list(dir)).filter(item => item.name !== '.' && item.name !== '..').map(item => ({
-      name: item.name, kind: classify(item.mode), size: item.size ?? null,
+      name: item.name, kind: classify(item.mode), size: item.size ?? null, mode:item.mode, mtime:item.mtime,
     })),
   };
 }

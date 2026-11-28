@@ -132,7 +132,7 @@ jobs:
         with:
           distribution: Alpine-3.22
           wsl-version: '1'
-          additional-packages: tmux
+          additional-packages: tmux openssh-server
           set-as-default: 'true'
           use-cache: 'false'
       - name: Exercise the packaged tmux control-mode workspace
@@ -140,6 +140,25 @@ jobs:
         env:
           BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
         run: node scripts/verify-terminal-tmux.cjs
+      - name: Verify strict hybrid KEX with a pinned Microsoft Windows OpenSSH client
+        if: matrix.platform == 'win'
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scratch = Join-Path $env:RUNNER_TEMP ("brclio-pq-" + [guid]::NewGuid())
+          New-Item -ItemType Directory -Path $scratch | Out-Null
+          try {
+            $zip = Join-Path $scratch 'openssh.zip'
+            Invoke-WebRequest 'https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.4.0.0p1-Preview/OpenSSH-Win64.zip' -OutFile $zip -TimeoutSec 45
+            if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne 'b67ff8becd203502190ec42ac7787c24c2cd3325ed7700485fe7a1c83d2a7957') { throw 'Win32-OpenSSH archive SHA-256 mismatch.' }
+            Expand-Archive -LiteralPath $zip -DestinationPath $scratch
+            Rename-Item -LiteralPath (Join-Path $scratch 'OpenSSH-Win64') -NewName 'OpenSSH'
+            $signature = Get-AuthenticodeSignature -FilePath (Join-Path $scratch 'OpenSSH/ssh.exe')
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'Microsoft Authenticode verification failed.' }
+            node scripts/verify-terminal-windows-pq.cjs $scratch
+            if ($LASTEXITCODE -ne 0) { throw 'Windows hybrid key exchange verification failed.' }
+          } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
       - name: Verify status components across packaged app restarts
         timeout-minutes: 4
         env:

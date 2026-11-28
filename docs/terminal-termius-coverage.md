@@ -1,6 +1,6 @@
 # Brclio 测试版与 Termius 桌面功能对照
 
-核对日期为 2026-11-28。目标平台为 macOS（Apple 芯片、Intel）和 Windows x64。下表以用户能从界面完成的操作为准。「部分」列出缺少的行为，「待实测」表示代码路径已存在，尚缺对应的外部环境。每次打包结果可在测试分支的 [Desktop terminal 验证记录](https://github.com/Brclio/Brclio/actions/workflows/desktop-terminal.yml?query=branch%3Acodex%2Ftermius-desktop) 核实。功能范围来自 [Termius 官方功能表](https://www.termius.com/pricing) 和 [桌面文档](https://docs.termius.com/)。
+核对日期为 2026-11-28。本机安装的 Termius 桌面版为 9.35.4。目标平台为 macOS（Apple 芯片、Intel）和 Windows x64。下表以用户能从界面完成的操作为准。「部分」列出缺少的行为，「待实测」表示代码路径已存在，尚缺对应的外部环境。每次打包结果可在测试分支的 [Desktop terminal 验证记录](https://github.com/Brclio/Brclio/actions/workflows/desktop-terminal.yml?query=branch%3Acodex%2Ftermius-desktop) 核实。功能范围来自 [Termius 官方功能表](https://www.termius.com/pricing) 和 [桌面文档](https://docs.termius.com/)。
 
 测试 CI 分别提供 `terminal-preview-mac-arm64`、`terminal-preview-mac-x64` 和 `terminal-preview-win-x64`。解开下载包及其中的 ZIP 后，打开 macOS 的 `Brclio Terminal Preview.app` 或 Windows 的 `Open Brclio Terminal.cmd` 即可直接进入终端。预览版使用独立用户目录，禁用正式版更新、全局快捷键、登录启动和右键菜单注册。开发者可在目标系统准备项目依赖和内置媒体运行时后，运行 `node scripts/terminal-preview-build.cjs` 构建并验证本机预览包。
 
@@ -9,6 +9,7 @@
 | 功能 | Brclio 测试版与验收边界 |
 | --- | --- |
 | 本地终端 | 主窗口内打开 Shell，弹出及收回保留原 PTY；覆盖 macOS 登录 Shell 和 Windows ConPTY。 |
+| 终端外观、键盘与文本 | 已有窗格配置支持字体、颜色、光标样式、快捷键和滚动记录。可查找当前或全部窗格、复制选区、预览粘贴内容。 |
 | SSH、交互式 SFTP | 从主机库选择地址、端口、用户和身份，通过系统 OpenSSH 连接。图形文件浏览可独立打开。 |
 | Telnet | 手动连接指定地址，可设置端口。 |
 | Mosh | 使用本机安装的 mosh；Windows 需要默认 WSL 发行版，远端需要 mosh-server。未覆盖公网漫游及断网恢复的全流程。 |
@@ -16,8 +17,10 @@
 | 本地、远程和动态端口转发 | 有单独入口、模板及连接生命周期；回环测试验证真实端口流量。 |
 | SSH 代理转发和跳板链 | 按主机显式启用代理转发，跳板按次序交给 OpenSSH。 |
 | 上游 HTTP CONNECT、SOCKS5 | SSH 及图形/命令行 SFTP 可选代理。支持代理密码提示，沿用 OpenSSH 的目标指纹校验。 |
-| SFTP 两个端点 | 可从“浏览本机目录”直接开始，两个窗格可独立选择本地或远端。支持双远端直传、文件和目录递归复制、拖放、取消、路径栏、目录收藏、显示点文件、重命名、创建目录和删除。 |
+| SFTP 两个端点 | 可从“浏览本机目录”直接开始，两个窗格可独立选择本地或远端。可按名称筛选、多选或全选可见项目，逐项复制文件和整个目录，支持双远端传输、拖放和取消。两个窗格分别保留最近 64 个路径的前进、后退记录，提供目录收藏、点文件开关、重命名、新建目录、删除及远端权限和修改时间查看。 |
 | 外部编辑远程文件 | 在 TextEdit、记事本或用户选择的编辑器中打开。文件类型关联保存在当前账号的本机分区，支持查看和恢复默认编辑器。确认回传前核对远端文件变更。 |
+| SSH 和文件管理切换 | SSH 窗格可直接打开同主机图形 SFTP。两个文件窗格均可返回匹配的 SSH 会话或新开同主机 SSH，切回时保留目录和选择。文件菜单可复制完整本机或远端路径。 |
+| 远端文件权限 | 可为选中的远端文件或目录编辑三位八进制权限，保留特殊位并复核服务器结果。需要远端支持 OpenSSH 的 `lsetstat@openssh.com`，NTFS 的完整访问控制列表不在此界面中。 |
 | SSH 密钥、身份和证书 | 选择本地私钥、生成 Ed25519 / RSA / ECDSA、查看公钥指纹、绑定 OpenSSH 用户证书；可管理已知主机。签发证书需用户自己的 CA。 |
 | FIDO2 | SSH 身份窗口可查询系统 OpenSSH 声明的 ECDSA-SK 和 Ed25519-SK 算法，并使用 ssh-keygen 发起生成。实体密钥注册和触摸签名待实测。 |
 | PIN 与生物识别 | 桌面 PIN 锁覆盖闲置、系统锁屏、重启解锁和会话恢复。macOS 接入 Touch ID。Windows 使用带 Brclio 窗口句柄的 UserConsentVerifier，在系统可用且用户已注册 Windows Hello 时提供解锁。实体认证及 SSH 生物识别签名待验。[微软桌面验证接口](https://learn.microsoft.com/en-us/windows/win32/api/userconsentverifierinterop/nf-userconsentverifierinterop-iuserconsentverifierinterop-requestverificationforwindowasync) |
@@ -65,7 +68,7 @@
 | --- | --- |
 | AWS EC2、Azure VM、DigitalOcean Droplets | 使用当前设备已登录的官方 CLI，经用户确认读取清单，再选择要导入的主机。覆盖样例响应和映射；真实租户与持续自动更新待验。 |
 | API Bridge | 可手动启用回环 HTTP 服务，每次开启生成新的会话令牌，15 分钟后失效，支持创建分组、创建和删除主机、读取个人库的连接清单；关闭视图、上锁、超时将停止。尚缺 Termius API 的完整请求模型与多库接口兼容性。 |
-| Ansible | 可导出 Ansible 静态 inventory，也可从本机 API 读取。尚缺官方团队角色或集合的完整兼容性。 |
+| Ansible | 可选取静态 inventory JSON 或 `ansible-inventory --list` 输出。支持嵌套组、子组引用和 `_meta.hostvars`，逐项勾选 SSH 主机，读取字面地址、端口和用户名。一个主机直接属于多组时，按名称排序后的第一组用作分组，其他组作为标签。还可复制本机静态清单。动态插件、Jinja 和 playbook 不在客户端运行；高级变量优先级可先由 Ansible 展开。Termius 的官方角色可通过其 API Bridge 创建、更新或删除其保险库中的主机，Brclio 暂未兼容该角色的自动账号写入流程。[Termius 官方 Ansible 角色](https://github.com/termius/ansible-role-api-bridge) |
 | Vanta | 尚缺组织授权和合规数据连接，需 Vanta 测试租户。 |
 | 2FA、SAML SSO、企业域名 | 应用使用现有 Brclio 登录机制。终端 PIN 与账号 2FA 独立。共享库可限制新成员使用已验证的指定邮箱域名；企业 SAML、账号级强制二步认证尚缺。 |
 | 团队管理台 | 共享主机库提供逐库成员权限，库主可管理邀请域名和查阅本库最近 64 条管理记录；尚缺组织级策略和统一审计控制台。 |

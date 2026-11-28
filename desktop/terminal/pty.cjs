@@ -96,7 +96,7 @@ function createPtySessions({ home, send, platform = process.platform, env = proc
     if (keygen) selected = keygen;
     if (control) selected = { file: tmux.program(platform, env) };
     if (remote) {
-      selected = { file: openSSH.program(forwarding ? 'ssh' : profile, platform, env) };
+      selected = openSSH.clientFor(forwarding ? 'ssh' : profile, forwarding ? connection?.connection : connection, platform, env);
       if (!selected.file) throw new Error('未找到本机 ' + profile + ' 客户端，请安装 OpenSSH 客户端。');
     }
     if (control && !selected.file) throw new Error(platform === 'win32' ? '需要已配置的 WSL 和 tmux。' : '未找到本机 tmux。');
@@ -110,8 +110,8 @@ function createPtySessions({ home, send, platform = process.platform, env = proc
     if (stream) args = [];
     else if (mosh) args = mosh.args;
     else if (keygen) args = keygen.args;
-    else if (forwarding) args = require('./forward-model.js').argumentsFor(connection,{file:selected.file,env:options.env});
-    else if (remote) args = openSSH.argumentsFor(profile, connection, profile === 'ssh', { file: selected.file, env: options.env });
+    else if (forwarding) args = require('./forward-model.js').argumentsFor(connection,{...selected,env:options.env});
+    else if (remote) args = openSSH.argumentsFor(profile, connection, profile === 'ssh', { ...selected, env: options.env });
     else if (control) args = tmux.argumentsFor(tmuxSession, platform);
     else args = shellArguments(selected.file, platform, shellIntegration === true, options.env);
     if (control) options.encoding = 'latin1';
