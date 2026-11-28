@@ -172,7 +172,10 @@ window.BrclioCommandLibrary = (() => {
     if (!window.BrclioTerminalPartitions.ready) accountRevision++;
     preferences();
   });
-  window.addEventListener('brclio-snippets-changed',preferences);
+  window.addEventListener('brclio-snippets-changed', () => {
+    preferences();
+    if (dialog?.open) render(field('list').selectedOptions[0]?.dataset.snippet);
+  });
   function init() {
     dialog = document.createElement('dialog');
     dialog.className = 'terminal-network-dialog'; dialog.id = 'command-library';
@@ -185,7 +188,7 @@ window.BrclioCommandLibrary = (() => {
       <p id="command-library-status" role="status"></p>
       <label><input type="checkbox" id="command-library-enable">在此设备记录命令历史</label>
       <label><input type="checkbox" id="command-library-suggest">输入时显示补全建议</label>
-      <p class="forward-hint">开启记录或补全后，新建本地标签即可使用支持的 Shell 集成。SSH 会话需要远端提供命令标记。历史最多保留 200 条单行命令，可能包含敏感参数，关闭记录会清空历史。收藏可在「个人剪藏同步」中开启同步。</p>
+      <p class="forward-hint">开启记录或补全后，新建的本地 Bash、Zsh 和 PowerShell 会话会自动启用 Shell 集成。SSH 需要远端 Shell 提供命令标记。历史最多保留 200 条单行命令，可能包含敏感参数，关闭记录会清空历史。收藏可在「个人剪藏同步」中开启同步。</p>
       <button id="command-library-clear">清空命令历史</button>`;
     document.body.append(dialog);
     field('close').onclick = () => dialog.close();
