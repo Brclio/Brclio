@@ -101,6 +101,11 @@ jobs:
         env:
           BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
         run: node scripts/verify-terminal-tmux.cjs
+      - name: Verify status components across packaged app restarts
+        timeout-minutes: 4
+        env:
+          BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
+        run: node scripts/verify-terminal-status.cjs
       - name: Save the verified test installer
         uses: actions/upload-artifact@v4
         with:

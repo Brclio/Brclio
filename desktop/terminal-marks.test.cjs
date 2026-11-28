@@ -158,7 +158,9 @@ test('Bash loads its login profile and passes the same status to its prompt hook
       if (!phase && output.includes(osc(133, 'B'))) {
         phase++;
         sessions.write(id, "sh -c 'exit 23'\r").catch(fail);
-      } else if (phase === 1 && output.includes('CUSTOM=23 MyPrompt> ')) {
+      } else if (phase === 1 && output.indexOf(osc(133, 'B')) !== output.lastIndexOf(osc(133, 'B'))) {
+        // Readline can enable bracketed paste between PROMPT_COMMAND and PS1.
+        // Wait for the next complete prompt independently of its display bytes.
         phase++;
         sessions.write(id, "printf 'PROFILE=%s STATUS=%d\\n' \"$FROM_PROFILE\" \"$?\"; exit 19\r").catch(fail);
       }
@@ -167,6 +169,8 @@ test('Bash loads its login profile and passes the same status to its prompt hook
   t.after(() => sessions.closeAll());
   await sessions.create({ id, profile: 'bash', shellIntegration: true });
   assert.equal(await ended, 19);
+  assert.ok(output.includes('CUSTOM=23 '), 'Existing prompt hook received the command exit status');
+  assert.ok(output.includes('MyPrompt> '), 'Original login profile prompt remained active');
   assert.ok(output.includes('PROFILE=yes STATUS=23'));
   assert.equal(fs.readFileSync(file, 'utf8'), profile);
 });

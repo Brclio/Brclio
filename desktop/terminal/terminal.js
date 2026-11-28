@@ -35,6 +35,7 @@
     byId('status').textContent = text;
     byId('status').title = text;
     byId('status').classList.toggle('error', error);
+    statusBar.message();
   }
 
   function report(error) {
@@ -43,6 +44,7 @@
   }
 
   function activePane() { return currentTab?.active; }
+  const statusBar = window.BrclioStatusBar(activePane);
 
   function applySession(value) {
     const shell = byId('profile');
@@ -55,7 +57,7 @@
   const appearance = window.BrclioTerminalProfiles({ theme, activePane, refit: fit, applySession,
     readSession: () => ({ shell: byId('profile').value, cwd: nextDirectory, integration: byId('shell-integration').checked }) });
   window.BrclioDynamicControls({ api, activePane, panes, appearance });
-  const locations = window.BrclioShellLocations(appearance, panes);
+  const locations = window.BrclioShellLocations(appearance, panes, statusBar.refresh);
   const attachTriggers = window.BrclioTriggers({ api, panes, message,
     activate: pane => { selectTab(pane.tab); selectPane(pane); } });
   const inspector = window.BrclioPaneInspector({ panes, activePane, dialog: byId('actions-dialog'),
@@ -84,6 +86,7 @@
       pane.tab.name.textContent = label;
       pane.tab.button.title = label;
     }
+    statusBar.refresh(pane);
   }
 
   function setState(pane, state, detail) {
@@ -188,7 +191,10 @@
     });
     window.BrclioTerminalAlerts.attach(terminal);
     window.BrclioTerminalOutput.activate(terminal);
-    pane.marks = BrclioCommandMarks.attach(terminal);
+    pane.marks = BrclioCommandMarks.attach(terminal, code => {
+      pane.commandExit = code;
+      statusBar.refresh(pane);
+    });
     locations.attach(pane);
     pane.disposeTriggers = attachTriggers(pane);
     inspector.attach(pane);
@@ -206,6 +212,7 @@
     });
     node.addEventListener('focusin', () => { if (tab.active !== pane) selectPane(pane, false); });
     terminal.onResize(({cols, rows}) => {
+      statusBar.refresh(pane);
       if (pane.state === 'running') api.resize(id, cols, rows).catch(error => { if (panes.has(id) && pane.state === 'running') report(error); });
     });
     paneTools.attachInput(pane);
@@ -219,7 +226,7 @@
       updateLabel(pane);
     });
     finder.onDidChangeResults(({resultIndex, resultCount}) => {
-      if (activePane() === pane && !byId('find-bar').hidden && byId('find-input').value) {
+      if (activePane() === pane && pane.searchableQuery && !byId('find-bar').hidden) {
         byId('find-result').textContent = resultCount ? (resultIndex + 1) + ' / ' + resultCount : '无匹配';
       }
     });
@@ -227,6 +234,8 @@
     pane.ready = api.create(initial).then(info => {
       if (!panes.has(id)) return api.close(id).catch(() => {});
       pane.shell = info.shell.split(/[\\/]/).pop();
+      pane.pid = info.pid;
+      pane.initialCwd = info.cwd;
       if (Number.isInteger(info.windowsBuild)) terminal.options.windowsPty = { backend: 'conpty', buildNumber: info.windowsBuild };
       updateLabel(pane);
       if (pane.state !== 'starting') return;
@@ -378,6 +387,8 @@
     const pane = activePane();
     const term = byId('find-input').value;
     if (!pane) return;
+    // A pending xterm refresh can report old results after a resize or PTY write.
+    pane.searchableQuery = false;
     if (!term) {
       pane.finder.clearDecorations();
       pane.terminal.clearSelection();
@@ -393,6 +404,7 @@
         return;
       }
     }
+    pane.searchableQuery = true;
     const found = pane.finder[method](term, { decorations, incremental, regex,
       caseSensitive: byId('find-case').checked, wholeWord: byId('find-word').checked });
     if (!found) byId('find-result').textContent = '无匹配';
@@ -491,6 +503,8 @@
   const removeExit = api.onExit(({id, exitCode, signal, error}) => {
     const pane = panes.get(id);
     if (!pane) return;
+    pane.exitCode = exitCode;
+    pane.exitSignal = signal;
     if (error) setState(pane, 'error', error);
     else setState(pane, 'exited', '已退出 · ' + (signal ? '信号 ' + signal : '退出码 ' + exitCode));
   });

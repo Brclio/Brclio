@@ -72,6 +72,7 @@ button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke
 #empty-new { margin: auto; }
 footer { flex: none; min-height: 32px; gap: 12px; justify-content: space-between; background: var(--paper); padding: 0 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
 #status { min-width: 0; }
+#status-components { min-width: 0; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 #status.error { color: #a02f40; }
 .defaults { gap: 6px; flex-shrink: 0; }
 .defaults select, .defaults button { height: 25px; max-width: 140px; background: transparent; }

@@ -41,7 +41,19 @@ async function verifyTerminalAlerts(app, terminal, command, windows) {
     assert.equal(await notices(), 0);
     const pane = await active.getAttribute('data-id');
     const originalMode = await terminal.evaluate(() => window.brclioTerminal.getPresentation());
+    await app.evaluate(({ app, BrowserWindow }) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        const view = win.contentView.children.find(child => child.webContents?.getURL().endsWith('/desktop/terminal/index.html'));
+        if (view) {
+          if (process.platform === 'darwin') app.focus({ steal: true });
+          win.focus();
+          view.webContents.focus();
+          return;
+        }
+      }
+    });
     await terminal.locator('#terminal-actions').click();
+    await expect.poll(() => terminal.evaluate(() => document.hasFocus())).toBe(true);
     await capture.click();
     await expect(capture).toHaveText('取消录入');
     await terminal.keyboard.press('Control+Alt+Shift+J');

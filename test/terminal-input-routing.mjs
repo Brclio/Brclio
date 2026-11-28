@@ -93,6 +93,17 @@ for (const platform of ['darwin', 'win32']) {
       await page.waitForFunction(() => inputProbe.writes.some(item => item.data === '\x0b'));
       await page.keyboard.press(platform === 'darwin' ? 'Meta+f' : 'Control+Shift+f');
       assert.equal(await page.locator('#find-input').evaluate(input => input === document.activeElement), true);
+      const searchId = await active.getAttribute('data-id');
+      await page.evaluate(id => inputProbe.emit(id, 'SEARCH-MARK'), searchId);
+      await page.locator('#find-regex').check();
+      await page.locator('#find-input').fill('SEARCH-MARK');
+      await page.waitForFunction(() => document.querySelector('#find-result').textContent === '1 / 1');
+      await page.evaluate(id => inputProbe.emit(id, '\r\nqueued refresh'), searchId);
+      await page.waitForFunction(() => document.querySelector('.pane.active .xterm-rows').textContent.includes('queued refresh'));
+      await page.locator('#find-input').fill('[');
+      // The search addon defers its PTY-triggered match count by 200 ms.
+      await page.waitForTimeout(300);
+      assert.equal(await page.locator('#find-result').textContent(), '正则表达式无效');
       await page.keyboard.press('Escape');
       await page.evaluate(() => { inputProbe.writes.length = 0; });
       const first = await active.getAttribute('data-id');

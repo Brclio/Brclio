@@ -20,7 +20,7 @@
 | 搜索当前窗格 | ⌘F | Ctrl+Shift+F |
 | 中断前台命令 | Ctrl+C | Ctrl+C |
 
-Brclio 终端使用 xterm.js 显示终端内容，并通过 node-pty 连接本机的 PTY 或 Windows ConPTY。
+Brclio 终端使用 xterm.js 显示终端内容，并通过 node-pty 连接本机的 PTY 或 Windows ConPTY。要直接进入内嵌终端，可在启动桌面客户端时添加 `--brclio-terminal`。[iTerm2 3.7.6 逐项兼容清单与平台实测范围](docs/terminal-compatibility.md)
 
 ## 小红书工具（v0.2.0）
 

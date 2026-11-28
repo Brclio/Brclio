@@ -1,6 +1,6 @@
 'use strict';
 
-window.BrclioShellLocations = function shellLocations(profiles, panes) {
+window.BrclioShellLocations = function shellLocations(profiles, panes, locationChanged) {
   const key = 'brclio.terminal.profile-rules.v1';
   const $ = id => document.getElementById('location-' + id);
   let rules = [];
@@ -68,6 +68,7 @@ window.BrclioShellLocations = function shellLocations(profiles, panes) {
       if (typeof directory !== 'string' || directory.length > 4096 || host.length > 255 || /[\x00-\x1f\x7f]/.test(host + directory)) return;
       pane.location = { hostname: host, directory: directory.replaceAll('\\', '/') };
       apply(pane);
+      locationChanged(pane);
     }
     // Metadata from the shell only selects a local visual preset, never a command.
     pane.terminal.parser.registerOscHandler(7, data => {

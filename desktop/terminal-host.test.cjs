@@ -10,6 +10,27 @@ const { pathToFileURL } = require('node:url');
 const { createTerminalHost } = require('./terminal/host.cjs');
 const { createPtyService, forkService } = require('./terminal/service.cjs');
 
+test('Touch Bar buttons follow their terminal window and detach on focus loss', () => {
+  class Bar { constructor({ items }) { this.items = items; } }
+  Bar.TouchBarButton = class { constructor(options) { Object.assign(this, options); } };
+  const window = () => ({ focused: true, isFocused() { return this.focused; }, isDestroyed: () => false,
+    setTouchBar(bar) { this.bar = bar; } });
+  const actions = [], first = window(), second = window();
+  const controls = require('./terminal/touch-bar.cjs').terminalTouchBar(id => actions.push(id), () => Bar);
+  controls.attach(first);
+  const button = first.bar.items[0];
+  button.click();
+  first.focused = false;
+  button.click();
+  controls.attach(second);
+  assert.equal(first.bar, null);
+  button.click();
+  second.bar.items[1].click();
+  controls.detach();
+  assert.equal(second.bar, null);
+  assert.deepEqual(actions, ['new-tab', 'split-right']);
+});
+
 function fakeChild() {
   return Object.assign(new EventEmitter(), {
     connected: true, posted: [],

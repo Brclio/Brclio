@@ -27,6 +27,7 @@
   <script defer src="buffer-tools.js"></script>
   <script defer src="advanced-paste.js"></script>
   <script defer src="snippets.js"></script>
+  <script defer src="status-bar.js"></script>
   <script defer src="smart-selection.js"></script>
   <script defer src="keymap.js"></script>
   <script defer src="pane-inspector.js"></script>
@@ -85,6 +86,7 @@
   </main>
   <footer>
     <span id="status" role="status" aria-live="polite">正在打开终端…</span>
+    <span id="status-components" aria-label="当前窗格状态" hidden></span>
     <div class="defaults">
       <label for="profile">新会话</label><select id="profile" aria-label="新会话的 Shell"><option value="default">默认 Shell</option></select>
       <button id="directory" title="选择新会话的起始目录"><svg aria-hidden="true"><use href="#folder"/></svg><span id="directory-label">主目录</span></button>
@@ -224,6 +226,17 @@
       <label><input type="checkbox" id="shell-integration">为新会话启用 Shell 集成</label>
       <button data-mark="add">添加标记</button><button data-mark="previous">上一个标记</button>
       <button data-mark="next">下一个标记</button><button data-mark="selectOutput">选取命令输出</button>
+    </fieldset>
+    <fieldset><legend>状态栏组件</legend>
+      <label><input type="checkbox" data-status-field="session">会话名</label>
+      <label><input type="checkbox" data-status-field="shell">Shell</label>
+      <label><input type="checkbox" data-status-field="pid">进程 ID</label>
+      <label><input type="checkbox" data-status-field="cwd">工作目录</label>
+      <label><input type="checkbox" data-status-field="size">窗格字符尺寸</label>
+      <label><input type="checkbox" data-status-field="clock">时间</label>
+      <label><input type="checkbox" data-status-field="exit">退出码</label>
+      <button id="status-default" type="button">恢复默认状态栏</button>
+      <span id="status-setting-result" role="status"></span>
     </fieldset>
     <fieldset><legend>剪藏与笔记</legend>
       <details id="snippets-details"><summary>管理命名剪藏与笔记</summary>

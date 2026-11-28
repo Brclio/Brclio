@@ -3,7 +3,7 @@
 (() => {
   // Each pane owns its markers. xterm moves or disposes them when scrollback
   // reflows, is trimmed, or is cleared. No command text leaves the pane.
-  function attach(terminal) {
+  function attach(terminal, commandFinished) {
     const history = [];
     let command;
     let navigated;
@@ -80,6 +80,10 @@
       const code = separator < 0 ? data : data.slice(0, separator);
       if (!['A', 'B', 'C', 'D'].includes(code)) return false;
       if (!normal()) return true;
+      if (code === 'D' && commandFinished) {
+        const value = data.match(/^D;(-?\d{1,10})(?:;|$)/);
+        commandFinished(value ? Number(value[1]) : undefined);
+      }
       if (code === 'A') {
         // Shells may redraw a prompt repeatedly, including after Ctrl-C.
         const buffer = terminal.buffer.normal;
