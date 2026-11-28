@@ -10,9 +10,12 @@ on:
       - 'desktop/preload.cjs'
       - 'web/app.js'
       - 'web/index.html'
+      - 'web/styles.css'
+      - 'web/terminal-workspace.*'
       - 'scripts/*after-pack.cjs'
       - 'scripts/terminal-*.cjs'
       - 'scripts/verify-terminal.cjs'
+      - 'scripts/verify-terminal-*.cjs'
       - 'package*.json'
   workflow_dispatch:
 
@@ -42,6 +45,12 @@ jobs:
             arch: x64
             executable: release/mac/Brclio.app/Contents/MacOS/Brclio
             installer: release/*.dmg
+          - name: macOS Apple silicon
+            runner: macos-15
+            platform: mac
+            arch: arm64
+            executable: release/mac-arm64/Brclio.app/Contents/MacOS/Brclio
+            installer: release/*.dmg
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     steps:
@@ -55,7 +64,8 @@ jobs:
           python-version: '3.12'
       - run: npm ci
       - run: npm run sync
-      - run: node --test desktop/terminal-host.test.cjs desktop/terminal-pty.test.cjs
+      - run: node --test desktop/terminal-*.test.cjs
+        shell: bash
         timeout-minutes: 3
       - run: npm run prepare:xhs
       - name: Build the desktop test installer

@@ -17,23 +17,48 @@ function fakeChild() {
   });
 }
 
-test('terminal IPC only accepts the live local main frame of its dedicated window', async () => {
+test('only the live terminal frame owns its IPC across docking, hiding, detaching and closing', async () => {
   const windows = [];
-  class FakeWindow extends EventEmitter {
+  const views = [];
+  class FakeContents extends EventEmitter {
+    constructor() {
+      super();
+      this.session = { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} };
+      this.mainFrame = { url: 'about:blank' };
+    }
+    setWindowOpenHandler(handler) { this.openHandler = handler; }
+    loadFile(file) { this.mainFrame = { url: pathToFileURL(file).href }; return Promise.resolve(); }
+    getURL() { return this.mainFrame.url; }
+    isDestroyed() { return Boolean(this.destroyed); }
+    getZoomFactor() { return 1.25; }
+    focus() { this.focused = true; }
+    isFocused() { return Boolean(this.focused); }
+    send() {}
+    close() { this.destroyed = true; this.emit('destroyed'); }
+  }
+  class FakeView {
     constructor(options) {
+      this.options = options;
+      this.webContents = new FakeContents();
+      views.push(this);
+    }
+    setBounds(bounds) { this.bounds = bounds; }
+    setVisible(visible) { this.visible = visible; }
+    setBackgroundColor() {}
+  }
+  class FakeWindow extends EventEmitter {
+    constructor() {
       super();
       windows.push(this);
-      this.options = options;
-      this.webContents = Object.assign(new EventEmitter(), {
-        session: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} },
-        setWindowOpenHandler(handler) { this.openHandler = handler; },
-        isDestroyed: () => Boolean(this.destroyed),
-      });
+      this.webContents = new FakeContents();
+      this.attached = new Set();
+      this.contentView = { addChildView: view => this.attached.add(view), removeChildView: view => this.attached.delete(view) };
     }
-    loadFile(file) { this.webContents.mainFrame = { url: pathToFileURL(file).href }; return Promise.resolve(); }
+    getContentSize() { return [1000, 600]; }
     setMenu() {}
     show() {}
     focus() {}
+    isFocused() { return true; }
     isMinimized() { return false; }
     isDestroyed() { return Boolean(this.destroyed); }
     destroy() { this.destroyed = true; this.emit('closed'); }
@@ -44,30 +69,66 @@ test('terminal IPC only accepts the live local main frame of its dedicated windo
     removeHandler: name => handlers.delete(name),
   });
   const app = Object.assign(new EventEmitter(), { getPath: () => os.homedir() });
-  const host = createTerminalHost({ app, ipcMain, BrowserWindow: FakeWindow });
+  let main = new FakeWindow();
+  const modes = [];
+  const host = createTerminalHost({ app, ipcMain, BrowserWindow: FakeWindow, WebContentsView: FakeView,
+    getMainWindow: () => main.isDestroyed() ? null : main, showMainWindow: () => (main = new FakeWindow()),
+    onPresentation: mode => modes.push(mode) });
   const profiles = handlers.get('brclio:terminal-window:profiles');
-  const request = win => ({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
+  const request = object => ({ sender: object.webContents, senderFrame: object.webContents.mainFrame });
+  assert.equal(host.getPresentation(), 'closed');
+  host.setViewport({ x: 160, y: 40, width: 900, height: 400 });
   await Promise.all([host.open(), host.open()]);
   assert.equal(windows.length, 1);
-  const win = windows[0];
-  assert.equal(win.options.webPreferences.nodeIntegration, false);
-  assert.equal(win.options.webPreferences.contextIsolation, true);
-  assert.equal(win.options.webPreferences.sandbox, true);
-  assert.deepEqual(win.webContents.openHandler(), { action: 'deny' });
-  const valid = request(win);
+  assert.equal(views.length, 1);
+  const view = views[0];
+  assert.equal(view.options.webPreferences.nodeIntegration, false);
+  assert.equal(view.options.webPreferences.contextIsolation, true);
+  assert.equal(view.options.webPreferences.sandbox, true);
+  assert.deepEqual(view.webContents.openHandler(), { action: 'deny' });
+  assert.ok(main.attached.has(view));
+  assert.deepEqual(view.bounds, { x: 200, y: 50, width: 800, height: 500 });
+  const valid = request(view);
   assert.ok((await profiles(valid)).some(profile => profile.id === 'default'));
-  assert.throws(() => profiles({ ...valid, sender: {} }), /终端窗口/);
+  assert.throws(() => profiles(request(main)), /终端窗口/);
   assert.throws(() => profiles({ ...valid, senderFrame: { ...valid.senderFrame } }), /终端窗口/);
+  const url = valid.senderFrame.url;
   valid.senderFrame.url = 'https://example.invalid/';
   assert.throws(() => profiles(valid), /终端窗口/);
-  win.destroy();
-  await host.open();
+  valid.senderFrame.url = url;
+
+  host.setViewport(null);
+  assert.equal(view.visible, false);
+  await host.open('window');
+  const detached = windows[1];
+  assert.ok(!main.attached.has(view));
+  assert.ok(detached.attached.has(view));
+  assert.equal(view.visible, true);
+  assert.deepEqual(view.bounds, { x: 0, y: 0, width: 1000, height: 600 });
+  assert.throws(() => profiles(request(detached)), /终端窗口/);
+  host.setViewport(null);
+  assert.equal(view.visible, true, 'hiding the placeholder does not affect a detached terminal');
+  main.destroy();
+  assert.equal(view.webContents.isDestroyed(), false);
+  await handlers.get('brclio:terminal-window:set-presentation')(valid, 'inline');
+  assert.ok(main.attached.has(view), 'docking reopens a closed main window');
+  assert.ok(detached.isDestroyed());
+  assert.equal(view.visible, false, 'docked view waits for its new host DOM geometry');
+  assert.equal(views.length, 1);
+  assert.ok((await profiles(valid)).some(profile => profile.id === 'default'));
+  await assert.rejects(host.open('invalid'), /未知/);
+  assert.throws(() => host.setViewport({ width: Infinity }), /无效/);
+  main.destroy();
+  assert.ok(view.webContents.isDestroyed());
   assert.throws(() => profiles(valid), /终端窗口/);
-  assert.ok((await profiles(request(windows[1]))).some(profile => profile.id === 'default'));
+  await host.open('window');
+  assert.ok((await profiles(request(views[1]))).some(profile => profile.id === 'default'));
+  windows.at(-1).destroy();
+  assert.equal(host.getPresentation(), 'closed');
+  assert.deepEqual(modes, ['inline', 'window', 'inline', 'closed', 'window', 'closed']);
   host.dispose();
   assert.equal(handlers.size, 0);
   assert.equal(ipcMain.listenerCount('brclio:terminal-window:ack'), 0);
-  assert.ok(windows[1].isDestroyed());
 });
 
 test('a crashed PTY service retires its panes and pending requests, then accepts a fresh session', async () => {

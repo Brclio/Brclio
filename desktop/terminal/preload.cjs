@@ -12,6 +12,9 @@ function subscribe(channel, callback) {
 
 contextBridge.exposeInMainWorld('brclioTerminal', Object.freeze({
   platform: process.platform,
+  getPresentation: () => ipcRenderer.invoke(prefix + 'presentation'),
+  setPresentation: mode => ipcRenderer.invoke(prefix + 'set-presentation', mode),
+  onPresentation: callback => subscribe('presentation-changed', callback),
   profiles: () => ipcRenderer.invoke(prefix + 'profiles'),
   create: options => ipcRenderer.invoke(prefix + 'create', options),
   write: (id, data, binary = false) => ipcRenderer.invoke(prefix + 'write', id, data, binary),

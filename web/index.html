@@ -12,10 +12,12 @@
   <link rel="stylesheet" href="account.css">
   <link rel="stylesheet" href="xhs.css">
   <link rel="stylesheet" href="suggestions.css">
+  <link rel="stylesheet" href="terminal-workspace.css">
   <script src="path-engine.js" defer></script>
   <script src="suggestion-routes.js" defer></script>
   <script src="bridge.js" defer></script>
   <script src="software-log.js" defer></script>
+  <script src="terminal-workspace.js" defer></script>
   <script src="app.js" defer></script>
   <script src="account.js" defer></script>
   <script src="feedback.js" defer></script>
@@ -117,6 +119,15 @@
             <details class="xhs-live-advanced"><summary>高级设置</summary><label class="xhs-label" for="xhs-live-size-policy">尺寸策略<select class="app-select" id="xhs-live-size-policy"><option value="auto">自动适配（推荐）</option><option value="original">必须保留原尺寸</option><option value="compact">优先小体积</option></select></label><p class="field-hint">自动模式尽量保留照片像素，动态部分按设备能力等比例适配；必须保留原尺寸时，不支持的画幅会提前提示。小体积模式会缩小照片与动态画面。原文件不变。</p></details>
             <div class="xhs-live-plan" id="xhs-live-plan" hidden><p id="xhs-live-plan-summary" role="status" aria-live="polite"></p><p id="xhs-live-plan-detail" class="field-hint"></p><div id="xhs-live-audio-choice" hidden><p id="xhs-live-audio-reason" class="field-hint"></p><div class="xhs-action-row"><button class="button button-outline" id="xhs-live-keep-audio" type="button">恢复 1 倍速并保留声音</button><button class="button button-outline" id="xhs-live-allow-silent" type="button">允许无声制作</button></div></div></div><p id="xhs-live-support" class="field-hint"></p><div class="xhs-action-row"><button class="button button-outline" id="xhs-live-preview">预览所选片段</button><button class="button button-primary" id="xhs-live-generate">生成实况</button><button class="button button-outline" id="xhs-live-cancel" hidden>取消制作</button><button class="button button-outline" id="xhs-live-retry" type="button" hidden>用兼容尺寸重试</button></div><progress id="xhs-live-progress" value="0" max="100" aria-label="实况制作进度" hidden></progress><p id="xhs-live-status" class="field-hint" role="status" aria-live="polite"></p></section></div><div class="xhs-live-preview-panel"><div id="xhs-live-preview-empty" class="xhs-preview-empty"><svg class="icon"><use href="#i-spark"/></svg><p>让一个瞬间，动起来。</p><span>选择素材后预览片段与封面。</span></div><video id="xhs-live-preview-video" class="xhs-live-preview-media" controls playsinline hidden></video><canvas id="xhs-live-preview-canvas" class="xhs-live-preview-media" hidden aria-label="实况片段画布预览"></canvas><img id="xhs-live-preview-image" class="xhs-live-preview-media" alt="实况封面预览" hidden><section id="xhs-live-result" class="xhs-surface" hidden><h2>实况已生成</h2><p id="xhs-live-result-info" class="field-hint"></p><div class="xhs-export-actions"><button class="button button-primary" id="xhs-live-export-package">下载 .pvt 实况包 ZIP</button><button class="button button-outline" id="xhs-live-export-pair">下载配对照片 + MOV ZIP</button><button class="text-button" id="xhs-live-export-photo">下载照片</button><button class="text-button" id="xhs-live-export-mov">下载 MOV</button></div><p class="field-hint">在 Mac 解压实况包 ZIP，再隔空投送整个 .pvt 到 iPhone。也可将配对照片与 MOV 同时导入 Mac「照片」。接收后在照片 App 确认 LIVE 标记。</p></section></div></div>
         </section>
+      </section>
+      <section id="view-terminal" class="view" aria-label="Brclio 终端" hidden>
+        <div id="terminal-surface">
+          <div id="terminal-placeholder" role="status">
+            <p id="terminal-placeholder-text">正在打开终端…</p>
+            <button type="button" id="terminal-return" class="button" hidden>在主窗口打开</button>
+            <button type="button" id="terminal-show" class="button" hidden>显示独立窗口</button>
+          </div>
+        </div>
       </section>
       <section id="view-suggestions" class="view" aria-labelledby="suggestions-heading" hidden></section>
       <section id="view-feedback" class="view" aria-labelledby="feedback-heading" hidden>

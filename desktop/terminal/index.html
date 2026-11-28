@@ -3,13 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Brclio 终端</title>
   <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="terminal.css">
   <script defer src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script defer src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script defer src="../../node_modules/@xterm/addon-search/lib/addon-search.js"></script>
+  <script defer src="../../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
+  <script defer src="../../node_modules/@xterm/addon-image/lib/addon-image.js"></script>
+  <script defer src="output-addons.js"></script>
+  <script defer src="session-history.js"></script>
+  <script defer src="command-marks.js"></script>
+  <script defer src="arrangements.js"></script>
+  <script defer src="profiles.js"></script>
+  <script defer src="buffer-tools.js"></script>
   <script defer src="terminal.js"></script>
 </head>
 <body>
@@ -34,11 +42,16 @@
       <button id="find" aria-label="查找终端内容" aria-expanded="false" aria-controls="find-bar"><svg aria-hidden="true"><use href="#glass"/></svg></button>
       <button id="copy" aria-label="复制所选文本"><svg aria-hidden="true"><use href="#sheets"/></svg></button>
       <button id="paste" aria-label="粘贴"><svg aria-hidden="true"><use href="#clipboard"/></svg></button>
+      <button id="terminal-actions" aria-haspopup="dialog">操作</button>
+      <button id="presentation" type="button">弹出窗口</button>
     </div>
   </header>
   <div id="tabs" role="tablist" aria-label="终端标签"></div>
   <div id="find-bar" role="search" hidden>
     <label for="find-input">查找</label><input id="find-input" type="search" placeholder="在当前窗格中查找" autocomplete="off" spellcheck="false">
+    <label><input id="find-case" type="checkbox">区分大小写</label>
+    <label><input id="find-word" type="checkbox">整词</label>
+    <label><input id="find-regex" type="checkbox">正则</label>
     <span id="find-result" role="status"></span>
     <button id="find-prev" title="上一个（Shift + Enter）">上一个</button><button id="find-next" title="下一个（Enter）">下一个</button>
     <button id="find-close" aria-label="关闭查找" title="关闭查找（Esc）"><svg aria-hidden="true"><use href="#cross"/></svg></button>
@@ -53,5 +66,61 @@
       <button id="directory" title="选择新会话的起始目录"><svg aria-hidden="true"><use href="#folder"/></svg><span id="directory-label">主目录</span></button>
     </div>
   </footer>
+  <dialog id="actions-dialog" aria-labelledby="actions-title">
+    <div class="dialog-head"><h2 id="actions-title">终端操作</h2><button id="actions-close">关闭</button></div>
+    <fieldset><legend>搜索与选择</legend>
+      <label>搜索所有窗格<input id="buffer-query" type="search" maxlength="240"></label>
+      <button id="buffer-search">搜索</button><button id="buffer-complete">从滚动记录补全</button>
+      <button id="buffer-copy-mode">键盘选择</button>
+      <span id="buffer-status" role="status"></span><div id="buffer-results"></div>
+    </fieldset>
+    <fieldset><legend>配置文件</legend>
+      <label>搜索配置<input id="preset-filter" type="search" placeholder="名称或标签"></label>
+      <select id="preset-list" aria-label="已保存的配置"></select>
+      <button id="preset-load">载入</button><button id="preset-delete">删除配置</button>
+      <label>名称<input id="preset-name" maxlength="64" placeholder="默认"></label>
+      <label>标签<input id="preset-tags" maxlength="180" placeholder="用逗号分隔"></label>
+      <label>字体<input id="preset-font" maxlength="200"></label>
+      <label>字号<input id="preset-size" type="number" min="8" max="40"></label>
+      <label>历史行数<input id="preset-scrollback" type="number" min="100" max="50000"></label>
+      <label>光标<select id="preset-cursor"><option value="block">方块</option><option value="bar">竖线</option><option value="underline">下划线</option></select></label>
+      <label>最低对比度<input id="preset-contrast" type="number" min="1" max="21" step="0.1"></label>
+      <label><input id="preset-blink" type="checkbox">光标闪烁</label>
+      <label><input id="preset-autocopy" type="checkbox">选中即复制</label>
+      <label><input id="preset-follow" type="checkbox">焦点跟随鼠标</label>
+      <label>导入 iTerm2 配色<input id="preset-colors" type="file" accept=".itermcolors"></label>
+      <button id="preset-apply">应用到当前窗格</button><button id="preset-save">保存为新会话默认配置</button>
+      <span id="preset-status" role="status"></span>
+    </fieldset>
+    <fieldset><legend>窗口布局</legend>
+      <label>标签名称<input id="tab-label" maxlength="64"></label><button id="tab-rename">重命名当前标签</button>
+      <label>布局名称<input id="arrangement-name" maxlength="64"></label><button id="arrangement-save">保存布局</button>
+      <select id="arrangement-list" aria-label="已保存的布局"></select>
+      <button id="arrangement-restore">用新会话打开</button><button id="arrangement-delete">删除布局</button>
+      <p>恢复时会新增标签和 Shell 会话，当前会话继续运行。</p><span id="arrangement-status" role="status"></span>
+    </fieldset>
+    <fieldset><legend>标记与命令输出</legend>
+      <label><input type="checkbox" id="shell-integration">为新会话启用 Shell 集成</label>
+      <button data-mark="add">添加标记</button><button data-mark="previous">上一个标记</button>
+      <button data-mark="next">下一个标记</button><button data-mark="selectOutput">选取命令输出</button>
+    </fieldset>
+    <details id="history-details">
+      <summary>即时回放与粘贴历史</summary>
+      <p>仅在当前窗格启用。屏幕和粘贴内容可能含敏感文字，关闭记录或窗格时会清空。</p>
+      <fieldset><legend>屏幕文字回放</legend>
+        <label><input id="replay-record" type="checkbox">临时记录屏幕</label>
+        <button type="button" id="replay-clear">清空回放</button>
+        <label>时间点<input type="range" id="replay-position" min="0" max="0" value="0" step="1"></label>
+        <output id="replay-time" for="replay-position"></output>
+        <pre id="replay-screen" tabindex="0" aria-label="屏幕文字快照"></pre>
+      </fieldset>
+      <fieldset><legend>已粘贴的文本</legend>
+        <label><input id="paste-record" type="checkbox">临时记录我粘贴的文本</label>
+        <button type="button" id="paste-clear">清空历史</button>
+        <select id="paste-list" aria-label="选择以前粘贴的文本"></select>
+        <button type="button" id="paste-again">粘贴到当前窗格</button>
+      </fieldset>
+    </details>
+  </dialog>
 </body>
 </html>

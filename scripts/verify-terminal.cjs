@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { _electron: electron, expect } = require('@playwright/test');
+const { verifyTerminalOutput } = require('./verify-terminal-output.cjs');
 
 async function main() {
   const root = path.resolve(__dirname, '..');
@@ -37,8 +38,15 @@ async function main() {
     const mainWindow = await app.browserWindow(home);
     const originalWindowSize = await mainWindow.evaluate(win => win.getContentSize());
     await mainWindow.evaluate(win => win.setContentSize(800, 765));
-    await home.locator('.platform-status').scrollIntoViewIfNeeded();
-    await expect(home.locator('.platform-status')).toBeInViewport({ ratio: 1 });
+    const statusRow = home.locator('.platform-status');
+    await expect(statusRow).toBeInViewport({ ratio: 1 });
+    await expect.poll(() => statusRow.evaluate(row => {
+      const bottomPadding = parseFloat(getComputedStyle(row.closest('.app-sidebar')).paddingBottom);
+      return Math.abs(innerHeight - row.getBoundingClientRect().bottom - bottomPadding);
+    })).toBeLessThan(0.5);
+    const statusBeforeScrolling = await statusRow.boundingBox();
+    await home.locator('.nav-main').evaluate(nav => { nav.scrollTop = nav.scrollHeight; });
+    assert.deepEqual(await statusRow.boundingBox(), statusBeforeScrolling, 'The version row stays anchored as tools scroll');
     await home.locator('#about-button').click();
     await expect(home.locator('#about-dialog')).toBeVisible();
     await home.locator('#about-dialog [data-close]').first().click();
@@ -57,6 +65,12 @@ async function main() {
     await home.locator('#global-search').press('Enter');
     const terminal = await windowPromise;
     await terminal.waitForURL('file://**/desktop/terminal/index.html');
+    await verifyTerminalOutput(terminal);
+    const countWindows = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
+    const inlineVisible = () => mainWindow.evaluate(win => win.contentView.children.some(view =>
+      view.webContents?.getURL().endsWith('/desktop/terminal/index.html') && view.getVisible()));
+    await expect.poll(countWindows).toBe(1);
+    await expect.poll(inlineVisible).toBe(true);
     const active = terminal.locator('.pane.active:visible');
     const tabs = terminal.locator('#tabs [role=tab]');
     await expect(tabs).toHaveCount(1);
@@ -87,8 +101,25 @@ async function main() {
       : "printf 'COL%s-%s\\n' UMNS \"$(tput cols)\"");
     const originalSize = Number((await rows(active).innerText()).match(/BRCLIO-TTY-(\d+)/)[1]);
 
+    const sessionId = await active.getAttribute('data-id');
+    await home.locator('#about-button').click();
+    await expect.poll(inlineVisible).toBe(false);
+    await home.locator('#about-dialog [data-close]').first().click();
+    await expect.poll(inlineVisible).toBe(true);
+    await home.locator('.nav-item[data-view=copy]').click();
+    await expect.poll(inlineVisible).toBe(false);
+    await expect(home.locator('#manual-paths')).toHaveValue('Brclio terminal smoke');
     await home.locator('[data-open-terminal].nav-item').click();
-    assert.equal(app.windows().length, 2, 'All launchers focus the same terminal window');
+    await expect.poll(inlineVisible).toBe(true);
+    await terminal.locator('#presentation').click();
+    await expect.poll(countWindows).toBe(2);
+    await expect.poll(inlineVisible).toBe(false);
+    await expect(terminal.locator('#presentation')).toHaveText('收回主窗口');
+    await terminal.locator('#presentation').click();
+    await expect.poll(countWindows).toBe(1);
+    await expect.poll(inlineVisible).toBe(true);
+    await expect(active).toHaveAttribute('data-id', sessionId);
+    await expect(rows(active)).toContainText('BRCLIO-TTY-');
     await terminal.locator('#split-right').click();
     await expect(terminal.locator('.pane:visible')).toHaveCount(2);
     await width();
@@ -121,7 +152,12 @@ async function main() {
       { timeout: 15000 }).toMatch(windows ? /PS [^>]*>$/ : /[%$#]$/);
     await command(windows ? "[Console]::WriteLine(('INTERRUPT-' + 'OK'))" : "printf 'INTERRUPT-%s\\n' OK");
     await expect(rows(active)).toContainText('INTERRUPT-OK', { timeout: 15000 });
-    await terminal.close();
+    await require('./verify-terminal-profile.cjs').verifyProfileAndSearch(terminal);
+    await terminal.locator('#presentation').click();
+    await expect.poll(countWindows).toBe(2);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === 'Brclio 终端').close());
+    await expect.poll(countWindows).toBe(1);
+    await home.locator('.nav-item[data-view=copy]').click();
     await expect(home.locator('#manual-paths')).toHaveValue('Brclio terminal smoke');
     const reopened = app.waitForEvent('window');
     await home.locator('[data-view="tools"]').first().click();
@@ -130,7 +166,10 @@ async function main() {
     const fresh = await reopened;
     await expect(fresh.locator('#tabs [role=tab]')).toHaveCount(1);
     await expect(fresh.locator('.pane')).toHaveCount(1);
+    await expect(fresh.locator('#preset-name')).toHaveValue('QA profile');
     if (!windows) {
+      await fresh.locator('#presentation').click();
+      await expect.poll(countWindows).toBe(2);
       await home.close();
       const copyResult = await app.evaluate(async ({ app, clipboard }, selectedPath) => {
         const writeText = clipboard.writeText;

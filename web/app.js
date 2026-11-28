@@ -346,6 +346,7 @@
   $('#global-search').addEventListener('keydown', event => { if (event.key === 'Enter') { const result = $$('.search-result').find(item => !item.hidden); if (result) { event.preventDefault(); result.click(); } } });
   for (const name of Object.keys(toolSearchTerms)) $('#search-' + name).addEventListener('click', () => { $('#search-dialog').close(); setView(name); });
   if (host.openTerminal) {
+    viewNames.terminal = 'Brclio 终端';
     const terms = 'Brclio 终端 命令行 分屏 标签页 terminal shell zsh bash powershell cmd';
     toolSearchTerms.terminal = terms;
     $('#terminal-card').dataset.toolSearch = terms;
@@ -353,10 +354,7 @@
     const count = $$('[data-tool-search]').length;
     $('.nav-count').textContent = count;
     $('.tool-total').textContent = `${count} 个工具，持续生长中`;
-    $$('[data-open-terminal]').forEach(button => button.addEventListener('click', async () => {
-      if ($('#search-dialog').open) $('#search-dialog').close();
-      try { await host.openTerminal(); } catch (error) { toast(error.message, true); }
-    }));
+    window.BrclioTerminalWorkspace(host, setView);
   }
   $('#tool-filter').addEventListener('input', event => {
     const cards = $$('[data-tool-search]');

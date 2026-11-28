@@ -52,6 +52,7 @@
     "appId": "com.brclio.toolbox",
     "asar": true,
     "asarUnpack": [
+      "desktop/terminal/shell-integration/**",
       "node_modules/node-pty/**"
     ],
     "directories": {
@@ -132,7 +133,9 @@
   },
   "dependencies": {
     "@xterm/addon-fit": "0.10.0",
+    "@xterm/addon-image": "0.8.0",
     "@xterm/addon-search": "0.15.0",
+    "@xterm/addon-unicode11": "0.8.0",
     "@xterm/xterm": "5.5.0",
     "node-pty": "1.2.0-beta.18",
     "ws": "8.22.0"

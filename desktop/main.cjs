@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, net, protocol, session, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, clipboard, dialog, globalShortcut, ipcMain, Menu, net, protocol, session, shell } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -190,12 +190,13 @@ function createWindow() {
     if (pendingPaths.length) { mainWindow.webContents.send('brclio:paths', pendingPaths); pendingPaths = []; }
   });
   mainWindow.on('blur', resumeRecordingShortcut);
-  mainWindow.webContents.on('did-start-loading', resumeRecordingShortcut);
+  mainWindow.webContents.on('did-start-loading', () => { terminalHost?.setViewport(null); resumeRecordingShortcut(); });
   mainWindow.webContents.on('render-process-gone', () => {
+    terminalHost?.setViewport(null);
     softwareLogs.record('app.renderer', 'ERROR');
     resumeRecordingShortcut();
   });
-  mainWindow.on('closed', () => { account.cancelOAuth(); mainWindow = null; rendererReady = false; resumeRecordingShortcut(); });
+  mainWindow.on('closed', () => { terminalHost?.setViewport(null); account.cancelOAuth(); mainWindow = null; rendererReady = false; resumeRecordingShortcut(); });
   mainWindow.loadFile(indexPath);
   return mainWindow;
 }
@@ -215,10 +216,22 @@ function handle(channel, callback) {
 
 function registerIPC() {
   if (['darwin', 'win32'].includes(process.platform)) {
-    handle('brclio:terminal:open', () => {
-      terminalHost ??= require('./terminal/host.cjs').createTerminalHost({ app, BrowserWindow, ipcMain, dialog, clipboard });
-      return terminalHost.open();
-    });
+    function getTerminalHost() {
+      terminalHost ??= require('./terminal/host.cjs').createTerminalHost({
+        app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard,
+        getMainWindow: () => mainWindow, showMainWindow: createWindow,
+        onPresentation: mode => {
+          const contents = mainWindow?.webContents;
+          if (contents && !contents.isDestroyed() && isLocalDocument(contents.getURL(), indexPath)) {
+            contents.send('brclio:terminal:presentation-changed', mode);
+          }
+        },
+      });
+      return terminalHost;
+    }
+    handle('brclio:terminal:open', mode => getTerminalHost().open(mode));
+    handle('brclio:terminal:viewport', rect => (rect === null ? terminalHost : getTerminalHost())?.setViewport(rect));
+    handle('brclio:terminal:presentation', () => terminalHost?.getPresentation() || 'closed');
   }
   handle('brclio:logs:get', () => softwareLogs.read());
   handle('brclio:logs:event', (action, outcome) => softwareLogs.recordUI(action, outcome));

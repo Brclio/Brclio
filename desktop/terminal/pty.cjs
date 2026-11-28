@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { shellArguments } = require('./shell-startup.cjs');
 
 const MAX_INPUT = 1024 * 1024;
 const HIGH_WATER = 128 * 1024;
@@ -73,7 +74,7 @@ function createPtySessions({ home, send, platform = process.platform, env = proc
     return state;
   }
 
-  function create({ id, profile = 'default', cwd = home, cols = 80, rows = 24 } = {}) {
+  function create({ id, profile = 'default', cwd = home, cols = 80, rows = 24, shellIntegration = false } = {}) {
     if (typeof id !== 'string' || !UUID.test(id) || sessions.has(id)) throw new Error('终端会话标识无效。');
     if (sessions.size >= 32) throw new Error('最多可同时打开 32 个终端会话。');
     dimensions(cols, rows);
@@ -87,7 +88,8 @@ function createPtySessions({ home, send, platform = process.platform, env = proc
       name: 'xterm-256color', cols, rows, cwd, env: shellEnvironment(env, selected.file, platform),
       ...(platform === 'win32' ? { useConptyDll: true } : {}),
     };
-    const pty = load().spawn(selected.file, platform === 'win32' ? [] : ['-l'], options);
+    const args = shellArguments(selected.file, platform, shellIntegration === true, options.env);
+    const pty = load().spawn(selected.file, args, options);
     const state = { pty, outstanding: 0, paused: false, forceKill: null };
     sessions.set(id, state);
     state.data = pty.onData(data => {

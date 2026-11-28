@@ -1,0 +1,12 @@
+.app-content:has(> #view-terminal.active) { max-width: none; padding: 0; }
+#terminal-surface {
+  height: calc(100dvh - 64px);
+  display: grid;
+  place-items: center;
+  background: var(--cream);
+}
+#terminal-placeholder { text-align: center; color: var(--ink-muted); }
+#terminal-placeholder .button { margin: 8px 3px; }
+@media (max-width: 600px) {
+  #terminal-surface { height: 65dvh; }
+}

@@ -44,7 +44,19 @@
 
   function activePane() { return currentTab?.active; }
 
+  function applySession(value) {
+    const shell = byId('profile');
+    shell.value = [...shell.options].some(option => option.value === value.shell) ? value.shell : 'default';
+    nextDirectory = value.cwd || undefined;
+    byId('directory-label').textContent = nextDirectory || '主目录';
+    byId('directory').title = '新会话起始目录 · ' + (nextDirectory || '主目录');
+    byId('shell-integration').checked = value.integration === true;
+  }
+  const appearance = window.BrclioTerminalProfiles({ theme, activePane, refit: fit, applySession,
+    readSession: () => ({ shell: byId('profile').value, cwd: nextDirectory, integration: byId('shell-integration').checked }) });
+
   function refreshTools() {
+    window.BrclioTerminalHistory.refresh();
     const pane = activePane();
     for (const id of ['split-right', 'split-down', 'close-pane', 'find']) byId(id).disabled = !pane;
     byId('paste').disabled = !pane || pane.state !== 'running';
@@ -57,7 +69,7 @@
     pane.caption.textContent = name;
     pane.caption.title = name;
     if (pane.tab.active === pane) {
-      const label = pane.tab.number + ' · ' + name;
+      const label = pane.tab.number + ' · ' + (pane.tab.customName || name);
       pane.tab.name.textContent = label;
       pane.tab.button.title = label;
     }
@@ -127,7 +139,9 @@
     }).catch(error => { if (panes.has(pane.id) && pane.state === 'running') report(error); });
   }
 
-  function newPane(tab, mount) {
+  function newPane(tab, mount, launch = {
+    profile: byId('profile').value, cwd: nextDirectory || null, shellIntegration: byId('shell-integration').checked,
+  }) {
     const id = crypto.randomUUID();
     const node = element('section', 'pane');
     node.dataset.id = id;
@@ -142,8 +156,7 @@
     mount.append(node);
 
     const terminal = new Terminal({
-      theme, fontFamily: '"SFMono-Regular", Consolas, Menlo, "Liberation Mono", monospace',
-      fontSize: 14, scrollback: 10000, cursorBlink: true, screenReaderMode: true,
+      ...appearance.options(), screenReaderMode: true,
       allowProposedApi: true, allowTransparency: false,
       ...(api.platform === 'win32' && { windowsPty: { backend: 'conpty' } }),
     });
@@ -151,15 +164,21 @@
     const finder = new SearchAddon.SearchAddon();
     terminal.loadAddon(fitter);
     terminal.loadAddon(finder);
-    const pane = { id, tab, node, host, terminal, fitter, finder, caption, stateLabel, input: Promise.resolve() };
+    const pane = { id, tab, node, host, launch, terminal, fitter, finder, caption, stateLabel, input: Promise.resolve() };
     panes.set(id, pane);
     tab.panes.add(pane);
     terminal.open(host);
+    pane.appearance = appearance.current;
+    node.addEventListener('pointerenter', event => {
+      if (pane.appearance.follow && event.pointerType === 'mouse' && !document.querySelector('dialog[open]')) selectPane(pane);
+    });
+    window.BrclioTerminalOutput.activate(terminal);
+    pane.marks = BrclioCommandMarks.attach(terminal);
     terminal.textarea?.setAttribute('aria-label', '终端输入');
     setState(pane, 'starting', '正在启动 Shell…');
     fit(pane);
-    const initial = { id, cols: terminal.cols, rows: terminal.rows, profile: byId('profile').value };
-    if (nextDirectory) initial.cwd = nextDirectory;
+    const initial = { id, cols: terminal.cols, rows: terminal.rows, profile: launch.profile, shellIntegration: launch.shellIntegration };
+    if (launch.cwd) initial.cwd = launch.cwd;
     pane.observer = new ResizeObserver(() => fit(pane));
     pane.observer.observe(host);
     node.addEventListener('pointerdown', event => {
@@ -173,6 +192,9 @@
     terminal.onData(data => sendInput(pane, data));
     terminal.onBinary(data => sendInput(pane, data, true));
     terminal.onSelectionChange(() => { if (activePane() === pane) refreshTools(); });
+    host.addEventListener('pointerup', () => {
+      if (pane.appearance.autocopy && terminal.hasSelection()) api.copy(terminal.getSelection()).catch(report);
+    });
     terminal.onTitleChange(value => {
       pane.title = value.replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '').trim().slice(0, 160);
       updateLabel(pane);
@@ -200,7 +222,7 @@
     return pane;
   }
 
-  function newTab() {
+  function newTab(customName = '', launch) {
     const number = nextTabNumber++;
     const header = element('div', 'tab');
     const button = element('button', 'tab-button');
@@ -219,12 +241,12 @@
     panel.setAttribute('aria-labelledby', button.id);
     button.setAttribute('aria-controls', panel.id);
     byId('workspace').append(panel);
-    const tab = { number, panel, header, button, name, panes: new Set(), active: null };
+    const tab = { number, panel, header, button, name, customName, panes: new Set(), active: null };
     tabs.set(number, tab);
     button.addEventListener('click', () => selectTab(tab));
     close.addEventListener('click', () => closeTab(tab));
     selectTab(tab);
-    newPane(tab, panel);
+    return newPane(tab, panel, launch);
   }
 
   function setFraction(split, value) {
@@ -234,8 +256,7 @@
     split.children[1].setAttribute('aria-valuenow', String(Math.round(100 * fraction)));
   }
 
-  function splitPane(direction) {
-    const pane = activePane();
+  function splitPane(direction, pane = activePane(), launch, fraction = .5) {
     if (!pane) return;
     const split = element('div', 'split');
     split.dataset.direction = direction;
@@ -270,8 +291,9 @@
       setFraction(split, Number(handle.getAttribute('aria-valuenow')) / 100 + (index ? .05 : -.05));
     });
     split.append(pane.node, handle);
-    newPane(pane.tab, split);
-    setFraction(split, .5);
+    const second = newPane(pane.tab, split, launch);
+    setFraction(split, fraction);
+    return second;
   }
 
   function disposePane(pane) {
@@ -280,6 +302,7 @@
     pane.observer.disconnect();
     const wasRunning = pane.state === 'running' || pane.state === 'starting';
     pane.state = 'closed';
+    pane.marks.dispose();
     pane.terminal.dispose();
     if (wasRunning) api.close(pane.id).catch(error => { if (!closing) report(error); });
   }
@@ -332,7 +355,16 @@
       return;
     }
     const method = direction === 'previous' ? 'findPrevious' : 'findNext';
-    const found = pane.finder[method](term, { decorations, incremental });
+    const regex = byId('find-regex').checked;
+    if (regex) {
+      try { new RegExp(term); } catch {
+        pane.finder.clearDecorations();
+        byId('find-result').textContent = '正则表达式无效';
+        return;
+      }
+    }
+    const found = pane.finder[method](term, { decorations, incremental, regex,
+      caseSensitive: byId('find-case').checked, wholeWord: byId('find-word').checked });
     if (!found) byId('find-result').textContent = '无匹配';
   }
 
@@ -367,6 +399,7 @@
     const data = await api.paste();
     if (pane !== activePane() || pane.state !== 'running') return;
     pane.terminal.focus();
+    window.BrclioTerminalHistory.rememberPaste(pane.terminal, data);
     pane.terminal.paste(data);
   }
 
@@ -388,6 +421,7 @@
   }
 
   function shortcuts(event) {
+    if (bufferKeyboard(event)) return;
     if (event.isComposing) return;
     const key = event.key.toLowerCase();
     const mod = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && event.shiftKey && !event.metaKey;
@@ -416,6 +450,7 @@
     for (const control of document.querySelectorAll('button, select')) control.disabled = true;
     return;
   }
+  window.BrclioTerminalHistory.bind(activePane);
   const removeData = api.onData(({id, data}) => {
     const pane = panes.get(id);
     if (pane) pane.terminal.write(data, () => { if (panes.has(id)) api.ack(id, data.length); });
@@ -432,7 +467,17 @@
     removeExit();
     for (const pane of panes.values()) disposePane(pane);
   }, { once: true });
-  byId('new-tab').onclick = byId('empty-new').onclick = newTab;
+  window.BrclioArrangements.bind({ document, storage: localStorage,
+    snapshot: () => window.BrclioArrangements.capture(tabs.values(), currentTab, node => panes.get(node.dataset.id)),
+    open: layout => window.BrclioArrangements.restore(layout, { newTab, split: splitPane, selectTab, selectPane,
+      liveCount: () => Array.from(panes.values()).filter(pane => pane.state === 'running' || pane.state === 'starting').length }),
+    rename(name) {
+      if (!currentTab?.active) throw new Error('请先打开一个终端标签。');
+      currentTab.customName = name;
+      updateLabel(currentTab.active);
+    },
+  });
+  byId('new-tab').onclick = byId('empty-new').onclick = () => newTab();
   byId('split-right').onclick = () => splitPane('right');
   byId('split-down').onclick = () => splitPane('down');
   byId('close-pane').onclick = closeActive;
@@ -441,12 +486,44 @@
   byId('find-next').onclick = () => search();
   byId('find-prev').onclick = () => search('previous');
   byId('find-input').oninput = () => search('previous', true);
+  for (const id of ['find-case', 'find-word', 'find-regex']) byId(id).onchange = () => search('previous', true);
   byId('find-input').onkeydown = event => {
     if (event.key === 'Enter') { event.preventDefault(); search(event.shiftKey ? 'previous' : 'next'); }
   };
   byId('copy').onclick = () => copy().catch(report);
   byId('paste').onclick = () => paste().catch(report);
   byId('directory').onclick = () => chooseDirectory().catch(report);
+  const actions = byId('actions-dialog');
+  const bufferKeyboard = window.BrclioBufferTools({ panes, activePane, dialog: actions, copy: api.copy, message,
+    activate: pane => { selectTab(pane.tab); selectPane(pane); } });
+  for (const button of actions.querySelectorAll('[data-mark]')) {
+    button.onclick = () => {
+      actions.close();
+      const action = button.dataset.mark;
+      const done = activePane()?.marks[action]();
+      if (!done) message(action === 'selectOutput' ? '尚无带 Shell 集成标记的命令输出。' : '当前缓冲区没有可用标记。');
+    };
+  }
+  byId('terminal-actions').onclick = () => actions.showModal();
+  byId('actions-close').onclick = () => actions.close();
+  actions.addEventListener('close', () => activePane()?.terminal.focus());
+  const displayMode = mode => {
+    const control = byId('presentation');
+    control.dataset.mode = mode;
+    control.textContent = mode === 'window' ? '收回主窗口' : '弹出窗口';
+  };
+  api.onPresentation(displayMode);
+  api.getPresentation().then(displayMode).catch(report);
+  byId('presentation').onclick = async event => {
+    const control = event.currentTarget;
+    control.disabled = true;
+    try {
+      const result = await api.setPresentation(control.dataset.mode === 'window' ? 'inline' : 'window');
+      displayMode(result.presentation);
+      activePane()?.terminal.focus();
+    } catch (error) { report(error); }
+    finally { control.disabled = false; }
+  };
   window.addEventListener('keydown', shortcuts, true);
   const modifier = mac ? '⌘' : 'Ctrl + Shift + ';
   const hints = {
@@ -460,6 +537,6 @@
     if (closing) return;
     const options = profiles.map(profile => new Option(profile.label, profile.id));
     if (options.length) byId('profile').replaceChildren(...options);
-  }).catch(report);
-  newTab();
+    applySession(appearance.current);
+  }).catch(report).finally(() => { if (!closing && !tabs.size) newTab(); });
 })();

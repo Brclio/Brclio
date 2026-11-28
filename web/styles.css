@@ -66,7 +66,13 @@ body {font-family:var(--sans);font-size:13px;line-height:1.65;color:var(--ink);b
   .app-sidebar:has([data-view="suggestions"]:not([hidden])) .nav-bottom { margin-top: auto; }
 }
 @media (min-width: 601px) {
-  .app-sidebar:has([data-open-terminal]:not([hidden])) { overflow-y: auto; }
+  .app-sidebar:has([data-open-terminal]:not([hidden])) {
+    overflow: hidden;
+    .nav-main { min-height: 0; overflow-y: auto; }
+    .nav-main > * { flex-shrink: 0; }
+    .sidebar-note { padding-top: 4px; }
+    .platform-status { flex: none; }
+  }
 }
 @media (max-width: 390px) {
   .app-sidebar:has([data-view="suggestions"]:not([hidden])) .brand { justify-self: start; }

@@ -8,9 +8,25 @@ if (process.platform === 'darwin') {
   }, { once: true });
 }
 
+function onTerminalPresentation(callback) {
+  if (typeof callback !== 'function') throw new TypeError('需要终端显示模式处理函数。');
+  let initial = true;
+  const channel = 'brclio:terminal:presentation-changed';
+  const listener = (_event, mode) => { initial = false; callback(mode); };
+  ipcRenderer.on(channel, listener);
+  // A detached terminal can recreate the main window when it is docked.
+  // Replay its current state if no newer event reached this subscription.
+  ipcRenderer.invoke('brclio:terminal:presentation').then(mode => { if (initial) callback(mode); }).catch(() => {});
+  return () => { initial = false; ipcRenderer.removeListener(channel, listener); };
+}
+
 contextBridge.exposeInMainWorld('brclio', Object.freeze({
   ...(['darwin', 'win32'].includes(process.platform)
-    ? { openTerminal: () => ipcRenderer.invoke('brclio:terminal:open') } : {}),
+    ? {
+      openTerminal: (mode = 'inline') => ipcRenderer.invoke('brclio:terminal:open', mode),
+      setTerminalViewport: rect => ipcRenderer.invoke('brclio:terminal:viewport', rect),
+      onTerminalPresentation,
+    } : {}),
   xhsRequest: (action, input) => ipcRenderer.invoke('brclio:xhs:request', action, input),
   onXhsEvent: callback => {
     if (typeof callback !== 'function') throw new TypeError('需要小红书状态处理函数。');
