@@ -168,7 +168,7 @@ async function main() {
     await require('./verify-terminal-profile.cjs').verifyProfileAndSearch(terminal);
     await require('./verify-terminal-workspace-tools.cjs').verifyWorkspaceTools(terminal, command, windows);
     await require('./verify-terminal-host-library.cjs').verifyHostLibrary(terminal);
-    await require('./verify-terminal-center.cjs').verifyConnectionCenter(terminal);
+    await require('./verify-terminal-center.cjs').verifyConnectionCenter(terminal,app);
     await require('./verify-terminal-forwarding.cjs').verifyForwarding(terminal);
     await require('./verify-terminal-forwarding.cjs').verifyIdentity(terminal, app, temporary);
     if (windows && executable) {

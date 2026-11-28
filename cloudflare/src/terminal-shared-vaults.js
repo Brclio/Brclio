@@ -202,6 +202,10 @@ export async function terminalSharedVaults(request, session, store) {
   if (input.expectedUserId !== session.id) return json({error:'登录账号已变化，请重新打开终端。'},409);
   // A pinned snapshot covers membership, invitations and active grants. Conflicting
   // Git commits rerun the entire authorization decision before any write.
-  const result = await store.transaction(tx => run(tx,session,input));
+  // Removing a vault reads and updates up to nine account indexes. On ref
+  // contention, return a conflict instead of repeating that fan-out in one Free request.
+  let attempts = 0;
+  const limit = input.action === 'delete' ? 1 : 2;
+  const result = await store.transaction(tx => ++attempts <= limit ? run(tx,session,input) : conflict());
   return result.error ? json({error:result.error},result.status) : json({userId:session.id,...result});
 }

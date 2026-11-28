@@ -1001,3 +1001,18 @@ test('personal snippets sync has its own revision and rejects private notes, sta
   assert.equal((await f.call(route,'PUT',{...patch,revision:1,data:[{...item,kind:'note'}]},as(a))).status,400);
   assert.deepEqual((await (await f.call('apps/terminal/data','GET',null,as(a))).json()).data,{hosts:[],forwards:[]});
 });
+
+test('a grant revoked between authentication and the personal terminal snapshot cannot read snippets', async () => {
+  const f = fixture();
+  const account = await f.register('read-grant','read-grant@example.test',true);
+  const options = {native:true, headers:{Authorization:'Bearer ' + account.token}};
+  const snapshot = f.store.snapshot.bind(f.store);
+  let snapshots = 0;
+  f.store.snapshot = () => {
+    if (++snapshots === 2) f.store.files.get('users/' + account.user.id + '/credentials.json').sessions = {};
+    return snapshot();
+  };
+  const response = await f.call('apps/terminal/snippets','GET',null,options);
+  assert.equal(response.status,401);
+  assert.equal('data' in await response.json(),false);
+});

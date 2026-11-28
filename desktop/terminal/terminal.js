@@ -579,7 +579,7 @@
   });
   window.BrclioAdvancedPaste({ api, activePane, actions, paste: paneTools.pasteOnly });
   const snippets = window.BrclioSnippets({ activePane, actions, paste: paneTools.pasteOnly });
-  window.BrclioCommandLibrary.bind(activePane, paneTools.pasteOnly, snippets.draft);
+  window.BrclioCommandLibrary.bind(activePane, paneTools.pasteOnly, snippets.draft, sendInput);
   const filter = byId('actions-filter');
   const actionList = byId('actions-list');
   const actionGroups = [...actionList.querySelectorAll('fieldset, details')];

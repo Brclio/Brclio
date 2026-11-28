@@ -115,9 +115,6 @@
     function finish() {
       if (!session?.host) return;
       if (session.protocol && session.protocol !== 'ssh') { warn('已略过非 SSH 会话'); return; }
-      if (session.identityFile && /\.ppk$/i.test(session.identityFile)) {
-        delete session.identityFile; warn('PPK 私钥需在 PuTTYgen 导出为 OpenSSH 格式后单独关联');
-      }
       add(session, session.name);
     }
     for (const line of text.split(/\r?\n/)) {
@@ -130,8 +127,9 @@
           if (name !== 'Default Settings') session = { name };
         }
       } else if (session) {
-        const value = /^"(HostName|UserName|Protocol|PublicKeyFile)"="((?:\\.|[^"\\])*)"$/.exec(line);
-        if (value) session[{HostName:'host',UserName:'user',Protocol:'protocol',PublicKeyFile:'identityFile'}[value[1]]] = value[2].replace(/\\(["\\])/g, '$1');
+        if (line.startsWith('"PublicKeyFile"=')) warn('PuTTY 身份文件需在导入后单独关联。');
+        const value = /^"(HostName|UserName|Protocol)"="((?:\\.|[^"\\])*)"$/.exec(line);
+        if (value) session[{HostName:'host',UserName:'user',Protocol:'protocol'}[value[1]]] = value[2].replace(/\\(["\\])/g, '$1');
         const port = /^"PortNumber"=dword:([\da-f]{8})$/i.exec(line);
         if (port) session.port = parseInt(port[1],16);
       }

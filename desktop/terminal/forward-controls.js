@@ -34,7 +34,7 @@ window.BrclioForwardControls = (() => {
     const hosts = window.BrclioConnection.store(localStorage);
     const live = new Map();
     let identity = {};
-    let groupKeyHost = '';
+    let groupKeyHost = '', kexHostName = '';
     let selected = '';
     let observer;
 
@@ -65,9 +65,10 @@ window.BrclioForwardControls = (() => {
       field('hint').textContent = type === 'dynamic' ? '在应用的 SOCKS 代理设置中填写本地监听地址和端口。' :
         remote ? '远端 SSH 服务器接收连接，再通过隧道访问本地网络的目标。' : '本机接收连接，再通过 SSH 服务器访问远端网络的目标。';
     }
-    function setHost(target = {}, source = '') {
+    function setHost(target = {}, source = '', kexHost = '') {
+      kexHostName = kexHost;
       groupKeyHost = source || target.groupKeySource || '';
-      identity = { jump: target.jump, proxy: target.proxy, proxyUser: target.proxyUser, identityFile: groupKeyHost ? undefined : target.identityFile };
+      identity = { requirePostQuantum:target.requirePostQuantum, jump: target.jump, proxy: target.proxy, proxyUser: target.proxyUser, identityFile: groupKeyHost ? undefined : target.identityFile };
       for (const key of ['host', 'user', 'port']) field(key).value = target[key] ?? '';
     }
     function select(name, target) {
@@ -90,8 +91,8 @@ window.BrclioForwardControls = (() => {
         const host = window.BrclioConnection.resolve(entry, configs);
         return source && ['host', 'user', 'port', 'jump', 'identityFile'].every(k => (host[k] || '') === (source[k] || ''));
       };
-      hostList.value = item?.groupKeyHost || saved.find(equivalent)?.name || '';
-      setHost(source, item?.groupKeyHost);
+      hostList.value = item?.kexHostName || item?.groupKeyHost || saved.find(equivalent)?.name || '';
+      setHost(source, item?.groupKeyHost,item?.kexHostName);
       for (const key of ['name', 'listenPort', 'destinationPort']) field(key).value = item?.[key] ?? '';
       field('listenHost').value = item?.listenHost || '127.0.0.1';
       field('destinationHost').value = item?.destinationHost || '127.0.0.1';
@@ -104,6 +105,7 @@ window.BrclioForwardControls = (() => {
       const item = {};
       for (const key of ['name','type','listenHost','listenPort','destinationHost','destinationPort']) item[key] = field(key).value;
       item.connection = { ...identity };
+      if (kexHostName) item.kexHostName = kexHostName;
       if (groupKeyHost) item.groupKeyHost = groupKeyHost;
       for (const key of ['host','user','port']) item.connection[key] = field(key).value;
       return item;
@@ -116,11 +118,11 @@ window.BrclioForwardControls = (() => {
     field('type').onchange = direction;
     field('host-list').onchange = guard(() => {
       const saved = hosts.all().find(entry => entry.name === field('host-list').value);
-      setHost(saved ? hosts.resolve(saved) : undefined);
+      setHost(saved ? hosts.resolve(saved) : undefined, '', saved?.name);
     });
     for (const key of ['host','user','port']) field(key).oninput = () => {
       field('host-list').value = '';
-      groupKeyHost = '';
+      groupKeyHost = ''; kexHostName = '';
       identity = {};
     };
     action('close').onclick = () => dialog.close();

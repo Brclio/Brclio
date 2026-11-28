@@ -62,3 +62,101 @@ test('expired copies stop being served before lazy retention cleanup and clearte
   assert.deepEqual((await call('alice','list',null)).body.entries,[]);
   assert.deepEqual(files.get(appDataPath('alice','tlog-data-'+id.replaceAll('-',''))),{version:1,deleted:true});
 });
+
+test('only a vault owner sets prospective retention and reads the last 64 minimal ciphertext-access events',async()=>{
+  const {files,scope,call,publish}=fixture();
+  const first=randomUUID(), next=randomUUID();
+  assert.equal((await publish('bob',scope,{id:first,days:30})).status,200);
+  const original=(await call('bob','list',scope)).body.entries[0].expiresAt;
+  assert.equal((await call('alice','policy',null,{days:7,revision:0})).status,400);
+  for (const actor of ['bob','eve','guest']) {
+    assert.ok([403,404].includes((await call(actor,'policy',scope,{days:1,revision:1})).status));
+    assert.ok([403,404].includes((await call(actor,'audit',scope)).status));
+  }
+  assert.equal((await call('alice','policy',scope,{days:7,revision:0})).status,409);
+  const changed=await call('alice','policy',scope,{days:7,revision:1});
+  assert.equal(changed.body.maximumDays,7);
+  assert.equal(changed.body.entries[0].expiresAt,original);
+  assert.equal((await publish('bob',scope,{days:30,revision:2})).status,400);
+  assert.equal((await publish('bob',scope,{days:7,id:next,revision:2})).status,200);
+  assert.equal((await call('guest','read',scope,{id:next})).status,404);
+  for (let i=0;i<66;i++) {
+    const response=await call(i%2?'bob':'eve','read',scope,{id:i%2?first:next});
+    assert.equal(response.status,200);
+  }
+  const events=(await call('alice','audit',scope)).body.events;
+  assert.equal(events.length,64);
+  for (const [i,event] of events.entries()) {
+    assert.deepEqual(Object.keys(event).sort(),['actor','event','id','time']);
+    assert.equal(event.actor,i%2?'eve':'bob');
+    assert.equal(event.event,'read-copy');
+    assert.equal(event.id,i%2?next:first);
+    assert.ok(Number.isSafeInteger(event.time));
+  }
+  for (const actor of ['alice','bob','eve']) {
+    const result=(await call(actor,'list',scope)).body;
+    assert.equal(result.revision,3,'audits do not invalidate a pending publication form');
+    assert.ok(!Object.hasOwn(result,'events') && !Object.hasOwn(result,'audit'));
+  }
+  const before=JSON.stringify(files.get(appDataPath('alice','tlog-index-'+scope.vaultId.replaceAll('-',''))));
+  await call('eve','list',scope);await call('alice','audit',scope);
+  assert.equal(JSON.stringify(files.get(appDataPath('alice','tlog-index-'+scope.vaultId.replaceAll('-','')))),before);
+});
+
+test('authenticated team reads commit before returning and bounded Git ref retries preserve both audits or fail closed',async t=>{
+  const {repositoryFixture}=await import('./fixtures/private-record-store.js');
+  const {handleAccount}=await import('../src/accounts.js');
+  const {seal,digest}=await import('../src/accounts-crypto.js');
+  const {files,scope,users,publish}=fixture(), id=randomUUID();
+  await publish('bob',scope,{id});
+  const env={SESSION_SECRET:'integration-synthetic-key-for-log-tests',ACCOUNT_LIMITER:{limit:async()=>({success:true})}};
+  const tokens={};
+  for (const actor of ['bob','eve','alice']) {
+    const session=users[actor],sid='test-'+actor;
+    tokens[actor]=await seal({typ:'account',id:actor,sid,csrf:'test',exp:session.exp,mode:'native'},env.SESSION_SECRET);
+    files.set(userPath(actor,'credentials'),{version:1,sessions:{[await digest(sid)]:{exp:session.exp,mode:'native'}}});
+    files.set(userPath(actor,'profile'),{version:1,id:actor,username:actor});
+  }
+  let conflicting=false, revoke=false, block=true, entered=0, release;
+  const rendezvous=new Promise(resolve=>{release=resolve;});
+  const repo=repositoryFixture(Object.fromEntries(files),async call=>{
+    if (call.path !== '/git/refs/heads/main') return;
+    if (conflicting) return new Response(null,{status:422});
+    if (revoke) {
+      revoke=false;
+      await repo.store.transaction(async tx=>{
+        const path=sharedVaultPath(scope.ownerId,scope.vaultId), vault=await tx.read(path);
+        vault.members=vault.members.filter(member=>member.id!=='eve');
+        tx.write(path,vault);
+      });
+    }
+    if (block) {
+      if (++entered===2) {block=false;release();}
+      await rendezvous;
+    }
+  });
+  const fetchAs=(actor,action,extra={})=>handleAccount(new Request('https://example.test'+logCloudRoute,{
+    method:'POST',headers:{'Content-Type':'application/json','X-Brclio-Client':'native',Authorization:'Bearer '+tokens[actor]},
+    body:JSON.stringify({expectedUserId:actor,scope,action,...extra})}),env,{accountStore:repo.store});
+  const both=await Promise.all([fetchAs('bob','read',{id}),fetchAs('eve','read',{id})]);
+  assert.ok(both.every(response=>response.status===200));
+  assert.equal(repo.updates.length,2);
+  const stored=(await (await fetchAs('alice','audit')).json()).events;
+  assert.deepEqual(stored.map(e=>e.actor).sort(),['bob','eve']);
+  conflicting=true;
+  const before=repo.calls.length;
+  const failed=await fetchAs('bob','read',{id});
+  const calls=repo.calls.slice(before);
+  assert.equal(failed.status,409);
+  assert.ok(!Object.hasOwn(await failed.json(),'blob'));
+  assert.equal(calls.filter(c=>c.method==='PATCH').length,2);
+  assert.ok(calls.length<=32,'bounded authenticated GitHub subrequests: '+calls.length);
+  t.diagnostic('Two failed Git ref writes used '+calls.length+' authenticated GitHub API calls including session checks.');
+  assert.equal(repo.updates.length,2);
+  conflicting=false; revoke=true;
+  const revoked=await fetchAs('eve','read',{id});
+  assert.equal(revoked.status,404);
+  assert.ok(!Object.hasOwn(await revoked.json(),'blob'));
+  assert.equal(repo.updates.length,3,'only the membership revocation was published');
+  assert.deepEqual((await (await fetchAs('alice','audit')).json()).events,stored);
+});

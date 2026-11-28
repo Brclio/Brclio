@@ -19,6 +19,10 @@
     if (!name || name.length > 64 || /[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/u.test(name)) throw new Error('请输入 1 到 64 字的规则名称。');
     const listenHost = connection.endpoint({ host: value.listenHost || '127.0.0.1' }).host;
     const result = { name, type, connection: connection.endpoint(value.connection), listenHost, listenPort: port(value.listenPort) };
+    if (value.kexHostName) {
+      if (typeof value.kexHostName !== 'string' || !value.kexHostName.trim() || value.kexHostName.length > 64) throw new Error('已选主机名称无效。');
+      result.kexHostName = value.kexHostName;
+    }
     if (value.groupKeyHost) {
       if (typeof value.groupKeyHost !== 'string' || !value.groupKeyHost.trim() || value.groupKeyHost.length > 64) throw new Error('分组身份的主机引用无效。');
       result.groupKeyHost = value.groupKeyHost;
@@ -37,6 +41,17 @@
 
   function forLaunch(value, hosts) {
     const item = rule(value);
+    if (item.kexHostName) {
+      const saved = hosts.all().find(host => host.name === item.kexHostName);
+      if (saved) {
+        const target = hosts.resolve(saved);
+        if (connection.routing(target) === connection.routing(item.connection)) {
+          if (target.requirePostQuantum) item.connection.requirePostQuantum = true;
+          else delete item.connection.requirePostQuantum;
+        }
+      }
+      delete item.kexHostName;
+    }
     if (!item.groupKeyHost) return item;
     const resolved = hosts.resolve({ ...item.connection, groupKeySource: item.groupKeyHost });
     item.connection.identityFile = resolved.identityFile;
@@ -44,7 +59,7 @@
     return item;
   }
 
-  function argumentsFor(value) {
+  function argumentsFor(value, session) {
     const item = rule(value);
     let specification = address(item.listenHost, item.listenPort);
     if (item.type !== 'dynamic') specification += ':' + address(item.destinationHost, item.destinationPort);
@@ -52,7 +67,7 @@
     const args = ['-N', '-T', '-S', 'none', '-o', 'ControlMaster=no',
       '-o', 'IgnoreUnknown=ForkAfterAuthentication', '-o', 'ForkAfterAuthentication=no',
       '-o', 'ExitOnForwardFailure=yes', { local: '-L', remote: '-R', dynamic: '-D' }[item.type], specification];
-    return [...args, ...require('./remote-launch.cjs').argumentsFor('ssh', item.connection, false)];
+    return [...args, ...require('./remote-launch.cjs').argumentsFor('ssh', item.connection, false, session)];
   }
 
   function store(storage) {

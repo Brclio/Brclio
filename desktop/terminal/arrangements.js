@@ -21,7 +21,9 @@
     // Persist a fingerprint of routing and local identity references. Exclude
     // passwords, private key bytes, environment values and startup commands.
     const fields = ['host','user','port','jump','proxy','proxyUser','identityFile','certificateFile','agentForwarding','identityId'];
-    const bytes = new TextEncoder().encode(JSON.stringify(fields.map(key => connection[key] ?? null)));
+    const address = fields.map(key => connection[key] ?? null);
+    if (connection.requirePostQuantum) address.push('post-quantum-required');
+    const bytes = new TextEncoder().encode(JSON.stringify(address));
     const hash = await crypto.subtle.digest('SHA-256',bytes);
     const fingerprint = Array.from(new Uint8Array(hash),v => v.toString(16).padStart(2,'0')).join('');
     return hostReference({name,protocol,fingerprint});

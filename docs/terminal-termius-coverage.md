@@ -2,6 +2,8 @@
 
 核对日期为 2026-11-28。目标平台为 macOS（Apple 芯片、Intel）和 Windows x64。下表以用户能从界面完成的操作为准。「部分」列出缺少的行为，「待实测」表示代码路径已存在，尚缺对应的外部环境。每次打包结果可在测试分支的 [Desktop terminal 验证记录](https://github.com/Brclio/Brclio/actions/workflows/desktop-terminal.yml?query=branch%3Acodex%2Ftermius-desktop) 核实。功能范围来自 [Termius 官方功能表](https://www.termius.com/pricing) 和 [桌面文档](https://docs.termius.com/)。
 
+测试 CI 分别提供 `terminal-preview-mac-arm64`、`terminal-preview-mac-x64` 和 `terminal-preview-win-x64`。解开下载包及其中的 ZIP 后，打开 macOS 的 `Brclio Terminal Preview.app` 或 Windows 的 `Open Brclio Terminal.cmd` 即可直接进入终端。预览版使用独立用户目录，禁用正式版更新、全局快捷键、登录启动和右键菜单注册。开发者可在目标系统准备项目依赖和内置媒体运行时后，运行 `node scripts/terminal-preview-build.cjs` 构建并验证本机预览包。
+
 ## 连接、传输与认证
 
 | 功能 | Brclio 测试版与验收边界 |
@@ -20,7 +22,7 @@
 | FIDO2 | SSH 身份窗口可查询系统 OpenSSH 声明的 ECDSA-SK 和 Ed25519-SK 算法，并使用 ssh-keygen 发起生成。实体密钥注册和触摸签名待实测。 |
 | PIN 与生物识别 | 桌面 PIN 锁覆盖闲置、系统锁屏、重启解锁和会话恢复。macOS 接入 Touch ID。Windows 使用带 Brclio 窗口句柄的 UserConsentVerifier，在系统可用且用户已注册 Windows Hello 时提供解锁。实体认证及 SSH 生物识别签名待验。[微软桌面验证接口](https://learn.microsoft.com/en-us/windows/win32/api/userconsentverifierinterop/nf-userconsentverifierinterop-iuserconsentverifierinterop-requestverificationforwindowasync) |
 | SSH ID、设备绑定的 SSH passkey | 外接 FIDO2 与平台生物识别解锁各有独立路径。设备密钥托管、SSH ID 公钥分发及生命周期尚缺。 |
-| 后量子密钥交换 | SSH 协商由两端 OpenSSH 版本决定。尚未验证每种系统版本及目标服务器的协商结果。 |
+| 后量子密钥交换 | 主机高级设置可用系统 `ssh -Q kex` 查看已实现的混合算法；每台主机在本机可选“跟随系统默认”或“要求后量子协商”。严格模式为目标 SSH、命令行和图形 SFTP、端口转发强制使用共同支持的混合算法并重新握手。本机 OpenSSH 10.5p1 与独立回环 sshd 实际协商 `mlkem768x25519-sha256`，仅支持传统算法的服务端被拒绝。Windows 结果以实际运行的原生 OpenSSH 版本和隔离 sshd 用例为准。 [协商测试](../desktop/terminal-post-quantum.test.cjs) · [OpenSSH 后量子密钥交换](https://www.openssh.org/pq.html) |
 
 验证入口包括 [协议、转发及证书](../desktop/terminal-forward.test.cjs)、[SFTP 协议](../desktop/terminal-sftp.test.cjs)、[文件浏览器](../scripts/verify-terminal-sftp.cjs)、[上游代理](../desktop/terminal-proxy.test.cjs)、[身份](../desktop/terminal-identity.test.cjs) 和 [终端锁](../scripts/verify-terminal-lock.cjs)。官方参考包括 [SFTP](https://docs.termius.com/organize-and-connect-to-hosts/managing-files-with-sftp)、[密钥与证书](https://docs.termius.com/keychain/ssh-keys-and-certificates) 和 [SSH ID](https://docs.termius.com/ssh-id-passkeys-for-ssh/what-is-ssh-id)。
 
@@ -31,13 +33,13 @@
 | 主机、分组、标签 | 支持增删改、复制、收藏、分组过滤、搜索和最近连接。 |
 | 分组配置与环境变量 | 子分组和主机可以覆盖上级的 SSH 用户名、端口、跳板和环境变量。分组可引用本机 SSH 身份，每台已保存主机单独授权后，SSH、SFTP 和手工启动的转发才能使用它。授权绑定主机、分组、有效用户名、端口、跳板、代理和身份路径。账号迁移或目标变更后要重新授权。组配置及授权保存在当前设备的账号中。远端须通过 AcceptEnv 接收环境变量。 |
 | Shell 历史 | 设备内按账号主动开启，可按命令内容搜索或清理。只采集带集成标记的已回显单行命令。远端 Bash 的既有历史文件和跨设备历史尚未接入。 |
-| 命令补全 | 搜索当前账号的命令历史、剪藏和常用命令，选择后填入当前窗格；启用建议后，在有 Shell 标记的命令行输入前缀会显示可点击的单行补全，普通 Shell 的 Tab 仍可用。尚缺基于远端文件与参数的行内建议。 |
+| 命令补全 | 搜索当前账号的命令历史、剪藏和常用命令，选择后填入当前窗格；开启后，在有 Shell 标记的提示符输入前缀可点选单行建议。输入路径或命令参数可点击“补全路径或参数”，让当前窗格中的 Shell 实时处理 Tab，包括支持该交互的远端 Shell。尚缺独立于远端 Shell 的文件候选列表、参数说明和密码提示关联身份。 |
 | 工作区 | 多标签、分屏、命名、保存/恢复布局及工作区模板。选择器支持列表或网格查看运行状态和最近活动。保存布局时可选择记住主机引用，恢复时逐窗格确认，主机路由、用户名或身份有变更时重新核对。 |
 | 剪藏 | 可分包、搜索、填写变量、预览、填入当前窗格。旧的剪藏和笔记可继续使用。 |
 | 启动剪藏 | 每台已保存的主机可指定启动剪藏；建立会话后由用户确认，填入当前窗格。 |
 | 多窗格输入与片段多目标执行 | 已打开窗格支持手动广播。未提供自动登录一组主机并运行片段的功能。 |
 | OpenSSH config 导入 | 选择文件后预览具体主机，支持 User、Port、IdentityFile、CertificateFile、ProxyJump、部分 Host 通配规则和首值优先。Include、Match 条件段及 ProxyCommand 不执行。私钥文件及 known_hosts 不批量导入。 |
-| CSV 和 PuTTY 导入 | CSV 支持名称、地址、端口、用户、组和标签；PuTTY 支持 UTF-8/UTF-16 注册表导出的 SSH 会话。PuTTY 自动注册表发现、PPK 转换、隧道与密码迁移尚缺。 |
+| CSV 和 PuTTY 导入 | CSV 支持名称、地址、端口、用户、组和标签。Windows 可在确认后读取当前用户 PuTTY Sessions 中的 SSH 主机。macOS 和 Windows 均可逐个选择 PuTTY 会话文件，也支持 UTF-8/UTF-16 注册表导出。新发现的会话由用户勾选后保存，字段限于名称、主机、用户名和端口。PPK 转换、隧道及密码迁移尚缺。[PuTTY 官方存储说明](https://www.chiark.greenend.org.uk/~sgtatham/putty/faq.html#faq-settings) |
 | MobaXterm 与 SecureCRT 导入 | MobaXterm 明文书签支持 .mxtsessions、INI 的 Bookmarks 节和单个 .moba，读取 SSH 主机、端口、用户名、嵌套分组，支持 Windows-1252。SecureCRT 支持明文 VanDyke 设置 XML 的 Sessions 树和单个会话 INI，读取 SSH 主机、端口、用户名和 XML 分组。文件选择后逐项预览，加密导出、密码、隧道及其他协议配置尚未覆盖。[SecureCRT 官方导出说明](https://www.vandyke.com/products/securecrt/faq/)、[SecureCRT XML 生成示例](https://github.com/tonhe/moba2secure/blob/main/moba2secure.py)、[MobaXterm 书签格式及样例](https://gist.github.com/Ruzgfpegk/ab597838e4abbe8de30d7224afd062ea)。 |
 
 测试入口包括 [分组与 SSH 变量](../desktop/terminal-groups.test.cjs)、[命令边界](../desktop/terminal-marks.test.cjs)、[剪藏](../scripts/verify-terminal-snippets.cjs) 和 [导入](../desktop/terminal-host-import.test.cjs)。官方参考包括 [现有主机导入](https://docs.termius.com/getting-started/import-existing-hosts)、[工作区](https://docs.termius.com/terminal/workspaces)、[剪藏](https://docs.termius.com/terminal/snippets) 和 [Shell 集成](https://docs.termius.com/terminal/autocomplete-and-shell-integration)。
@@ -53,7 +55,7 @@
 | 实时协作、多人终端 | 共享主机库提供版本冲突检查。独立 beta Worker 支持双方同意后分享指定窗格的可见文本，见 [只读协作的边界与限额](../cloudflare/terminal-live-beta.md)。观看者可提交单行草稿，由主持人审阅、填入，并亲自按 Enter。公网部署和直接共享键盘控制尚缺。 |
 | 本地会话记录 | 登录后在选定窗格手动开启，支持查看、按主机筛选、删除、设置时间保留策略。已有旧日志可在“本地或未记录主机”中查到。 |
 | 书签 | 支持给日志选区或末尾添加书签、跳转；按时间清理时保留带书签的日志。 |
-| 跨设备 / 团队日志 | 已停止的本机日志可逐份确认分享给个人账号或含该主机的共享库。独立口令在设备端加密正文和书签。可按主机和记录者筛选，读者只读，记录者和库主可删除副本。逐份设置 1、7、30、90 或 365 天访问期限，访问时清理过期记录，Git 历史可能保留密文。云端保留名称、主机、记录者和日期。团队强制统一保留策略和访问审计尚缺。 |
+| 跨设备 / 团队日志 | 已停止的本机日志可逐份确认分享给个人账号或含该主机的共享库。独立口令在设备端加密正文和书签。可按主机和记录者筛选，读者只读，记录者和库主可删除副本。逐份设置 1、7、30、90 或 365 天访问期限，访问时清理过期记录，Git 历史可能保留密文。云端保留名称、主机、记录者和日期。库主可统一设置新副本最长留存天数，既有副本沿用原到期日。取回团队密文时记录账号、动作、副本编号和时间，库主可手动查看最近 64 条，客户端解密结果仅在本机可见。 |
 
 参见 [存储与账号边界](terminal-account-sync.md)、[两账号共享验证](../scripts/verify-terminal-shared-vaults.cjs) 和 [会话日志验证](../desktop/terminal-local-logs.test.cjs)。官方参考包括 [团队库](https://docs.termius.com/team-collaboration/team-vaults)、[团队日志](https://docs.termius.com/team-collaboration/team-session-logs) 和 [密钥与密码同步](https://docs.termius.com/keychain/sync-of-keys-and-passwords)。
 

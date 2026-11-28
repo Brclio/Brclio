@@ -1,8 +1,11 @@
 'use strict';
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const {expect} = require('@playwright/test');
 
-async function verifySessionImports(page) {
+async function verifySessionImports(page, app) {
   const format = page.locator('#import-format'), file = page.locator('#import-file');
   const preview = page.locator('#import-preview'), apply = page.locator('#import-apply');
   const xml = [
@@ -32,5 +35,49 @@ async function verifySessionImports(page) {
   await expect(preview.locator('label')).toHaveText(/Café · tester@moba.import.test:2200 · Lab\/Local/);
   await apply.click();
   await expect(page.locator('#import-status')).toContainText('已导入 1 台');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(),'brclio-putty-picker-'));
+  const original = await app.evaluateHandle(({dialog}) => dialog.showOpenDialog);
+  try {
+    const target = path.join(dir,'Chosen%20PuTTY');
+    await fs.writeFile(target,'HostName=chosen.putty.test\nProtocol=ssh\nPortNumber=2222\nUserName=fixture\nProxyPassword=discard\n');
+    await app.evaluate(({dialog},file) => {dialog.showOpenDialog=async () => ({canceled:false,filePaths:[file]});},target);
+    await format.selectOption('putty-files');
+    await expect(apply).toBeDisabled();
+    await page.getByRole('button',{name:'选择 PuTTY 会话文件'}).click();
+    const selected = preview.getByRole('checkbox',{name:/Chosen PuTTY/});
+    await expect(selected).toBeVisible();
+    await expect(selected).not.toBeChecked();
+    await expect(apply).toBeDisabled();
+    await selected.check();
+    await apply.click();
+    const entry = await page.evaluate(() => window.BrclioConnection.store(localStorage).all().find(h => h.host === 'chosen.putty.test'));
+    assert.deepEqual(entry,{name:'Chosen PuTTY',host:'chosen.putty.test',port:2222,user:'fixture'});
+    assert.equal(await format.locator('option[value=putty-registry]').count(),process.platform === 'win32' ? 1 : 0);
+    if (process.platform === 'win32') {
+      const prompt = await app.evaluateHandle(({dialog}) => dialog.showMessageBox);
+      try {
+        await app.evaluate(({dialog}) => {
+          global.__puttyConfirmation = null;
+          dialog.showMessageBox = async (...args) => {
+            global.__puttyConfirmation = args.at(-1).message;
+            return {response:0};
+          };
+        });
+        await format.selectOption('putty-registry');
+        assert.equal(await app.evaluate(() => global.__puttyConfirmation),null);
+        await page.getByRole('button',{name:'从本机读取 PuTTY 会话'}).click();
+        await expect.poll(() => app.evaluate(() => global.__puttyConfirmation)).toContain('当前 Windows 用户');
+        await expect(preview.getByRole('checkbox')).toHaveCount(0);
+        await expect(apply).toBeDisabled();
+      } finally {
+        await app.evaluate(({dialog},method) => {dialog.showMessageBox=method;delete global.__puttyConfirmation;},prompt);
+        await prompt.dispose();
+      }
+    }
+  } finally {
+    await app.evaluate(({dialog},method) => {dialog.showOpenDialog=method;},original);
+    await original.dispose();
+    await fs.rm(dir,{recursive:true,force:true});
+  }
 }
 module.exports = { verifySessionImports };

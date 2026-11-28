@@ -92,6 +92,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     return target === view ? result : null;
   });
   handle('serial-ports', () => require('./device-session.cjs').serialPorts());
+  require('./putty-discovery.cjs').register({handle,dialog,owner:() => owner,view:() => view,home:app.getPath('home')});
   const { syncAccount, localIdentity } = require('./sync-account.cjs');
   const identity = localIdentity(app.getPath('userData'));
   async function localUser() {
@@ -160,6 +161,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     clipboard.writeText(text);
   });
   handle('paste', () => clipboard.readText());
+  handle('remote-kex', () => require('./post-quantum.cjs').capabilities(require('./remote-launch.cjs').program('ssh')));
   handle('remote-clients', () => {
     const { program } = require('./remote-launch.cjs');
     return { ssh: Boolean(program('ssh')), sftp: Boolean(program('sftp')) };

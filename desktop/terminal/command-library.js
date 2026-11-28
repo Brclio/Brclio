@@ -6,7 +6,7 @@ window.BrclioCommandLibrary = (() => {
   const storage = () => window.BrclioTerminalPartitions.storage;
   const read = () => JSON.parse(storage().getItem(key) || '{"enabled":false,"entries":[]}');
   const write = data => storage().setItem(key,JSON.stringify(data));
-  let dialog, active, paste, draft;
+  let dialog, active, paste, draft, completeInShell;
   const field = name => dialog.querySelector('#command-library-' + name);
   const eligible = launch => !launch?.profile || ['default','zsh','bash','powershell','pwsh','ssh'].includes(launch.profile);
   const builtin = ['pwd','cd','ls','dir','Get-Location','Get-ChildItem','git status','git diff','git log','whoami'];
@@ -70,13 +70,24 @@ window.BrclioCommandLibrary = (() => {
         candidates = [...new Set([...read().entries,...items.map(i => i.text),...builtin])].filter(safeLine);
       }
       const text = candidates.find(item => item.length > prefix.length && item.startsWith(prefix));
-      if (!text) return;
-      suggestion = {prefix,text}; button.textContent = text; button.title = '填入补全建议'; button.hidden = false;
+      if (text) {
+        suggestion = {prefix,text};
+        button.textContent = text;
+        button.title = '填入补全建议';
+      } else if (/^[\w.-]+\s+\S.*$/u.test(prefix)) {
+        suggestion = {prefix};
+        button.textContent = '补全路径或参数';
+        button.title = '在当前窗格按一次 Tab，使用此 Shell 的实时补全';
+      } else return;
+      button.hidden = false;
     }
     button.onmousedown = event => event.preventDefault();
     button.onclick = () => {
       const next = suggestion;
-      if (next && pane === active() && pane.marks.inputPrefix() === next.prefix) paste(pane,next.text.slice(next.prefix.length));
+      if (next && pane === active() && pane.marks.inputPrefix() === next.prefix) {
+        if (next.text) paste(pane,next.text.slice(next.prefix.length));
+        else completeInShell(pane,'\t');
+      }
       pane.terminal.focus();
     };
     pane.node.append(button);
@@ -137,5 +148,7 @@ window.BrclioCommandLibrary = (() => {
     if (!dialog) init();
     field('query').value = ''; render(); dialog.showModal(); field('query').focus();
   }
-  return { recorder, attach, open, bind(activePane, pasteOnly, openDraft) { active = activePane; paste = pasteOnly; preferences(); draft = openDraft; } };
+  return { recorder, attach, open, bind(activePane, pasteOnly, openDraft, sendInput) {
+    active = activePane; paste = pasteOnly; draft = openDraft; completeInShell = sendInput; preferences();
+  } };
 })();

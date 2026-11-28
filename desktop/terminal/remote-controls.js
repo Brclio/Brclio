@@ -31,6 +31,7 @@ window.BrclioRemoteConnections = {
       startupSnippet: byId('startup-snippet').value,
       favorite: byId('favorite').checked,
       agentForwarding: byId('agent-forwarding').checked,
+      requirePostQuantum: byId('kex').value === 'required',
     });
 
     const envText = items => typeof items === 'string' ? items : (items || []).map(item => item.name + '=' + item.value).join('\n');
@@ -98,7 +99,7 @@ window.BrclioRemoteConnections = {
       snippetChoices(item?.startupSnippet || '');
       authAddress = addressDraft();
       inheritedPreview();
-      byId('advanced').open = !!(item?.jump || item?.proxy || item?.identityFile || item?.certificateFile || item?.agentForwarding || item?.environment?.length);
+      byId('advanced').open = !!(item?.requirePostQuantum || item?.jump || item?.proxy || item?.identityFile || item?.certificateFile || item?.agentForwarding || item?.environment?.length);
       byId('editor-title').textContent = selected || '新建主机';
       byId('remove').disabled = byId('duplicate').disabled = !selected;
       byId('delete-check').hidden = true;
@@ -170,6 +171,13 @@ window.BrclioRemoteConnections = {
       companion.textContent = '为当前主机打开 ' + kindLabels[kind];
     }
 
+    byId('kex-check').onclick = async () => {
+      try {
+        const {algorithms} = await api.remoteKex();
+        byId('kex-status').textContent = algorithms.length ? '本机支持：' + algorithms.join('、') + '。实际算法由目标服务器协商。' :
+          '本机 OpenSSH 未列出受支持的后量子混合算法。';
+      } catch (error) {byId('kex-status').textContent = error.message;}
+    };
     async function clients() {
       available = await api.remoteClients();
       for (const kind of ['ssh', 'sftp']) byId(kind).disabled = !available[kind];

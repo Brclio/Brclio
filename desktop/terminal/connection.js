@@ -93,6 +93,8 @@
       if (field === 'certificateFile' && file.includes('${')) throw new Error('证书路径包含 OpenSSH 环境变量占位符，请选择其他文件名。');
       result[field] = file;
     }
+    if (value.requirePostQuantum != null && typeof value.requirePostQuantum !== 'boolean') throw new Error('后量子密钥交换设置无效。');
+    if (value.requirePostQuantum === true) result.requirePostQuantum = true;
     if (value.agentForwarding != null && typeof value.agentForwarding !== 'boolean') throw new Error('代理转发开关格式无效。');
     if (value.agentForwarding === true) result.agentForwarding = true;
     return result;
@@ -323,7 +325,7 @@
         const library = read();
         const item = recent({ ...target, kind, name });
         if (target.groupKeySource) delete item.identityFile;
-        const signature = value => JSON.stringify([value.kind, value.host, value.user, value.port, value.jump, value.proxy, value.proxyUser, value.identityFile, value.certificateFile, value.agentForwarding]);
+        const signature = value => JSON.stringify([value.kind, value.host, value.user, value.port, value.jump, value.proxy, value.proxyUser, value.identityFile, value.certificateFile, value.agentForwarding, value.requirePostQuantum]);
         library.recent = [item, ...library.recent.filter(entry => signature(entry) !== signature(item))].slice(0, 24);
         write(library);
       },

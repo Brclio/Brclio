@@ -5,7 +5,7 @@
   const hosts = node ? require('./connection.js') : window.BrclioConnection;
   const forwards = node ? require('./forward-model.js') : window.BrclioForwardModel;
   const collections = ['hosts', 'forwards'];
-  const localCredentials = ['proxy', 'proxyUser', 'identityFile', 'certificateFile', 'agentForwarding', 'environment', 'inheritGroup', 'startupSnippet'];
+  const localCredentials = ['requirePostQuantum', 'proxy', 'proxyUser', 'identityFile', 'certificateFile', 'agentForwarding', 'environment', 'inheritGroup', 'startupSnippet'];
   const empty = () => ({ hosts: [], forwards: [] });
   const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
   const sort = items => items.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
@@ -21,6 +21,7 @@
         // recent connections, transcripts and active processes never enter the payload.
         const target = key === 'hosts' ? item : item.connection;
         delete item.groupKeyHost;
+        delete item.kexHostName;
         for (const field of localCredentials) delete target[field];
         if (names.has(item.name)) throw new Error('同步配置包含重复名称。');
         names.add(item.name);
@@ -76,11 +77,14 @@
             const previous = key === 'hosts' ? prior : prior?.connection;
             const target = key === 'hosts' ? record : record.connection;
             if (!previous) continue;
+            const remoteAddress = hosts.endpoint(target);
+            if (previous.requirePostQuantum) target.requirePostQuantum = true;
             if (key === 'hosts' && previous.inheritGroup && previous.group !== target.group) continue;
             const previousAddress = hosts.endpoint(previous);
             for (const field of localCredentials) delete previousAddress[field];
-            if (equal(previousAddress, hosts.endpoint(target))) {
+            if (equal(previousAddress, remoteAddress)) {
               for (const field of localCredentials) if (previous[field]) target[field] = previous[field];
+              if (key === 'forwards' && prior.kexHostName) record.kexHostName = prior.kexHostName;
               if (key === 'forwards' && prior.groupKeyHost) record.groupKeyHost = prior.groupKeyHost;
             }
           }

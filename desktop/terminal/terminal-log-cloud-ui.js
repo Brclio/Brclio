@@ -30,7 +30,8 @@ window.BrclioCloudLogs = (() => {
     };
     const password = make('input','',{type:'password',autocomplete:'off',maxLength:128,placeholder:'独立口令，至少 12 字',ariaLabel:'日志口令'});
     const days = make('select','',{ariaLabel:'副本可访问期限'});
-    days.replaceChildren(...[1,7,30,90,365].map(n => new Option(n + ' 天',String(n)))); days.value='7';
+    const durations = [1,7,30,90,365];
+    days.replaceChildren(...durations.map(n => new Option(n + ' 天',String(n)))); days.value='7';
     let state = null, busy = false, scope = null, scopes = [];
     const now = () => dialog === view && view.open;
     function perform(fn) { return async () => {
@@ -59,14 +60,44 @@ window.BrclioCloudLogs = (() => {
       select.replaceChildren(new Option(all,''),...Array.from(new Map(items)).map(([id,label]) => new Option(label,id)));
       select.value = [...select.options].some(o=>o.value===previous) ? previous : '';
     }
-    async function refresh() {
-      state=null; update();
-      const result = await call('list');
+    const teamNote = make('p','',{hidden:true});
+    const management = make('details','',{hidden:true});
+    const maximum = make('select','',{ariaLabel:'新副本留存上限'});
+    maximum.replaceChildren(...durations.map(n => new Option(n + ' 天',String(n))));
+    const events = make('ol','',{ariaLabel:'取回记录',className:'log-audit'});
+    const applyPolicy = button('保存新副本留存上限',perform(async () => {
+      const result=await call('policy',{revision:state.revision,days:Number(maximum.value)});
+      if (now()) { showState(result); status.textContent='已应用至之后发布的副本。'; }
+    }));
+    const audit = button('读取最近 64 条取回记录',perform(async () => {
+      events.replaceChildren();
+      const result=await call('audit');
       if (!now()) return;
+      events.replaceChildren(...result.events.map(entry=>make('li',new Date(entry.time).toLocaleString() + ' · ' +
+        entry.actor + ' · 取回加密副本 · ' + entry.id)));
+      if (!result.events.length) status.textContent='此主机库暂无取回记录。';
+    }));
+    management.append(make('summary','管理团队日志'),row(field('新副本留存上限',maximum),applyPolicy),audit,events);
+    function showState(result) {
       state=result;
-      filters(host,'全部主机',state.entries.map(e=>[e.host || '@local',e.host || '本机']));
-      filters(member,'所有记录者',state.entries.map(e=>[e.authorId,e.authorName]));
+      const limit=state?.maximumDays ?? 365;
+      teamNote.hidden=!scope;
+      teamNote.textContent=scope ? '新副本最长保留 ' + limit + ' 天。取回密文时记录账号、副本编号和时间，库主可查看。' : '';
+      management.hidden=!scope || state?.role !== 'owner';
+      if (management.hidden) management.open=false;
+      maximum.value=String(limit);
+      for (const option of days.options) option.disabled=Number(option.value)>limit;
+      if (Number(days.value)>limit) days.value=String(limit);
+      events.replaceChildren();
+      const records=state?.entries || [];
+      filters(host,'全部主机',records.map(e=>[e.host || '@local',e.host || '本机']));
+      filters(member,'所有记录者',records.map(e=>[e.authorId,e.authorName]));
       update();
+    }
+    async function refresh() {
+      showState(null);
+      const result = await call('list');
+      if (now()) showState(result);
     }
     const details = make('p','');
     const read = button('解密查看',perform(async () => {
@@ -77,16 +108,16 @@ window.BrclioCloudLogs = (() => {
     const remove = button('删除此云端副本',() => { confirmRemove.hidden=false; });
     const confirmRemove = row(make('span','删除后，当前云端清单会移除这份副本。'),
       button('取消',() => { confirmRemove.hidden=true; }),
-      button('确认删除',perform(async () => { await call('remove',{id:entries.value,revision:state.revision}); await refresh(); })));
+      button('确认删除',perform(async () => { const result=await call('remove',{id:entries.value,revision:state.revision}); if (now()) showState(result); })));
     confirmRemove.hidden=true;
     const publish = button('上传所选本机日志…',perform(async () => {
       const secret=password.value; password.value='';
       const result=await call('publish',{localId:local.id,revision:state.revision,days:Number(days.value),password:secret});
-      if (!result.canceled) await refresh();
+      if (!result.canceled && now()) showState(result);
       if (now()) status.textContent=result.canceled ? '已取消。' : '加密副本已上传。';
     }));
     const body=make('section','');
-    body.append(field('访问范围',scopeSelect),row(host,member,button('刷新',perform(refresh))),entries,details,
+    body.append(field('访问范围',scopeSelect),teamNote,management,row(host,member,button('刷新',perform(refresh))),entries,details,
       field('口令',password),row(read,remove),confirmRemove,marks,text);
     if (local) body.append(make('p','已选择已停止的日志「' + local.name + '」。云端可见名称、主机和记录者，正文与书签需口令解密。'),
       row(field('可访问期限',days),publish));

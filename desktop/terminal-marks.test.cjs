@@ -227,3 +227,22 @@ test('prompt completion reads only the live visible prefix at the end of a marke
   await write(terminal,'\x1b[C\r\n' + osc(133,'C') + 'Password: ');
   assert.equal(marks.inputPrefix(),undefined);
 });
+
+test('a line editor can erase the accepted visible line before preexec without recording concealed text or abandoned input', async t => {
+  const terminal = new Terminal({allowProposedApi:true, cols:30, rows:8});
+  const commands = [];
+  const marks = attach(terminal,undefined,{enabled:() => true,add:value => commands.push(value)});
+  t.after(() => { marks.dispose(); terminal.dispose(); });
+  const prompt = osc(133,'A') + '$ ' + osc(133,'B');
+  await write(terminal,prompt + 'pwd');
+  marks.acceptVisibleInput();
+  await write(terminal,'\r\x1b[2K\r\n' + osc(133,'C') + osc(133,'D;0'));
+  await write(terminal,prompt + '\x1b[8mhidden value\x1b[0m');
+  assert.equal(marks.inputPrefix(),undefined);
+  marks.acceptVisibleInput();
+  await write(terminal,'\r\n' + osc(133,'C') + osc(133,'D;0'));
+  await write(terminal,prompt + 'never submitted');
+  marks.acceptVisibleInput();
+  await write(terminal,'\r\n' + osc(133,'D;130'));
+  assert.deepEqual(commands,['pwd']);
+});

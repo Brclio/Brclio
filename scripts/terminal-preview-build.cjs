@@ -58,7 +58,6 @@ async function main() {
   const hash = text => createHash('sha256').update(text).digest('hex');
   const stamp = hash(raw);
   const patched = previewSource(raw);
-  const base = require('../package.json').build;
   const platform = mac ? 'mac' : 'win';
   const destination = path.join(root,'release','terminal-preview');
   await fs.mkdir(destination,{recursive:true});
@@ -67,11 +66,12 @@ async function main() {
   try {
     await fs.writeFile(path.join(temporary,entry),patched);
     await build({projectDir:root,targets:(mac ? Platform.MAC : Platform.WINDOWS).createTarget(['dir'],Arch[arch]),
-      publish:'never',config:{...base,extends:null,appId:bundle,productName:product,npmRebuild:false,
+      // electron-builder merges these overrides with the package.json build section.
+      // Repeating the base extraResources makes two tasks copy/sign the same Windows executable.
+      publish:'never',config:{extends:null,appId:bundle,productName:product,npmRebuild:false,
         extraMetadata:{main:'desktop/' + entry,productName:product},
-        directories:{...base.directories,output},
-        files:[...base.files,{from:temporary,to:'desktop',filter:[entry]}],
-        mac:{...base.mac,protocols:[]},
+        directories:{output},
+        files:[{from:temporary,to:'desktop',filter:[entry]}],
         afterPack:async context => {
           if (mac) {
             const contents = path.join(context.appOutDir,product + '.app','Contents');
@@ -116,7 +116,13 @@ async function main() {
       const zip = path.join(output,name + '.zip');
       if (mac) execFileSync('/usr/bin/ditto',['-c','-k','--keepParent',folder,zip],{stdio:'inherit'});
       else execFileSync(path.join(process.env.SystemRoot,'System32','tar.exe'),['-a','-c','-f',zip,'-C',output,name],{stdio:'inherit'});
-      if (process.env.GITHUB_OUTPUT) await fs.appendFile(process.env.GITHUB_OUTPUT,'archive=' + zip + '\n');
+      assert.ok((await fs.stat(zip)).size > 0,'Preview archive is empty.');
+      if (process.env.GITHUB_OUTPUT) {
+        const artifact = 'release/terminal-preview/artifacts/' + name + '.zip';
+        await fs.mkdir(path.dirname(path.join(root,artifact)),{recursive:true});
+        await fs.copyFile(zip,path.join(root,artifact));
+        await fs.appendFile(process.env.GITHUB_OUTPUT,'archive=' + artifact + '\n');
+      }
       console.log(zip);
     }
     console.log('Preview application: ' + application);
@@ -127,4 +133,4 @@ async function main() {
   }
 }
 module.exports = {previewSource};
-if (require.main === module) main().catch(error => {console.error(error);process.exitCode = 1;});
+if (require.main === module) main().catch(error => {console.error(error);process.exit(1);});

@@ -304,6 +304,8 @@
                 <label>SSH 启动剪藏<select id="remote-startup-snippet"><option value="">无</option></select></label>
                 <label class="host-favorite"><input id="remote-favorite" type="checkbox"> 收藏主机</label>
                 <details id="remote-advanced"><summary>跳板、身份和 SSH 认证</summary>
+                  <label>目标主机密钥交换（本机）<select id="remote-kex"><option value="system">跟随系统默认</option><option value="required">要求后量子协商</option></select></label>
+                  <button type="button" id="remote-kex-check">查看本机后量子算法</button><p id="remote-kex-status" role="status"></p>
                   <label>上游代理<input id="remote-proxy" maxlength="320" placeholder="socks5://主机:1080 或 http://主机:8080" spellcheck="false" autocomplete="off"></label>
                   <label>代理用户名<input id="remote-proxyUser" maxlength="255" placeholder="可留空。连接时输入代理密码" spellcheck="false" autocomplete="off"></label>
                   <label>跳板链<input id="remote-jump" maxlength="2048" placeholder="user@jump:22，多跳用逗号分隔" spellcheck="false"></label>

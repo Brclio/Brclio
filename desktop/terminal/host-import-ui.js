@@ -21,12 +21,14 @@ window.BrclioHostImportDialog = (() => {
     el('preview').replaceChildren();
     el('status').textContent = '';
     const cloud = ['aws','azure','digitalocean'].includes(format);
-    if (!cloud && !file) return;
+    const putty = ['putty-files','putty-registry'].includes(format);
+    if (!cloud && !putty && !file) return;
     try {
       let result;
-      if (cloud) {
-        el('status').textContent = '正在读取云主机清单…';
-        result = await window.brclioTerminal.cloudInventory(format);
+      if (cloud || putty) {
+        el('status').textContent = putty ? '正在读取选定的 PuTTY 会话…' : '正在读取云主机清单…';
+        result = putty ? await window.brclioTerminal.puttyDiscovery(format === 'putty-files' ? 'files' : 'registry') :
+          await window.brclioTerminal.cloudInventory(format);
         if (ticket !== generation) return;
         if (!result) { el('status').textContent = ''; return; }
       } else {
@@ -48,10 +50,10 @@ window.BrclioHostImportDialog = (() => {
       for (const item of result.hosts) {
         const label = document.createElement('label'), checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.checked = !existing.has(item.name);
-        checkbox.disabled = !checkbox.checked;
+        checkbox.disabled = existing.has(item.name);
+        checkbox.checked = !checkbox.disabled && !putty;
         if (checkbox.checked) selected.set(item.name,item);
-        else duplicates++;
+        if (checkbox.disabled) duplicates++;
         checkbox.onchange = () => {
           if (checkbox.checked) selected.set(item.name,item); else selected.delete(item.name);
           el('apply').disabled = !selected.size;
@@ -77,11 +79,16 @@ window.BrclioHostImportDialog = (() => {
       <div id="import-preview"></div><p id="import-status" role="status"></p>
       <div class="network-actions"><button id="import-apply" type="button" disabled>导入所选主机</button></div>`;
     document.body.append(dialog);
+    const registryExport = el('format').querySelector('option[value="putty"]');
+    registryExport.after(new Option('PuTTY 会话文件','putty-files'));
+    if (window.brclioTerminal.platform === 'win32') registryExport.after(new Option('当前 Windows 用户的 PuTTY 会话','putty-registry'));
     el('close').onclick = () => dialog.close();
     el('format').onchange = () => {
       reset();
-      const cloud = ['aws','azure','digitalocean'].includes(el('format').value);
-      el('file-label').hidden = cloud; el('cloud').hidden = !cloud;
+      const format = el('format').value;
+      const external = ['aws','azure','digitalocean','putty-files','putty-registry'].includes(format);
+      el('file-label').hidden = external; el('cloud').hidden = !external;
+      el('cloud').textContent = format === 'putty-files' ? '选择 PuTTY 会话文件' : format === 'putty-registry' ? '从本机读取 PuTTY 会话' : '读取当前云账号清单';
     };
     el('cloud').onclick = preview;
     el('file').onchange = preview;

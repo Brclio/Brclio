@@ -85,7 +85,12 @@
         // Enter moves the cursor to the next row before many shells send OSC C.
         if (row === end.row && row > start.row && end.column === 0) break;
         if (row > start.row && !line.isWrapped) return;
-        parts.push(line.translateToString(row === end.row || !terminal.buffer.normal.getLine(row + 1)?.isWrapped, row === start.row ? start.column : 0, row === end.row ? end.column : terminal.cols));
+        const first = row === start.row ? start.column : 0;
+        const last = row === end.row ? end.column : terminal.cols;
+        for (let column = first; column < last; column++) {
+          if (line.getCell(column)?.isInvisible()) return;
+        }
+        parts.push(line.translateToString(row === end.row || !terminal.buffer.normal.getLine(row + 1)?.isWrapped, first, last));
       }
       return parts.join('');
     }
@@ -114,7 +119,10 @@
         if (command && !command.start) {
           command.start = position();
           if (command.inputStart && commandHistory?.enabled()) {
-            const input = readInput(command.inputStart,command.start);
+            // Some line editors erase or redraw the accepted line before preexec.
+            // The value sampled on Enter came from visible cells in this same prompt.
+            const drawn = readInput(command.inputStart,command.start);
+            const input = drawn && (!command.accepted || drawn.startsWith(command.accepted)) ? drawn : command.accepted ?? drawn;
             if (input !== undefined) commandHistory.add(input);
           }
           command.inputStart?.mark?.dispose();
@@ -169,19 +177,24 @@
       return true;
     }
 
+    function inputPrefix() {
+      if (!normal() || !command?.inputStart || command.start) return;
+      const buffer = terminal.buffer.normal, row = buffer.baseY + buffer.cursorY;
+      if (buffer.getLine(row)?.translateToString(true,buffer.cursorX) || buffer.getLine(row + 1)?.isWrapped) return;
+      const cursor = position();
+      try { return readInput(command.inputStart,cursor); } finally { cursor.mark?.dispose(); }
+    }
+
     return {
       add: () => Boolean(mark('manual')),
       addAt: row => Boolean(mark('manual', row - terminal.buffer.normal.baseY - terminal.buffer.normal.cursorY)),
       previous: () => navigate(true),
       next: () => navigate(false),
       selectOutput,
-      inputPrefix() {
-        if (!normal() || !command?.inputStart || command.start) return;
-        const buffer = terminal.buffer.normal, row = buffer.baseY + buffer.cursorY;
-        if (buffer.getLine(row)?.translateToString(true,buffer.cursorX) || buffer.getLine(row + 1)?.isWrapped) return;
-        const cursor = position();
-        try { return readInput(command.inputStart,cursor); } finally { cursor.mark?.dispose(); }
+      acceptVisibleInput() {
+        if (command && commandHistory?.enabled()) command.accepted = inputPrefix();
       },
+      inputPrefix,
       dispose() {
         for (const handler of handlers) handler.dispose();
         for (const record of history.splice(0)) forget(record);

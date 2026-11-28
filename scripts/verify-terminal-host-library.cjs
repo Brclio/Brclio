@@ -39,6 +39,10 @@ async function verifyHostLibrary(terminal) {
   await dialog.locator('#remote-inherit').check();
   await expect(dialog.locator('#remote-inherited')).toContainText('2222');
   await dialog.locator('#remote-advanced summary').click();
+  await expect(dialog.locator('#remote-kex')).toHaveValue('system');
+  await dialog.locator('#remote-kex-check').click();
+  await expect(dialog.locator('#remote-kex-status')).toContainText(/本机|OpenSSH/);
+  await dialog.locator('#remote-kex').selectOption('required');
   await dialog.locator('#remote-proxy').fill('socks5://127.0.0.1:1080');
   await dialog.locator('#remote-environment').fill('COLOR=host');
   await dialog.locator('#remote-save').click();
@@ -47,6 +51,7 @@ async function verifyHostLibrary(terminal) {
     return bank.resolve(bank.all().find(item => item.name === '开发主机'));
   });
   assert.equal(resolved.port, 2222);
+  assert.equal(resolved.requirePostQuantum, true);
   assert.equal(resolved.proxy, 'socks5://127.0.0.1:1080');
   assert.deepEqual(resolved.environment, [{ name: 'COLOR', value: 'host' }]);
   await expect(dialog.locator('#remote-group-key-info')).toContainText('/fixture/group-key');

@@ -62,7 +62,7 @@ export async function terminalLogCloud(request, session, store) {
     const maximumDays = index.maximumDays ?? 365;
     if (!retentionDays.includes(maximumDays) || (index.audit !== undefined &&
         (!Array.isArray(index.audit) || index.audit.length > auditLimit))) throw new Error('Invalid team log policy');
-    const listing = () => ({revision:index.revision,role,entries:index.entries.filter(live),...(scope && {maximumDays})});
+    const listing = () => ({revision:index.revision,role,entries:index.entries.filter(live),...(scope && {maximumDays:index.maximumDays ?? 365})});
     if (action === 'audit') return {events:(index.audit || []).map(({actor,event,id,time}) => ({actor,event,id,time}))};
     const entry = index.entries.find(row => row.id === id);
     if (action === 'list') {

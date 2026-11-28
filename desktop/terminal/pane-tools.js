@@ -178,6 +178,7 @@
       terminal.onData(data => {
         const userInput = fromUser;
         fromUser = false;
+        if (userInput && data === '\r') pane.marks?.acceptVisibleInput();
         sendInput(pane, data);
         if (!userInput || forwarding || !broadcasting || getTab() !== owner ||
             owner.active !== pane || !members.has(pane) || pane.state !== 'running') return;

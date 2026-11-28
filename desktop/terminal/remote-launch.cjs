@@ -61,6 +61,12 @@ function argumentsFor(kind, value, interactive = kind === 'ssh', session) {
   const target = endpoint(value);
   const { host, port, user, jump, identityFile, certificateFile, agentForwarding, environment } = target;
   const args = target.proxy ? require('./ssh-proxy-launch.cjs').options(target, session, kind === 'ssh' ? session?.file : program('ssh')) : [];
+  if (target.requirePostQuantum) {
+    const ssh = kind === 'ssh' && session?.file || program('ssh');
+    const options = require('./post-quantum.cjs').required(ssh);
+    if (kind === 'sftp') args.push('-S',ssh);
+    args.push(...options);
+  }
   if (jump) args.push('-J', jump);
   if (identityFile) args.push('-i', identityFile);
   if (kind === 'ssh') {
