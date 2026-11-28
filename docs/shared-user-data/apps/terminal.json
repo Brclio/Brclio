@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "appId": "terminal",
+  "name": "Brclio 桌面终端",
+  "identityAuthority": "https://tools.brclio.com",
+  "dataPath": "users/{userId}/apps/terminal/data.json",
+  "api": {
+    "path": "/api/account/apps/terminal/data",
+    "methods": ["GET", "PUT"],
+    "userIdSource": "verified-session-only",
+    "putFields": ["expectedUserId", "revision", "data"],
+    "maximumDataBytes": 114688,
+    "conflictStatus": 409,
+    "write": "replace validated snapshot when revision matches"
+  },
+  "record": {
+    "version": 1,
+    "revision": 0,
+    "updatedAt": null,
+    "data": {"hosts": [], "forwards": []}
+  },
+  "storage": {
+    "encoding": "plain JSON",
+    "default": "device-local",
+    "sync": "opt-in per account and device",
+    "hostFields": ["name", "host", "port", "user", "group", "tags", "favorite", "jump"],
+    "forwardFields": ["name", "type", "connection", "listenHost", "listenPort", "destinationHost", "destinationPort"]
+  }
+}

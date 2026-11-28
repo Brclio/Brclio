@@ -957,3 +957,30 @@ test('actual workerd registers and authenticates with the supported 100000 itera
     assert.deepEqual(await response.json(), {status: 200, username: 'runtime', algorithm: 'PBKDF2-SHA256', iterations: 100000});
   } finally { await mf.dispose(); }
 });
+
+test('terminal configuration belongs to the signed-in account, uses revisions and stays out of copy preferences', async () => {
+  const f = fixture(), route = 'apps/terminal/data';
+  const alice = await f.register('terminal-alice', 'terminal-a@example.com', true);
+  const bob = await f.register('terminal-bob', 'terminal-b@example.com', true);
+  const as = account => ({native:true, headers:{Authorization:'Bearer ' + account.token}});
+  const id = alice.user.id, empty = {hosts:[], forwards:[]};
+  const data = {hosts:[{name:'实验机', host:'example.test', port:2222, user:'tester', tags:['测试'], group:'开发', favorite:true}], forwards:[]};
+  const patch = {expectedUserId:id, revision:0, data};
+  assert.equal((await f.call(route)).status,401);
+  assert.equal((await f.call(route,'PUT',patch,as(alice))).status,200);
+  const retrieved = await (await f.call(route,'GET',null,as(alice))).json();
+  assert.equal(retrieved.userId,id);
+  assert.equal(retrieved.revision,1);
+  assert.deepEqual(retrieved.data,data);
+  assert.deepEqual(f.store.files.get('users/' + id + '/apps/terminal/data.json').data,data);
+  // Even a caller specifying another ID in the query only receives its own account's record.
+  const second = await (await f.call(route + '?userId=' + id,'GET',null,as(bob))).json();
+  assert.equal(second.userId,bob.user.id);
+  assert.deepEqual(second.data,empty);
+  assert.equal((await f.call(route,'PUT',{...patch, revision:1, data:empty},as(bob))).status,409);
+  assert.equal((await f.call(route,'PUT',{...patch, data:empty},as(alice))).status,409);
+  assert.equal((await f.call(route,'PUT',{...patch, revision:1, data:{hosts:[{...data.hosts[0],password:'example'}], forwards:[]}},as(alice))).status,400);
+  assert.deepEqual((await (await f.call('data','GET',null,as(alice))).json()).preferences,{});
+  assert.equal((await f.call('logout','POST',{},as(alice))).status,200);
+  assert.equal((await f.call(route,'GET',null,as(alice))).status,401);
+});
