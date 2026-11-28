@@ -89,3 +89,58 @@ test('native OpenSSH parses literal SSH variables and keeps the local process en
   assert.equal(ssh.argumentsFor('sftp', target).includes('-o'), false);
   for (const invalid of ['EMPTY', '=one', 'A=1\nA=2', 'X=y\rBad', 'X-Y=z', 'A=\0x']) assert.throws(() => connections.environment(invalid));
 });
+
+test('group identity is opt-in per saved host; nested precedence, route/key edits, history and forwarding do not bypass authorization', () => {
+  const { partitions, bank, sync: portable } = fixture();
+  const identities = require('./terminal/identity-model.js').store(partitions.storage);
+  const forwards = require('./terminal/forward-model.js');
+  const first = { name:'dev identity', user:'dev', path:'/fixture/key' };
+  identities.save(first); identities.save({ name:'test identity', user:'qa', path:'/fixture/test' });
+  bank.saveGroup({ group:'Work', identity:first.name, port:2200 });
+  bank.saveGroup({ group:'Work/Test', identity:'test identity' });
+  const host = bank.save(savedHost), second = bank.save({ ...host, name:'another' });
+  const authorize = h => bank.authorizeGroupKey(h.name,bank.groupCredential(h).binding);
+  assert.equal(bank.resolve(host).identityFile, undefined);
+  assert.throws(() => bank.authorizeGroupKey(host.name,'unreviewed'));
+  authorize(host);
+  const target = bank.resolve(host);
+  assert.equal(target.user,'qa'); assert.equal(target.identityFile,'/fixture/test');
+  assert.equal(bank.resolve(second).identityFile, undefined);
+  assert.equal(bank.resolve({ ...host, identityFile:'/fixture/explicit' }).identityFile, '/fixture/explicit');
+  assert.deepEqual(ssh.argumentsFor('sftp',target), ['-i','/fixture/test','-P','2200','-o','User=qa','--','server.invalid']);
+  bank.recordUse('ssh', target, host.name);
+  assert.equal(bank.recents()[0].identityFile, undefined);
+  const rule = forwards.rule({ name:'SOCKS', type:'dynamic', listenPort:1080, groupKeyHost:host.name, connection:target });
+  assert.equal(rule.connection.identityFile, undefined);
+  assert.equal(forwards.forLaunch(rule,bank).connection.identityFile,'/fixture/test');
+  assert.throws(() => forwards.forLaunch({ ...rule, connection:{ ...target, port:3000 } },bank));
+  const forwardStore = forwards.store(partitions.storage); forwardStore.save(rule);
+  assert.doesNotMatch(JSON.stringify(portable.read()), /groupKey|fixture\/test|identityFile/);
+  bank.revokeGroupKey(host.name);
+  assert.throws(() => bank.resolve(target)); // Re-opening the companion to an old SSH tab.
+  assert.throws(() => forwards.forLaunch(rule,bank));
+  authorize(host);
+  identities.save({name:'test identity',user:'qa',path:'/fixture/replaced'}, 'test identity');
+  assert.equal(bank.groupCredential(host).approved,false);
+  authorize(host);
+  bank.saveGroup({ group:'Work/Test', identity:'test identity', jump:'new-jump' });
+  assert.equal(bank.groupCredential(host).approved,false);
+  bank.removeGroup('Work/Test');
+  assert.equal(bank.groupCredential(host).identity.name,first.name);
+  authorize(host);
+  portable.apply({ hosts:[{ ...host, host:'cloud.invalid' }], forwards:[] });
+  assert.equal(bank.resolve(bank.all()[0]).identityFile,undefined);
+});
+
+test('moving a guest group remaps colliding local identity names and requires a fresh approval in the account', () => {
+  const { bank, partitions } = fixture();
+  const identities = require('./terminal/identity-model.js').store(partitions.storage);
+  identities.save({ name:'key', path:'/guest' });
+  bank.saveGroup({ group:'Work', identity:'key' }); const host = bank.save(savedHost);
+  bank.authorizeGroupKey(host.name,bank.groupCredential(host).binding);
+  partitions.activate('destination'); identities.save({name:'key',path:'/account'});
+  partitions.moveUnbound();
+  const copy = bank.all()[0], info = bank.groupCredential(copy);
+  assert.equal(info.identity.path,'/guest'); assert.equal(info.approved,false);
+  assert.equal(bank.resolve(copy).identityFile,undefined);
+});

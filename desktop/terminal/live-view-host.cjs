@@ -3,6 +3,8 @@ const {liveTarget} = require('./live-target.cjs');
 const uuid = value => typeof value === 'string' && /^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(value);
 const userId = value => typeof value === 'string' && /^[a-z\d-]{1,128}$/i.test(value);
 function registerLiveView({handle,accountRequest,scope,localUser,paneTarget,send,target = liveTarget,Socket = require('ws')}) {
+  const validDraft = value => typeof value === 'string' && value.length <= 512 && value.trim() &&
+    !/[\x00-\x1f\x7f-\x9f\u2028-\u202e\u2066-\u2069]/u.test(value);
   let current;
   function stop() {
     const state = current;
@@ -17,6 +19,14 @@ function registerLiveView({handle,accountRequest,scope,localUser,paneTarget,send
   handle('live-view',async (action,input={}) => {
     if (action === 'available') return Boolean(target());
     if (action === 'stop') {stop();return;}
+    if (action === 'draft') {
+      const state = current;
+      if (state?.role !== 'viewer' || !state.ready || !currentUser(state) || Date.now() >= state.expires) throw new Error('请先加入正在共享的会话。');
+      if (!validDraft(input.text)) throw new Error('草稿需要 1 到 512 个可显示的单行字符。');
+      if (state.draftAt && Date.now()-state.draftAt < 5000 || (state.draftCount || 0) >= 6) throw new Error('每场最多六份草稿，发送间隔五秒。');
+      state.draftAt = Date.now(); state.draftCount = (state.draftCount || 0) + 1;
+      state.socket.send(JSON.stringify({draft:input.text})); return;
+    }
     if (action === 'frame') {
       const state = current;
       if (state?.role !== 'owner' || !currentUser(state) || !state.ready || input.pane !== state.pane ||
@@ -59,9 +69,19 @@ function registerLiveView({handle,accountRequest,scope,localUser,paneTarget,send
         if (!currentUser(state) || binary || Date.now() >= state.expires) {close();return;}
         let payload;
         try {payload = JSON.parse(bytes.toString('utf8'));} catch {close();return;}
-        if (!state.ready && payload?.ready === true) {
+        if (state.ready && /^[a-zA-Z0-9_-]{32}$/.test(payload?.refresh || '')) {
+          if (state.refreshing) {close();return;}
+          state.refreshing = true;
+          const renew = {expectedUserId:owner.userId,ownerId:body.ownerId,vaultId:body.vaultId,
+            ...(state.role === 'owner' ? {viewerId:body.viewerId} : {}),action:'renew',challenge:payload.refresh};
+          accountRequest({path:'/api/account/apps/terminal/live-view',method:'POST',body:renew}).then(result => {
+            if (!currentUser(state) || result.userId !== owner.userId || !result.renewed) close();
+          }).catch(close).finally(() => {state.refreshing = false;});
+        } else if (!state.ready && payload?.ready === true) {
           state.ready = true;
           send('live-view-state',{state:'ready',role:state.role,pane:state.pane});
+        } else if (state.role === 'owner' && state.ready && validDraft(payload?.draft)) {
+          send('live-view-state',{state:'draft',pane:state.pane,text:payload.draft});
         } else if (state.role === 'viewer' && state.ready && typeof payload?.text === 'string' && payload.text.length <= 8192)
           send('live-view-state',{state:'frame',text:payload.text});
         else close();

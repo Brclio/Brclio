@@ -95,6 +95,28 @@ async function main() {
     await local.focus(); await local.selectOption('共享测试');
     await view.getByRole('button',{name:'保存到共享主机库'}).click();
     await expect(view.getByText('共享测试 · ops@shared.example.test')).toBeVisible();
+    await terminal.evaluate(() => {
+      window.BrclioSnippetModel.store(window.BrclioTerminalPartitions.storage,[
+        {id:'local-alice-1',kind:'snippet',name:'团队模板',package:'维护',text:'echo {{TEAM_SAMPLE}}',template:true},
+        {id:'local-alice-2',kind:'snippet',name:'个人命令',text:'private snippet'},
+        {id:'local-alice-3',kind:'note',name:'个人笔记',text:'private note'},
+      ]);
+    });
+    const choose = view.getByLabel('选择要共享的个人剪藏');
+    await choose.focus();
+    assert.equal(await choose.locator('option').count(),3);
+    await choose.selectOption('local-alice-1');
+    await expect(view.locator('pre')).toHaveText('echo {{TEAM_SAMPLE}}');
+    await expect(view.getByText(/当前可读成员/)).toContainText('fixture-alice');
+    await expect(view.getByText(/当前可读成员/)).toContainText('BrclioData/BrclioUserData');
+    await view.getByRole('button',{name:'确认共享此剪藏'}).click();
+    await expect(view.getByRole('button',{name:'查看正文'})).toHaveCount(1);
+    const readRef = await terminal.evaluate(async () => {
+      const {vaults:[{vaultId,ownerId}]} = await window.brclioTerminal.sharedVault('list',{});
+      const {vault} = await window.brclioTerminal.sharedVault('open',{vaultId,ownerId});
+      return {vaultId,ownerId,snippetId:vault.snippets[0].id,revision:vault.revision};
+    });
+    assert.notEqual(readRef.snippetId,'local-alice-1');
     await view.getByLabel('Brclio 用户名').fill('fixture-bob');
     await view.getByRole('button',{name:'发送邀请'}).click();
     await expect(view.getByText('fixture-bob · 待接受')).toBeVisible();
@@ -102,9 +124,24 @@ async function main() {
     await view.getByRole('button',{name:'查看',exact:true}).click();
     await expect(view.getByRole('button',{name:'接受邀请',exact:true})).toBeVisible();
     await expect(view.getByText('共享测试 · ops@shared.example.test')).toHaveCount(0);
+    await expect(view.getByRole('button',{name:'查看正文'})).toHaveCount(0);
+    await assert.rejects(terminal.evaluate(ref => window.brclioTerminal.sharedVault('read-snippet',ref),readRef),/权限/);
     await view.getByRole('button',{name:'接受邀请',exact:true}).click();
     await expect(view.getByText('共享测试 · ops@shared.example.test')).toBeVisible();
     await expect(view.getByRole('button',{name:'保存到共享主机库'})).toHaveCount(0);
+    await expect(view.getByLabel('选择要共享的个人剪藏')).toHaveCount(0);
+    await expect(view.getByText('团队模板 · 模板')).toBeVisible();
+    await expect(view.getByText('个人命令')).toHaveCount(0);
+    await expect(view.locator('pre')).toHaveCount(0);
+    await view.getByRole('button',{name:'查看正文'}).click();
+    await expect(view.locator('pre')).toHaveText('echo {{TEAM_SAMPLE}}');
+    await view.getByRole('button',{name:'存入个人剪藏'}).click();
+    await expect(view.getByRole('status')).toContainText('已存入个人剪藏');
+    const [copy] = await terminal.evaluate(() => window.BrclioSnippetModel.read(window.BrclioTerminalPartitions.storage));
+    assert.notEqual(copy.id,readRef.snippetId);
+    assert.equal(copy.text,'echo {{TEAM_SAMPLE}}');
+    assert.equal(copy.package,'维护');
+    assert.equal(copy.template,true);
     await view.getByRole('button',{name:'存入本机主机库'}).click();
     await expect(view.getByRole('status')).toContainText('已存入');
     const copied = await terminal.evaluate(() => window.BrclioConnection.store(localStorage).all());
@@ -118,7 +155,8 @@ async function main() {
     await expect(view.getByText('fixture-bob',{exact:true})).toHaveCount(0);
     view = await login('fixture-bob');
     await expect(view.getByText('当前账号还没有共享主机库或邀请。')).toBeVisible();
-    console.log('Two signed desktop accounts created, invited, accepted, imported one portable host and revoked access through the shared vault UI.');
+    await assert.rejects(terminal.evaluate(ref => window.brclioTerminal.sharedVault('read-snippet',ref),readRef),/访问权限/);
+    console.log('Two signed desktop accounts shared one host and one selected snippet, copied as a reader and denied further reads after revocation.');
   } finally {
     await app?.close();
     if (server) {

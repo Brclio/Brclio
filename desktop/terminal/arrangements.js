@@ -12,6 +12,20 @@
     return name;
   }
 
+  function hostReference(value) {
+    if (!value || !['ssh','sftp'].includes(value.protocol) || !/^[0-9a-f]{64}$/.test(value.fingerprint) ||
+        typeof value.name !== 'string' || value.name.length > 64) throw new Error('布局主机引用无效。');
+    return {name:label(value.name),protocol:value.protocol,fingerprint:value.fingerprint};
+  }
+  async function reference(name, protocol, connection) {
+    // Persist a fingerprint of routing and local identity references. Exclude
+    // passwords, private key bytes, environment values and startup commands.
+    const fields = ['host','user','port','jump','proxy','proxyUser','identityFile','certificateFile','agentForwarding','identityId'];
+    const bytes = new TextEncoder().encode(JSON.stringify(fields.map(key => connection[key] ?? null)));
+    const hash = await crypto.subtle.digest('SHA-256',bytes);
+    const fingerprint = Array.from(new Uint8Array(hash),v => v.toString(16).padStart(2,'0')).join('');
+    return hostReference({name,protocol,fingerprint});
+  }
   function layout(value) {
     if (!value || !Array.isArray(value.tabs) || !value.tabs.length || value.tabs.length > 32) {
       throw new Error('窗口布局应包含 1 到 32 个标签。');
@@ -26,6 +40,7 @@
         return { direction: node.direction, fraction: node.fraction, first: tree(node.first, depth + 1), second: tree(node.second, depth + 1) };
       }
       if (++total > 32) throw new Error('一个布局最多包含 32 个窗格。');
+      if (node.savedHost) return {profile:'default',cwd:null,shellIntegration:false,savedHost:hostReference(node.savedHost)};
       if (typeof node.profile !== 'string' || !/^[\w.-]{1,128}$/.test(node.profile) ||
           (node.cwd != null && (typeof node.cwd !== 'string' || node.cwd.includes('\0') || node.cwd.length > 32767))) {
         throw new Error('窗格的 Shell 或起始目录无效。');
@@ -77,7 +92,7 @@
     };
   }
 
-  function capture(tabs, current, paneForNode) {
+  function capture(tabs, current, paneForNode, rememberHosts = false) {
     const list = Array.from(tabs);
     return layout({ tabs: list.map(tab => {
       const leaves = [];
@@ -85,7 +100,9 @@
         if (element.classList.contains('pane')) {
           const pane = paneForNode(element);
           leaves.push(pane);
-          return pane.launch;
+          if (rememberHosts && pane.savedHost) return {savedHost:pane.savedHost};
+          const {profile, cwd, shellIntegration} = pane.launch;
+          return {profile,cwd,shellIntegration};
         }
         return { direction: element.dataset.direction, fraction: Number(element.firstElementChild.style.flexGrow),
           first: node(element.firstElementChild), second: node(element.lastElementChild) };
@@ -137,7 +154,7 @@
       });
     }
     action('arrangement-save', () => {
-      const name = bank.save(byId('arrangement-name').value, snapshot());
+      const name = bank.save(byId('arrangement-name').value, snapshot(byId('arrangement-hosts').checked));
       refresh(name);
       return '已保存布局「' + name + '」。';
     });
@@ -156,6 +173,7 @@
     function reset() {
       list.replaceChildren();
       byId('arrangement-name').value = '';
+      byId('arrangement-hosts').checked = false;
       byId('tab-label').value = '';
       status.textContent = '';
       try { refresh(); } catch (error) { status.textContent = error.message; }
@@ -165,7 +183,7 @@
     reset();
   }
 
-  const api = { store, capture, restore, bind };
+  const api = { store, capture, restore, bind, reference };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else window.BrclioArrangements = api;
 })();

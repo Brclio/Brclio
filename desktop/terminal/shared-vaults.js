@@ -84,9 +84,13 @@
     return response;
   }
   const reference = vault => ({ownerId:vault.ownerId, vaultId:vault.vaultId});
-  const localLibrary = id => {
+  function localPartition(id) {
     const partition = window.BrclioTerminalPartitions;
     if (!partition?.ready || partition.owner !== id) throw new Error('本机终端账号已变化，请重新打开。');
+    return partition.storage;
+  }
+  const localLibrary = id => {
+    localPartition(id);
     return window.BrclioConnection.store(localStorage);
   };
   async function list() {
@@ -120,7 +124,7 @@
       if (result.removed) await list(); else render(result);
     };
     if (vault.state === 'invited') {
-      content.append(el('p','接受邀请后即可查看库中的主机连接资料。'),row(button('接受邀请',() => update('accept')),
+      content.append(el('p','接受邀请后即可查看库中的主机连接资料与团队剪藏。'),row(button('接受邀请',() => update('accept')),
         button('拒绝邀请',() => update('decline'))));
       return;
     }
@@ -143,6 +147,7 @@
     }
     if (!vault.hosts.length) content.append(el('p','尚未添加共享主机。'));
     if (canWrite) content.append(form.node);
+    content.append(teamSnippets(vault, userId, update, canWrite));
 
     if (vault.role === 'owner') {
       const domains = input('允许邀请的已验证邮箱域名',1024);
@@ -154,7 +159,7 @@
       const audit = el('details');
       audit.append(el('summary','最近管理记录'));
       const labels = {invite:'发送邀请',accept:'接受邀请',decline:'拒绝邀请',role:'修改权限',revoke:'撤销访问',
-        leave:'退出主机库','set-hosts':'更新共享主机','invite-domains':'设置邀请域名'};
+        leave:'退出主机库','set-hosts':'更新共享主机','invite-domains':'设置邀请域名','set-snippet':'共享或更新剪藏','remove-snippet':'移除共享剪藏'};
       for (const entry of [...(vault.audit || [])].reverse()) audit.append(el('p',
         new Date(entry.at).toLocaleString() + ' · ' + entry.actor + ' · ' + (labels[entry.action] || entry.action) + (entry.subject ? ' · ' + entry.subject : '')));
       content.append(audit);
@@ -169,6 +174,73 @@
       }
       content.append(confirmAction('删除主机库',() => update('delete')));
     } else content.append(confirmAction('退出主机库',() => update('leave')));
+  }
+  function teamSnippets(vault, userId, update, canWrite) {
+    const model = window.BrclioSnippetModel;
+    const area = el('section'), items = vault.snippets || [];
+    area.append(el('h3','团队剪藏'));
+    const groups = new Map();
+    for (const item of items) {
+      const key = item.package || '';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    }
+    async function readCurrent(id) {
+      const current = await request('read-snippet',{...reference(vault),revision:vault.revision,snippetId:id});
+      localPartition(userId);
+      if (current.userId !== userId || current.snippet?.id !== id || current.snippet.kind !== 'snippet') throw new Error('无法读取所选团队剪藏。');
+      return model.normalize(current.snippet);
+    }
+    for (const [name, entries] of groups) {
+      area.append(el('h4',name || '未分包'));
+      for (const item of entries) {
+        const detail = el('div');
+        const line = row(el('span',item.name + (item.template ? ' · 模板' : '')), button('查看正文', async () => {
+          const current = await readCurrent(item.id);
+          detail.replaceChildren(el('pre',current.text),button('收起正文',() => detail.replaceChildren()));
+        }),button('存入个人剪藏',async () => {
+          const current = await readCurrent(item.id);
+          const copy = model.addCopy(localPartition(userId),current);
+          window.dispatchEvent(new Event('brclio-snippets-changed'));
+          message.textContent = '已存入个人剪藏「' + model.label(copy) + '」。如已启用个人剪藏同步，该副本也会同步。';
+        }));
+        if (canWrite) line.append(confirmAction('移除团队剪藏',() => update('remove-snippet',{snippetId:item.id})));
+        area.append(line,detail);
+      }
+    }
+    if (!items.length) area.append(el('p','尚未共享剪藏。'));
+    if (!canWrite) return area;
+    const picker = el('select'), preview = el('div');
+    picker.setAttribute('aria-label','选择要共享的个人剪藏');
+    const choices = () => model.read(localPartition(userId)).filter(item => item.kind === 'snippet');
+    const refresh = () => {
+      const previous = picker.value;
+      picker.replaceChildren(new Option('选择要共享的个人剪藏',''), ...choices().map(item => new Option(model.label(item),item.id)));
+      picker.value = [...picker.options].some(option => option.value === previous) ? previous : '';
+      if (!picker.value) preview.replaceChildren();
+    };
+    picker.add(new Option('选择要共享的个人剪藏',''));
+    picker.onfocus = () => { try { refresh(); } catch (error) { message.textContent = error.message; } };
+    picker.onchange = () => {
+      preview.replaceChildren();
+      try {
+        const chosen = choices().find(item => item.id === picker.value);
+        if (!chosen) return;
+        const match = items.find(item => item.name === chosen.name && (item.package || '') === (chosen.package || ''));
+        const id = match?.id || crypto.randomUUID();
+        preview.append(el('strong',model.label(chosen) + (chosen.template ? ' · 模板' : '')),el('pre',chosen.text),
+          el('p','只有选中的这一条会共享。当前可读成员：' + (vault.audience || [vault.ownerName]).join('、') + '。以后接受邀请的成员也可读取。包名、名称、正文和模板标记将以明文存入私有 GitHub 仓库 BrclioData/BrclioUserData，有仓库读取权限的人可以查看 Git 历史。移除共享后，成员已保存的副本仍会保留。'),
+          button(match ? '确认替换团队剪藏' : '确认共享此剪藏',async () => {
+            const current = choices().find(item => item.id === picker.value);
+            if (JSON.stringify(current) !== JSON.stringify(chosen)) {
+              preview.replaceChildren(); picker.value = ''; throw new Error('个人剪藏已更改，请重新选择并核对。');
+            }
+            await update('set-snippet',{snippet:{...chosen,id}});
+          }));
+      } catch (error) { message.textContent = error.message; }
+    };
+    area.append(row(picker), preview);
+    return area;
   }
   function editor(vault, userId, update) {
     const box = el('fieldset'), legend = el('legend','添加主机'), name = input('名称',64);

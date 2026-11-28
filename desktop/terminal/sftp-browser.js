@@ -1,7 +1,7 @@
 'use strict';
 
 window.BrclioSftp = (() => {
-  let active;
+  let active, closing;
   const node = (tag, text, props = {}) => Object.assign(document.createElement(tag), { textContent: text }, props);
   function button(text, action) {
     const b = node('button', text, { type: 'button' });
@@ -14,9 +14,14 @@ window.BrclioSftp = (() => {
     if (value < 1048576) return (value / 1024).toFixed(1) + ' KiB';
     return (value / 1048576).toFixed(1) + ' MiB';
   }
-  function open(value) {
+  async function open(value) {
+    if (active && !active.open) {
+      const previous = active;
+      await new Promise(resolve => previous.addEventListener('close',resolve,{once:true}));
+    }
+    if (closing) await closing;
     if (active) { active.focus(); return; }
-    const target = window.BrclioConnection.endpoint(value);
+    const target = value ? window.BrclioConnection.endpoint(value) : null;
     const api = window.brclioTerminal;
     const id = crypto.randomUUID();
     const call = (op, args = {}) => api.sftp(op, { ...args, id });
@@ -28,12 +33,30 @@ window.BrclioSftp = (() => {
     const head = node('div', '', { className: 'sftp-heading' });
     const title = node('h2', 'SFTP 文件管理');
     const close = button('关闭', () => dialog.close());
-    head.append(title, node('span', (target.user ? target.user + '@' : '') + target.host + (target.port ? ':' + target.port : '')), close);
+    head.append(title, node('span', target ? window.BrclioConnection.format(target) : '本机'), close);
     const controls = node('div', '', { className: 'sftp-bottom' });
     let canceled = false;
     const cancel = button('取消传输', () => { canceled = true; void call('cancel').catch(() => {}); });
     cancel.hidden = true;
-    controls.append(status, cancel);
+    const editors = button('编辑器关联', () => run(async () => {
+      const list = node('select', '', { ariaLabel:'按文件类型保存的编辑器' });
+      const panel = node('div', '', { className:'sftp-edit' });
+      function display(items) {
+        list.replaceChildren(...items.map(item => new Option((item.extension || '无扩展名') + '　' + item.application,item.extension)));
+        remove.disabled = !items.length;
+      }
+      const note = node('span','使用“选择编辑器”后保存文件类型关联。');
+      const remove = button('恢复默认编辑器', async () => {
+        remove.disabled = true;
+        try { display(await call('editor-forget', {extension:list.value})); }
+        catch (e) { note.textContent=String(e.message || e); remove.disabled=false; }
+      });
+      const done = button('完成', () => { panel.remove(); editing=null; main.inert=false; refreshControls(); editors.focus(); });
+      display(await call('editor-list'));
+      editing=panel; main.inert=true;
+      panel.append(note,list,remove,done); dialog.insertBefore(panel,controls); done.focus();
+    }));
+    controls.append(status, editors, cancel);
     dialog.append(head, main, controls);
     const panes = {};
     let busy = false;
@@ -52,9 +75,21 @@ window.BrclioSftp = (() => {
       if (partition && owner !== partition.owner) throw new Error('账号已更改，请重新打开 SFTP。');
       return partition?.storage || localStorage;
     }
+    const remoteScope = record => JSON.stringify(['sftp-route', record.host, record.user || '', record.port || null,
+      record.jump || '', record.proxy || '', record.proxyUser || '']);
     function savedBookmarks() {
       const list = JSON.parse(bookmarkStorage().getItem(bookmarksKey) || '[]');
       if (!Array.isArray(list)) throw new Error('目录收藏格式无效。');
+      let changed = false;
+      for (const entry of list) {
+        try {
+          const [type, old] = JSON.parse(entry.endpoint);
+          if (type === 'sftp' && typeof old?.host === 'string') {
+            entry.endpoint = remoteScope(old); changed = true;
+          }
+        } catch { /* Unknown bookmarks remain stored for their original reader. */ }
+      }
+      if (changed) bookmarkStorage().setItem(bookmarksKey, JSON.stringify(list));
       return list;
     }
     function updateBookmarks(side) {
@@ -120,7 +155,7 @@ window.BrclioSftp = (() => {
           const dest = hosts.value !== '' ? bank.resolve(saved[Number(hosts.value)]) : library.endpoint(library.quick(input.value));
           const data = await call('connect', { side, target: dest });
           pane.target = dest;
-          pane.scope = JSON.stringify(['sftp', dest]);
+          pane.scope = remoteScope(dest);
           pane.data = null;
           paint(side, data);
         });
@@ -155,6 +190,7 @@ window.BrclioSftp = (() => {
         } else pane.bookmarks.disabled = true;
       }
       close.disabled = transferInProgress || !!draftPoll;
+      editors.disabled = busy || !connected || !!editing;
     }
     function paint(side, data) {
       if (!data) return;
@@ -284,11 +320,11 @@ window.BrclioSftp = (() => {
       const local = side === 'local';
       const box = node('section', '', { className: 'sftp-pane' });
       const title = node('h3', local ? '本机' : '远端');
-      const path = node('p', local ? '尚未选择文件夹' : '正在连接…', { className: 'sftp-path' });
+      const path = node('p', local || !target ? '尚未选择文件夹' : '正在连接…', { className: 'sftp-path' });
       const select = node('select', '', { size: 12, ariaLabel: local ? '本地文件列表' : '远端文件列表' });
       const empty = node('small', '', { hidden: true });
       const pane = panes[side] = { title, path, select, empty, data: null, selected: '', showHidden: false,
-        target: local ? null : target, scope: local ? '' : JSON.stringify(['sftp', target]) };
+        target: local ? null : target, scope: local || !target ? '' : remoteScope(target) };
       const toolbar = node('div', '', { className: 'sftp-tools' });
       if (local) {
         pane.choose = button('选择目录', () => run(() => chooseLocal(side)));
@@ -391,11 +427,17 @@ window.BrclioSftp = (() => {
       active = null;
       clearInterval(draftPoll);
       clearInterval(progressTimer);
-      void call('close').catch(() => {});
+      closing = call('close').catch(() => {});
       dialog.remove();
     }, { once: true });
     dialog.showModal();
     void run(async () => {
+      if (!target) {
+        await call('start-local');
+        connected = true;
+        await chooseLocal('local');
+        return '可为另一侧选择本机目录或远端主机。';
+      }
       paint('remote', await call('open', { target }));
       connected = true;
       return '已连接。可选择本机目录，或切换位置连接另一台主机。';

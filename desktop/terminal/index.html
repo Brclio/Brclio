@@ -18,6 +18,8 @@
   <script defer src="pane-tools.js"></script>
   <script defer src="tab-groups.js"></script>
   <script defer src="command-marks.js"></script>
+  <link rel="stylesheet" href="arrangement-host.css">
+  <script defer src="arrangement-host.js"></script>
   <script defer src="arrangements.js"></script>
   <script defer src="profiles.js"></script>
   <script defer src="dynamic-controls.js"></script>
@@ -270,7 +272,7 @@
                   <select id="remote-group-filter" aria-label="筛选分组"><option value="">全部分组</option></select>
                 </div>
                 <div class="host-results" id="remote-list" aria-label="匹配的主机"></div>
-                <div class="host-row"><button id="remote-new" type="button">＋ 新建主机</button><button id="remote-clear-recent" type="button" hidden>清空最近记录</button></div>
+                <div class="host-row"><button id="remote-new" type="button">＋ 新建主机</button><button id="remote-local-files" type="button">浏览本机目录</button><button id="remote-clear-recent" type="button" hidden>清空最近记录</button></div>
                 <details class="host-group-editor" id="remote-group-editor"><summary>分组默认设置</summary>
                   <label>分组路径<input id="remote-config-path" maxlength="120" list="remote-groups" placeholder="例如 工作/测试"></label>
                   <label>SSH 用户名<input id="remote-config-user" maxlength="128" placeholder="继承上一级"></label>
@@ -326,10 +328,10 @@
     </fieldset>
     <fieldset><legend>窗口布局</legend>
       <label>标签名称<input id="tab-label" maxlength="64"></label><button id="tab-rename">重命名当前标签</button>
-      <label>布局名称<input id="arrangement-name" maxlength="64"></label><button id="arrangement-save">保存布局</button>
+      <label>布局名称<input id="arrangement-name" maxlength="64"></label><label><input type="checkbox" id="arrangement-hosts">在布局中记住已保存主机</label><button id="arrangement-save">保存布局</button>
       <select id="arrangement-list" aria-label="已保存的布局"></select>
       <button id="arrangement-restore">用新会话打开</button><button id="arrangement-delete">删除布局</button>
-      <p>恢复时会新增标签和 Shell 会话，当前会话继续运行。SSH / SFTP 窗格恢复为本地 Shell。</p><span id="arrangement-status" role="status"></span>
+      <p>恢复时会新增标签和 Shell 会话，当前会话继续运行。记住的 SSH / SFTP 主机需在各自窗格点击连接。</p><span id="arrangement-status" role="status"></span>
     </fieldset>
     <fieldset><legend>窗格信息与批注</legend>
       <label>徽章<input id="inspect-badge" maxlength="120" placeholder="{host} · {dir}"></label><button id="inspect-badge-set">更新徽章</button>

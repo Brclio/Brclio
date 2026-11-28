@@ -43,17 +43,23 @@ window.BrclioSnippetSync = (() => {
       if (new TextEncoder().encode(JSON.stringify(result.items)).length > 112*1024) throw new Error('剪藏超过 112 KiB 同步上限。');
       if (!model.same(remote,result.items)) await window.brclioTerminal.snippetSync('write',{revision:cloud.revision,data:result.items});
       if (!valid()) return;
-      if (model.same(local(),here)) {
-        if (!model.same(here,result.items)) {
-          const currentNotes = snippets.read(partitions.storage).filter(s => s.kind === 'note');
-          if (currentNotes.length + result.items.length > 200 || result.items.some(s => currentNotes.some(n => n.id === s.id))) throw new Error('本机笔记已变更，请重新同步。');
-          partitions.storage.setItem(snippets.key,JSON.stringify([...currentNotes,...result.items]));
-          window.dispatchEvent(new Event('brclio-snippets-changed'));
-        }
-      } else dirty = true;
-      // Preserve edits made while the PUT was in flight by merging again from
-      // the previous base on the next pass.
-      if (model.same(local(),result.items)) save({enabled:true,base:result.items});
+      const latest = local();
+      const rebased = model.merge(here,latest,result.items);
+      if (rebased.conflicts.length) {
+        // This device edited an item that changed remotely during the upload.
+        // The snapshot taken before the request is their common ancestor.
+        save({enabled:true,base:here});
+        dirty = true; conflict = null; message = '检测到新的本地编辑，正在核对。';
+        return;
+      }
+      if (!model.same(latest,rebased.items)) {
+        const currentNotes = snippets.read(partitions.storage).filter(s => s.kind === 'note');
+        if (currentNotes.length + rebased.items.length > 200 || rebased.items.some(s => currentNotes.some(n => n.id === s.id))) throw new Error('本机笔记已变更，请重新同步。');
+        partitions.storage.setItem(snippets.key,JSON.stringify([...currentNotes,...rebased.items]));
+        window.dispatchEvent(new Event('brclio-snippets-changed'));
+      }
+      save({enabled:true,base:result.items});
+      dirty = !model.same(result.items,rebased.items);
       conflict = null; message = '剪藏已同步。';
     } catch (error) { if (valid()) message = error.message; }
     finally { if (original === epoch) { active = false; paint(); schedule(dirty ? 700 : 300000); } }

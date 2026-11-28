@@ -181,7 +181,7 @@ async function main() {
       assert.equal(hello.invalidWindow, false);
     }
     await require('./verify-terminal-sftp.cjs').verifySftpHelper(app);
-    await require('./verify-terminal-sftp.cjs').verifySftpEntry(terminal);
+    await require('./verify-terminal-sftp.cjs').verifySftpEntry(terminal, app);
     await terminal.locator('#terminal-actions').click();
     await terminal.locator('#trigger-pattern').fill('^BRCLIO-TRIGGER-OK');
     await terminal.locator('#trigger-add').click();

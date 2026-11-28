@@ -42,7 +42,31 @@
     });
   }
   const label = item => [item.package, item.name].filter(Boolean).join(' / ');
-  const api = { key, read, normalize, fill, variables, search, label };
+  function store(storage, items) {
+    if (items.length > 200 || items.reduce((count, item) => count + item.text.length, 0) > 512 * 1024) {
+      throw new Error('已达到剪藏与笔记的容量上限，请先缩短内容或删除条目。');
+    }
+    if (items.length) storage.setItem(key, JSON.stringify(items));
+    else storage.removeItem(key);
+  }
+  function addCopy(storage, source) {
+    const copy = normalize(source);
+    if (copy.kind !== 'snippet') throw new Error('只能将团队剪藏存入个人剪藏。');
+    const entries = read(storage);
+    const peers = entries.filter(item => item.kind === 'snippet' && item.package === copy.package);
+    const original = copy.name;
+    for (let i = 1; ; i++) {
+      const existing = peers.find(item => item.name === copy.name);
+      if (!existing) break;
+      if (existing.text === copy.text && existing.template === copy.template) return existing;
+      const suffix = '（团队副本 ' + i + '）';
+      copy.name = original.slice(0, 80 - suffix.length).replace(/[\uD800-\uDBFF]$/u, '') + suffix;
+    }
+    copy.id = crypto.randomUUID();
+    store(storage,[...entries,copy]);
+    return copy;
+  }
+  const api = { key, read, normalize, fill, variables, search, label, store, addCopy };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else window.BrclioSnippetModel = api;
 })();

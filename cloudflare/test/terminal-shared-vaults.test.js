@@ -82,6 +82,43 @@ test('shared vaults require an authenticated account, explicit invitation and ac
   assert.deepEqual(f.files.get(appDataPath('alice','terminal')),privateData);
 });
 
+test('one shared snippet is readable only on explicit fetch by active members, and mutable only by owners and editors', async () => {
+  const f = await fixture(); await f.create();
+  const snippet = {id:'1288c06f-f84f-469d-b733-998615f76c6d',kind:'snippet',package:'维护',name:'状态',text:'echo {{name}}',template:true};
+  const read = (id, rev) => f.change(id,'read-snippet',rev,{snippetId:snippet.id});
+  const write = (id, rev, data = snippet) => f.change(id,'set-snippet',rev,{snippet:data});
+  for (const extra of [{kind:'note'},{password:'private'},{text:Array.from({length:25},(_,i) => '{{v'+i+'}}').join(' ')}])
+    assert.equal((await write('alice',1,{...snippet,...extra})).status,400);
+  const created = await write('alice',1);
+  assert.equal(created.status,200);
+  assert.equal(created.vault.snippets[0].name,snippet.name);
+  assert.equal('text' in created.vault.snippets[0],false);
+  assert.deepEqual(created.vault.audience,['ALICE']);
+  await f.change('alice','invite',2,{username:'BOB',role:'reader'});
+  const invitation = (await f.call('bob','open',f.ref)).vault;
+  assert.equal('snippets' in invitation,false);
+  assert.equal((await read('bob',3)).status,403);
+  assert.equal((await read('clara',3)).status,404);
+  assert.deepEqual((await f.change('bob','accept',3)).vault.audience,['ALICE','BOB']);
+  assert.deepEqual((await read('bob',4)).snippet,snippet);
+  assert.equal((await write('bob',4)).status,403);
+  assert.equal((await f.change('bob','remove-snippet',4,{snippetId:snippet.id})).status,403);
+  await f.change('alice','role',4,{memberId:'bob',role:'editor'});
+  assert.equal((await read('bob',4)).status,409);
+  assert.equal((await write('bob',5,{...snippet,text:'version two'})).status,200);
+  assert.equal((await write('alice',6,{...snippet,id:crypto.randomUUID()})).status,409);
+  const updated = (await f.call('alice','open',f.ref)).vault;
+  assert.equal(JSON.stringify(updated).includes('version two'),false);
+  assert.equal((await read('alice',6)).snippet.text,'version two');
+  assert.equal((await f.change('bob','read-snippet',6,{snippetId:snippet.id,expectedUserId:'alice'})).status,409);
+  await f.change('alice','revoke',6,{memberId:'bob'});
+  assert.equal((await read('bob',6)).status,404);
+  assert.equal((await read('bob',7)).status,404);
+  assert.equal(f.files.has(appDataPath('bob','terminal-snippets')),false);
+  assert.equal((await f.change('alice','remove-snippet',7,{snippetId:snippet.id})).status,200);
+  assert.equal((await read('alice',8)).status,404);
+});
+
 test('stale revisions fail closed, invitations can be declined and members can leave; deleting the vault clears discovery', async () => {
   const f = await fixture(); await f.create();
   const changes = await Promise.all([[],[host]].map(hosts => f.change('alice','set-hosts',1,{hosts})));

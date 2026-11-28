@@ -91,3 +91,25 @@ test('restoring appends a new session for every leaf while retaining active pane
   assert.throws(() => restore(invalid, controls), /Shell/);
   assert.equal(tabs.length, 3);
 });
+
+test('remembering an explicitly saved destination stores only a protocol, name and route fingerprint',async () => {
+  const {reference} = require('./terminal/arrangements.js');
+  const target = {host:'node.example',port:2022,user:'operator',identityFile:'/local/private-file',
+    password:'private value',environment:[{name:'SECRET',value:'environment value'}]};
+  const savedHost = await reference('生产节点','ssh',target);
+  assert.deepEqual(Object.keys(savedHost).sort(),['fingerprint','name','protocol']);
+  assert.equal((await reference('生产节点','ssh',{...target,port:2222})).fingerprint === savedHost.fingerprint,false);
+  assert.equal((await reference('生产节点','ssh',{...target,password:'different'})).fingerprint,savedHost.fingerprint);
+  const node = {classList:{contains:() => true}};
+  const pane = {launch:{profile:'ssh',connection:target},savedHost};
+  const tab = {panel:{firstElementChild:node},active:pane,customName:''};
+  const memory = storage(), bank = store(memory);
+  const snapshot = checked => capture([tab],tab,() => pane,checked);
+  bank.save('Default',snapshot(false)); bank.save('Remembered',snapshot(true));
+  assert.deepEqual(bank.get('Default').tabs[0].root,leaf('default'));
+  assert.deepEqual(bank.get('Remembered').tabs[0].root,{...leaf('default'),savedHost});
+  const serialized = [...memory.values.values()].join('');
+  for (const privateText of ['node.example','operator','/local/private-file','private value','environment value']) assert.ok(!serialized.includes(privateText));
+  pane.savedHost = undefined;
+  assert.deepEqual(snapshot(true).tabs[0].root,leaf('default'));
+});

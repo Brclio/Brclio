@@ -44,19 +44,16 @@ jobs:
             platform: win
             arch: x64
             executable: release/win-unpacked/Brclio.exe
-            installer: release/*.exe
           - name: macOS Intel
             runner: macos-15-intel
             platform: mac
             arch: x64
             executable: release/mac/Brclio.app/Contents/MacOS/Brclio
-            installer: release/*.dmg
           - name: macOS Apple silicon
             runner: macos-15
             platform: mac
             arch: arm64
             executable: release/mac-arm64/Brclio.app/Contents/MacOS/Brclio
-            installer: release/*.dmg
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     steps:
@@ -107,16 +104,18 @@ jobs:
           node scripts/verify-terminal-account-switch.cjs
           node scripts/verify-terminal-shared-vaults.cjs
           node scripts/verify-terminal-snippet-sync.cjs
+          node scripts/verify-terminal-command-suggest.cjs
+          node scripts/verify-terminal-arrangement-hosts.cjs
           node scripts/verify-terminal-live-view.cjs
           node scripts/verify-terminal-lock.cjs
           node scripts/verify-terminal-local-logs.cjs
       - name: Exercise the graphical file browser with the local SFTP subsystem
         run: node scripts/verify-terminal-sftp.cjs
       - run: npm run prepare:xhs
-      - name: Build the desktop test installer
+      - name: Build the regular application for isolated regression testing
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --dir --publish never
       - name: Run commands in the packaged terminal
         timeout-minutes: 7
         env:
@@ -146,11 +145,17 @@ jobs:
         env:
           BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
         run: node scripts/verify-terminal-status.cjs
-      - name: Save the verified test installer
+      - name: Build and verify an isolated terminal preview
+        id: preview
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: node scripts/terminal-preview-build.cjs
+      - name: Save the portable preview
         uses: actions/upload-artifact@v4
         with:
-          name: terminal-test-${{ matrix.platform }}-${{ matrix.arch }}
-          path: ${{ matrix.installer }}
+          name: terminal-preview-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ steps.preview.outputs.archive }}
+          compression-level: 0
           if-no-files-found: error
           retention-days: 7
       - name: Verify the development build after packaging

@@ -262,3 +262,33 @@ test('external editor changes require confirmation, reject stale remote versions
   assert.deepEqual(await fs.readdir(root), ['note.txt']);
   await assert.rejects(fs.access(edited));
 });
+
+test('SFTP editor associations survive reopening the same account partition and can be removed without touching another account', async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'brclio-editor-prefs-'));
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const a=path.join(dir,'a'), b=path.join(dir,'b');
+  await Promise.all([a,b].map(p=>fs.mkdir(p)));
+  const {preferences}=require('./terminal/sftp-editor-preferences.cjs');
+  const app=path.join(dir,process.platform==='win32'?'editor.exe':'Editor.app');
+  await preferences(a).set('.md',app);
+  assert.equal(await preferences(a).get('.md'),app);
+  assert.deepEqual(await preferences(b).list(),[]);
+  await preferences(a).set('.md',null);
+  assert.deepEqual(await preferences(a).list(),[]);
+});
+
+test('local browser opens without SSH and copies only between two user-chosen directories', async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'brclio-local-files-'));
+  const left=path.join(dir,'left'), right=path.join(dir,'right');
+  await Promise.all([left,right].map(p=>fs.mkdir(p)));
+  await fs.writeFile(path.join(left,'demo.txt'),'hello');
+  const choices=[null,left,right];
+  const service=createBrowser({chooseLocal:()=>choices.shift(),start:()=>{throw Error('unexpected network connection');}});
+  t.after(()=>cleanup(service,dir));
+  const call=(op,p={})=>service.action(op,{id,...p});
+  await call('start-local');
+  assert.equal(await call('choose',{side:'local'}),null);
+  await call('choose',{side:'local'});await call('choose',{side:'remote'});
+  await call('transfer',{side:'local',name:'demo.txt'});
+  assert.equal(await fs.readFile(path.join(right,'demo.txt'),'utf8'),'hello');
+});

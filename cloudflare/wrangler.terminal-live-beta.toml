@@ -6,15 +6,13 @@ account_id = "cacceff607775c81f667b7a951d4639f"
 workers_dev = false
 preview_urls = false
 keep_vars = true
-[vars]
-GITHUB_DATA_REPOSITORY = "BrclioData/BrclioUserData"
 [[services]]
 binding = "BRCLIO_ACCOUNTS"
 service = "brclio-client-services"
 [[ratelimits]]
 name = "ACCOUNT_LIMITER"
 namespace_id = "1019"
-simple = { limit = 30, period = 60 }
+simple = { limit = 60, period = 60 }
 [[durable_objects.bindings]]
 name = "TERMINAL_LIVE_ROOMS"
 class_name = "TerminalLiveRoom"

@@ -85,6 +85,11 @@ for (const platform of ['darwin', 'win32']) {
         } };
         window.inputProbe = state;
         window.brclioTerminal = {
+          onLiveView() {}, onInventoryRequest() {},
+          async liveView(operation) {
+            if (operation === 'available') return false;
+            throw new Error('Live sharing is disabled in the local input fixture.');
+          },
           platform, profiles: async () => [{ id: 'default', label: 'Shell' }],
           async syncTerminal(operation) {
             if (operation === 'local-session') return { known: true, user: null };

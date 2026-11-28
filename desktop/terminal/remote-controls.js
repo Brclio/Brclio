@@ -184,17 +184,19 @@ window.BrclioRemoteConnections = {
       const target = storage.resolve(value);
       const program = kind === 'files' ? 'ssh' : kind;
       if (!available[program]) throw new Error('未找到 ' + program + '，请安装系统 OpenSSH 客户端。');
+      const saved = storage.all().find(item => item.name === name);
+      const matches = saved && JSON.stringify(storage.resolve(saved)) === JSON.stringify(target);
       if (kind === 'files') {
         if (!window.BrclioSftp?.open) throw new Error('文件浏览器尚未就绪。');
         await window.BrclioSftp.open(target);
       } else {
-        launch(kind, kindLabels[kind] + ' · ' + (value.name || target.host).slice(0, 64), target, value.startupSnippet);
+        const reference = matches ? await window.BrclioArrangements.reference(saved.name,kind,target) : undefined;
+        if (epoch !== accountGeneration) return;
+        launch(kind, kindLabels[kind] + ' · ' + (value.name || target.host).slice(0, 64), target, value.startupSnippet, reference);
       }
       if (epoch !== accountGeneration) return;
       dialog.close();
-      const saved = storage.all().find(item => item.name === name);
       // A connection can use unsaved edits. Keep that exact destination in its history.
-      const matches = saved && JSON.stringify(storage.resolve(saved)) === JSON.stringify(target);
       storage.recordUse(kind, target, matches ? saved.name : '');
     }
 
@@ -310,6 +312,10 @@ window.BrclioRemoteConnections = {
       render();
       status('');
       byId('name').focus();
+    });
+    byId('local-files').onclick = () => guarded(() => {
+      window.BrclioSftp.open();
+      dialog.close();
     });
     byId('duplicate').onclick = () => guarded(() => {
       if (!selected) return;

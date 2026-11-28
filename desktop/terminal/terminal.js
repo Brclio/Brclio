@@ -96,7 +96,7 @@
     inspector.changed();
     pane.stateLabel.textContent = state === 'running' ? '' : detail;
     pane.stateLabel.title = detail;
-    pane.terminal.options.disableStdin = state === 'exited' || state === 'error';
+    pane.terminal.options.disableStdin = ['exited','error','waiting'].includes(state);
     if (pane === activePane()) {
       message(detail, state === 'error');
       refreshTools();
@@ -196,17 +196,14 @@
     pane.marks = BrclioCommandMarks.attach(terminal, code => {
       pane.commandExit = code;
       statusBar.refresh(pane);
-    }, window.BrclioCommandLibrary?.recorder(launch));
+    }, window.BrclioCommandLibrary?.recorder(launch.savedHost ? {profile:launch.savedHost.protocol} : launch));
     window.BrclioCommandLibrary.attach(pane);
     locations.attach(pane);
     pane.disposeTriggers = attachTriggers(pane);
     inspector.attach(pane);
     terminal.textarea?.setAttribute('aria-label', '终端输入');
-    setState(pane, 'starting', '正在启动 Shell…');
+    setState(pane, launch.savedHost ? 'waiting' : 'starting', launch.savedHost ? '等待手动连接' : '正在启动 Shell…');
     fit(pane);
-    const initial = { id, cols: terminal.cols, rows: terminal.rows, profile: launch.profile, shellIntegration: launch.shellIntegration };
-    if (launch.cwd) initial.cwd = launch.cwd;
-    if (launch.connection) initial.connection = launch.connection;
     pane.observer = new ResizeObserver(() => fit(pane));
     pane.observer.observe(host);
     node.addEventListener('pointerdown', event => {
@@ -234,22 +231,41 @@
       }
     });
     selectPane(pane);
-    pane.ready = api.create(initial).then(info => {
-      if (!panes.has(id)) return api.close(id).catch(() => {});
-      pane.shell = info.shell.split(/[\\/]/).pop();
-      pane.pid = info.pid;
-      pane.initialCwd = info.cwd;
-      if (Number.isInteger(info.windowsBuild)) terminal.options.windowsPty = { backend: 'conpty', buildNumber: info.windowsBuild };
+    function start(options) {
+      pane.launch = options;
+      if (pane.state !== 'starting') setState(pane,'starting','正在启动会话…');
+      const initial = {id,cols:terminal.cols,rows:terminal.rows,profile:options.profile,shellIntegration:options.shellIntegration};
+      if (options.cwd) initial.cwd = options.cwd;
+      if (options.connection) initial.connection = options.connection;
+      pane.ready = api.create(initial).then(info => {
+        if (!panes.has(id)) return api.close(id).catch(() => {});
+        pane.shell = info.shell.split(/[\\/]/).pop();
+        pane.pid = info.pid;
+        pane.initialCwd = info.cwd;
+        if (Number.isInteger(info.windowsBuild)) terminal.options.windowsPty = { backend: 'conpty', buildNumber: info.windowsBuild };
+        updateLabel(pane);
+        if (pane.state !== 'starting') return;
+        const details = [pane.shell, info.pid > 0 && 'PID ' + info.pid, info.cwd].filter(Boolean);
+        setState(pane, 'running', details.join(' · '));
+        if (terminal.cols !== initial.cols || terminal.rows !== initial.rows) {
+          return api.resize(id, terminal.cols, terminal.rows).catch(error => { if (pane.state === 'running') report(error); });
+        }
+      }).catch(error => {
+        if (panes.has(id)) setState(pane, 'error', error.message || '无法启动会话');
+      });
+    }
+    if (launch.savedHost) {
+      pane.savedHost = launch.savedHost;
+      pane.title = launch.savedHost.name;
       updateLabel(pane);
-      if (pane.state !== 'starting') return;
-      const details = [pane.shell, info.pid > 0 && 'PID ' + info.pid, info.cwd].filter(Boolean);
-      setState(pane, 'running', details.join(' · '));
-      if (terminal.cols !== initial.cols || terminal.rows !== initial.rows) {
-        return api.resize(id, terminal.cols, terminal.rows).catch(error => { if (pane.state === 'running') report(error); });
-      }
-    }).catch(error => {
-      if (panes.has(id)) setState(pane, 'error', error.message || '无法启动会话');
-    });
+      pane.ready = Promise.resolve();
+      pane.pendingHost = window.BrclioArrangementHost.mount(pane,launch.savedHost,(options,ref) => {
+        if (!panes.has(id) || pane.state !== 'waiting') return;
+        pane.savedHost = ref; pane.title = ref?.name || ''; updateLabel(pane);
+        pane.pendingHost.dispose(); pane.pendingHost = undefined;
+        start(options); terminal.focus();
+      });
+    } else start(launch);
     return pane;
   }
 
@@ -333,6 +349,7 @@
     panes.delete(pane.id);
     pane.tab.panes.delete(pane);
     pane.observer.disconnect();
+    pane.pendingHost?.dispose();
     const wasRunning = pane.state === 'running' || pane.state === 'starting';
     pane.state = 'closed';
     pane.marks.dispose();
@@ -499,7 +516,7 @@
     return;
   }
   window.BrclioTerminalHistory.bind(activePane, paneTools.pasteOnly);
-  window.BrclioLiveView.bind(activePane);
+  window.BrclioLiveView.bind(activePane,paneTools.pasteOnly);
   const removeData = api.onData(({id, data}) => {
     const pane = panes.get(id);
     if (pane) window.BrclioLiveView.output(pane,data);
@@ -520,9 +537,9 @@
     for (const pane of panes.values()) disposePane(pane);
   }, { once: true });
   window.BrclioArrangements.bind({ document, storage: localStorage,
-    snapshot: () => window.BrclioArrangements.capture(tabs.values(), currentTab, node => panes.get(node.dataset.id)),
+    snapshot: rememberHosts => window.BrclioArrangements.capture(tabs.values(), currentTab, node => panes.get(node.dataset.id), rememberHosts),
     open: layout => window.BrclioArrangements.restore(layout, { newTab, split: splitPane, selectTab, selectPane,
-      liveCount: () => Array.from(panes.values()).filter(pane => pane.state === 'running' || pane.state === 'starting').length }),
+      liveCount: () => Array.from(panes.values()).filter(pane => ['running','starting','waiting'].includes(pane.state)).length }),
     rename(name) {
       if (!currentTab?.active) throw new Error('请先打开一个终端标签。');
       currentTab.customName = name;
@@ -614,9 +631,10 @@
     };
   }
   byId('terminal-actions').onclick = () => { inspector.refresh(); locations.render(); tabGroups.render(); actions.showModal(); };
-  window.BrclioRemoteConnections.bind(api, activePane, (kind, name, connection, startupSnippet) => {
+  window.BrclioRemoteConnections.bind(api, activePane, (kind, name, connection, startupSnippet, savedHost) => {
     actions.close();
     const pane = newTab(name, { profile: kind, connection, cwd: nextDirectory, shellIntegration: false });
+    pane.savedHost = savedHost;
     if (kind === 'ssh') snippets.startup(startupSnippet, pane);
   });
   const activateConnection = pane => { selectTab(pane.tab); selectPane(pane); };

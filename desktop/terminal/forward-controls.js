@@ -74,9 +74,9 @@ window.BrclioForwardControls = (() => {
       selected = name;
       const rules = bank.all();
       for (const [label, pane] of live) {
-        if (['starting', 'running'].includes(pane.state) && !rules.some(rule => rule.name === label)) rules.push(pane.launch.connection);
+        if (['starting', 'running'].includes(pane.state) && !rules.some(rule => rule.name === label)) rules.push(pane.forwardTemplate);
       }
-      const item = active()?.launch.connection || rules.find(entry => entry.name === name);
+      const item = active()?.forwardTemplate || rules.find(entry => entry.name === name);
       if (!item) selected = '';
       const list = field('list');
       list.replaceChildren(new Option('新建规则', ''), ...rules.map(entry => new Option(entry.name, entry.name)));
@@ -134,6 +134,7 @@ window.BrclioForwardControls = (() => {
       const item = bank.save(value(), selected);
       selected = item.name;
       const pane = newTab('转发 · ' + item.name, { profile: 'ssh-forward', connection: model.forLaunch(item, hosts), shellIntegration: false });
+      pane.forwardTemplate = item;
       live.set(item.name, pane);
       dialog.close();
       activate(pane);

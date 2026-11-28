@@ -29,7 +29,10 @@ async function unseal(blob, password, aad) {
     decipher.setAAD(aad); decipher.setAuthTag(Buffer.from(blob.tag,'base64'));
     const bytes = await expand(Buffer.concat([decipher.update(Buffer.from(blob.data,'base64')),decipher.final()]),{maxOutputLength:2*1024*1024});
     const record = JSON.parse(bytes);
-    if (typeof record.text !== 'string' || !Array.isArray(record.bookmarks)) throw new Error();
+    if (!uuid(record?.id) || typeof record.text !== 'string' || Buffer.byteLength(record.text) > 256*1024 + 8 ||
+        !Array.isArray(record.bookmarks) || record.bookmarks.length > 32 ||
+        record.bookmarks.some(mark => !mark || typeof mark.label !== 'string' || !mark.label.length || mark.label.length > 64 ||
+          !Number.isSafeInteger(mark.offset) || mark.offset < 0 || mark.offset > record.text.length)) throw new Error();
     return record;
   } catch { throw new Error('口令不正确或云端副本已损坏。'); }
   finally { secret.fill(0); }
@@ -51,6 +54,8 @@ function registerCloudLogs({handle,accountRequest,localUser,scope,readStopped,co
       return result;
     }
     if (action === 'list') return request(action);
+    if (dest && action === 'audit') return request(action);
+    if (dest && action === 'policy') return request(action,{revision:p.revision,days:p.days});
     if (action === 'remove') return request(action,{id:p.id,revision:p.revision});
     if (action === 'read') {
       const {blob,entry} = await request(action,{id:p.id});
@@ -71,6 +76,7 @@ function registerCloudLogs({handle,accountRequest,localUser,scope,readStopped,co
       destination = '共享主机库「' + result.vault.name + '」的当前及之后获准加入的成员';
     }
     const target = await request('list');
+    if (dest && p.days > (target.maximumDays ?? 365)) throw new Error('新副本的期限超过主机库留存上限。');
     if (target.revision !== p.revision) throw new Error('云端清单已变化，请刷新后重试。');
     if (!await confirm({name:record.name,host:record.host || '本机',destination,days:p.days})) return {canceled:true};
     await check();

@@ -26,19 +26,22 @@
     <h3>接受邀请</h3><label>观看邀请码<input data-live="join-code" maxlength="240" autocomplete="off"></label>
     <button data-live="join">同意观看</button></section>
     <section data-live="session" hidden><p data-live="note"></p><label data-live="code-row">本次邀请码<input data-live="code" readonly></label>
+    <div data-live="propose" hidden><label>给主持人的单行草稿<input data-live="draft" maxlength="512" autocomplete="off"></label><button data-live="send-draft">发送草稿</button></div>
+    <div data-live="review" hidden><label>成员提交的草稿<input data-live="review-text" maxlength="512" autocomplete="off"></label><button data-live="accept-draft">填入当前窗格</button><button data-live="dismiss-draft">忽略</button></div>
     <pre data-live="output" aria-label="共享窗格文字"></pre><button data-live="stop">结束实时观看</button></section>
     <p role="status"></p>`;
   document.body.append(dialog);
   const field = key => dialog.querySelector('[data-live="' + key + '"]');
   const status = dialog.querySelector('[role=status]');
-  let activePane, current, shadow, timer, generation = 0, lastFrame, dirty, chosenPane;
+  let activePane, pasteOnly, current, shadow, timer, generation = 0, lastFrame, dirty, chosenPane;
   const indicator = document.createElement('button');
   indicator.hidden = true; indicator.textContent = '实时观看中'; indicator.onclick = () => dialog.showModal();
   document.getElementById('connection-center').after(indicator);
   function clear() {
     generation++; clearInterval(timer); timer = undefined; shadow?.dispose(); shadow = undefined;
-    current = undefined; lastFrame = ''; dirty = false; indicator.hidden = true;
-    for (const key of ['join-code','code']) field(key).value = '';
+    current = undefined; lastFrame = ''; dirty = false; indicator.hidden = true; indicator.textContent = '实时观看中';
+    field('propose').hidden = field('review').hidden = true;
+    for (const key of ['join-code','code','draft','review-text']) field(key).value = '';
     field('output').textContent = ''; field('note').textContent = ''; field('session').hidden = true;
     field('setup').hidden = true; field('member').replaceChildren(); field('vault').replaceChildren();
   }
@@ -52,7 +55,12 @@
   api.onLiveView(event => {
     if (event.state === 'ended') {clear(); status.textContent = '观看已结束。';return;}
     if (event.state === 'frame' && current === 'viewer') {field('output').textContent = event.text;return;}
+    if (event.state === 'draft' && current === 'owner' && chosenPane === activePane() && chosenPane?.id === event.pane) {
+      field('review-text').value = event.text; field('review').hidden = false;
+      indicator.textContent = '成员提交了草稿'; return;
+    }
     if (event.state !== 'ready') return;
+    field('propose').hidden = event.role !== 'viewer';
     fields(event.role);
     field('note').textContent = event.role === 'owner' ? '成员已同意，正在分享所选窗格。' : '已连接，等待窗格产生新文字。';
     if (event.role !== 'owner') return;
@@ -71,6 +79,18 @@
       }
     },2500);
   });
+  field('send-draft').onclick = async () => {
+    try { await api.liveView('draft',{text:field('draft').value}); field('draft').value = ''; status.textContent = '草稿已提交给主持人审阅。'; }
+    catch (error) {report(error);}
+  };
+  function dismissDraft() { field('review-text').value = ''; field('review').hidden = true; indicator.textContent = '实时观看中'; }
+  field('dismiss-draft').onclick = dismissDraft;
+  field('accept-draft').onclick = () => {
+    const text = field('review-text').value;
+    if (current !== 'owner' || chosenPane !== activePane() || chosenPane?.state !== 'running' || !text.trim() || /[\x00-\x1f\x7f-\x9f\u2028-\u202e\u2066-\u2069]/u.test(text)) return;
+    // Only the owner's deliberate action pastes text. The viewer cannot send terminal input or Return.
+    pasteOnly(chosenPane,text); dismissDraft(); dialog.close(); chosenPane.terminal.focus();
+  };
   field('close').onclick = () => dialog.close();
   field('stop').onclick = () => stop().catch(report);
   async function members() {
@@ -106,8 +126,8 @@
   field('invite').onclick = () => connect('owner').catch(report); field('join').onclick = () => connect('viewer').catch(report);
   window.addEventListener('brclio-terminal-account-changed',() => {if (dialog.open) dialog.close();clear();});
   window.BrclioLiveView = {
-    bind(getActive) {
-      activePane = getActive;
+    bind(getActive, paste) {
+      activePane = getActive; pasteOnly = paste;
       api.liveView('available').then(available => {document.querySelector('[data-center="liveView"]').hidden = !available;}).catch(() => {});
     },
     async open() {

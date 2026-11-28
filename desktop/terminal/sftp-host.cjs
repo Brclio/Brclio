@@ -38,7 +38,7 @@ async function startConnection(value, { configFile, askpass = prepareAskpass } =
 }
 
 const editor = require('./sftp-editor.cjs');
-function createBrowser({ start = startConnection, chooseLocal, launchEditor = editor.launchEditor, chooseEditor }) {
+function createBrowser({ start = startConnection, chooseLocal, launchEditor = editor.launchEditor, chooseEditor, editorDirectory = () => null }) {
   let active = null;
   const current = id => {
     if (!active || active.id !== id) throw new Error('SFTP 会话已结束，请重新连接。');
@@ -88,11 +88,14 @@ function createBrowser({ start = startConnection, chooseLocal, launchEditor = ed
   async function action(op, p = {}) {
     if (!p || typeof p.id !== 'string' || !/^[a-z0-9-]{12,64}$/i.test(p.id)) throw new Error('SFTP 会话编号无效。');
     if (op === 'close') { close(p.id); return; }
-    if (op === 'open') {
+    if (op === 'open' || op === 'start-local') {
       if (active) throw new Error('请先关闭当前 SFTP 连接。');
-      const s = { id: p.id, busy: true, panes: {}, applications: new Map() };
+      const s = { id: p.id, busy: true, panes: {}, applications: require('./sftp-editor-preferences.cjs').preferences(editorDirectory()) };
       active = s;
-      try { return await connect(s, 'remote', p.target); }
+      try {
+        if (op === 'start-local') return;
+        return await connect(s, 'remote', p.target);
+      }
       catch (error) { if (active === s) close(s.id); throw error; }
       finally { s.busy = false; }
     }
@@ -114,6 +117,11 @@ function createBrowser({ start = startConnection, chooseLocal, launchEditor = ed
         await editor.discard(s.draft);
         s.draft = null;
         return saved;
+      }
+      if (op === 'editor-list') return await s.applications.list();
+      if (op === 'editor-forget') {
+        await s.applications.set(p.extension,null);
+        return await s.applications.list();
       }
       const side = p.side ?? (op === 'choose' ? 'local' : null);
       if (!['local', 'remote'].includes(side)) throw new Error('请先选择目录。');
@@ -161,7 +169,7 @@ function createBrowser({ start = startConnection, chooseLocal, launchEditor = ed
       const name = validateName(p.name, !pane.net);
       if (op === 'edit-file') {
         const ext = path.posix.extname(name).toLowerCase();
-        let app = s.applications.get(ext);
+        let app = await s.applications.get(ext);
         if (p.choose === true) {
           app = await chooseEditor();
           if (!app) return false;
@@ -171,8 +179,9 @@ function createBrowser({ start = startConnection, chooseLocal, launchEditor = ed
         }, check);
         try {
           check();
+          if (p.choose && app) await s.applications.set(ext, app);
+          check();
           s.draft = draft;
-          if (app) s.applications.set(ext, app);
           return true;
         } catch (error) { await editor.discard(draft); throw error; }
       }
@@ -197,8 +206,8 @@ function createBrowser({ start = startConnection, chooseLocal, launchEditor = ed
   return { action, close };
 }
 
-function registerSftp({ handle, dialog, getOwner }) {
-  const browser = createBrowser({ chooseEditor: async () => {
+function registerSftp({ handle, dialog, getOwner, editorDirectory }) {
+  const browser = createBrowser({ editorDirectory, chooseEditor: async () => {
     const mac = process.platform === 'darwin';
     const result = await dialog.showOpenDialog(getOwner(), { title: '选择用于编辑远端文件的应用',
       ...(mac ? { defaultPath: '/Applications' } : {}), properties: ['openFile'],

@@ -1,6 +1,6 @@
 'use strict';
 // An installed beta can only send account authentication to Brclio's existing
-// account origin. The isolated test harness can point both transports at loopback.
+// account origin. Only the opaque room ticket can use the isolated test loopback socket.
 function liveTarget() {
   if (process.env.BRCLIO_TERMINAL_LIVE_BETA !== '1') return null;
   const port = process.env.BRCLIO_TERMINAL_LIVE_TEST_PORT;

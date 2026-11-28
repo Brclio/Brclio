@@ -75,7 +75,8 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     });
   }
 
-  const sftp = require('./sftp-host.cjs').registerSftp({ handle, dialog, getOwner: () => owner });
+  const sftp = require('./sftp-host.cjs').registerSftp({ handle, dialog, getOwner: () => owner,
+    editorDirectory: () => view?.webContents.session.getStoragePath() });
   require('./known-hosts.cjs').register({ handle, home: app.getPath('home'), confirm: async (message, detail) =>
     (await dialog.showMessageBox(owner, { type: 'question', message, detail, buttons: ['取消', '移除此记录'],
       defaultId: 0, cancelId: 0, noLink: true })).response === 1 });

@@ -1,9 +1,10 @@
 import {appDataPath, userPath} from './account-store.js';
 import {json, readJSON} from './http.js';
-import {validTerminalData} from './terminal-data.js';
+import {validSnippets, validTerminalData} from './terminal-data.js';
 
 export const sharedVaultRoute = '/api/account/apps/terminal/shared-vaults';
-const maxRequest = 100 * 1024;
+const maxRequest = 113 * 1024;
+const snippetMetadata = ({text, ...summary}) => summary;
 const accountId = value => typeof value === 'string' && /^[\da-z-]{1,128}$/i.test(value);
 const vaultId = value => typeof value === 'string' && /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(value);
 const title = value => typeof value === 'string' && value === value.trim() && value.length > 0 && value.length <= 64 &&
@@ -17,6 +18,7 @@ const conflict = () => ({status:409, error:'共享主机库已发生变化，请
 
 const actionFields = {
   list: [], create: ['name','vaultId'], open: [], 'invite-domains':['domains'], 'set-hosts': ['hosts'], invite: ['username','role'],
+  'read-snippet':['snippetId'], 'set-snippet':['snippet'], 'remove-snippet':['snippetId'],
   accept: [], decline: [], leave: [], revoke: ['memberId'], role: ['memberId','role'], delete: [],
 };
 function validInput(input) {
@@ -38,6 +40,10 @@ function validInput(input) {
       input.domains.every(s => typeof s === 'string' && s.length <= 253 && /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(s)) &&
       new Set(input.domains).size === input.domains.length;
     case 'role': return accountId(input.memberId) && roleValue(input.role);
+    case 'read-snippet': case 'remove-snippet': return vaultId(input.snippetId);
+    case 'set-snippet': return vaultId(input.snippet?.id) && validSnippets([input.snippet]) && input.snippet.name === input.snippet.name.trim() &&
+      (!input.snippet.package || input.snippet.package === input.snippet.package.trim()) && (!input.snippet.template ||
+        new Set(Array.from(input.snippet.text.matchAll(/\{\{([\p{L}_][\p{L}\p{N}_.-]{0,63})\}\}/gu), match => match[1])).size <= 24);
     case 'revoke': return accountId(input.memberId);
     case 'set-hosts': return Array.isArray(input.hosts) && input.hosts.length <= 256 &&
       validTerminalData({hosts:input.hosts, forwards:[]}) &&
@@ -56,7 +62,11 @@ function summary(vault, member) {
 function detail(vault, actor) {
   const member = actor === vault.ownerId ? {role:'owner', state:'active'} : vault.members.find(entry => entry.id === actor);
   const result = {...summary(vault, member), revision:vault.revision};
-  if (member.state === 'active') result.hosts = vault.hosts;
+  if (member.state === 'active') {
+    result.hosts = vault.hosts;
+    result.snippets = (vault.snippets || []).map(snippetMetadata);
+    result.audience = [vault.ownerName,...vault.members.filter(m => m.state === 'active').map(m => m.username)];
+  }
   if (member.role === 'owner') {
     result.members = vault.members;
     result.inviteDomains = vault.inviteDomains || [];
@@ -114,10 +124,26 @@ async function run(tx, session, input) {
   if (action === 'open') return {vault:detail(vault,actor)};
   if (!owner) {
     const permitted = member.state === 'invited' ? ['accept','decline'] :
-      member.role === 'editor' ? ['set-hosts','leave'] : ['leave'];
+      member.role === 'editor' ? ['set-hosts','set-snippet','remove-snippet','read-snippet','leave'] : ['read-snippet','leave'];
     if (!permitted.includes(action)) return {status:403, error:'此操作超出当前成员权限。'};
   } else if (['leave','accept','decline'].includes(action)) return invalid();
   if (input.revision !== vault.revision || vault.revision === Number.MAX_SAFE_INTEGER) return conflict();
+
+  if (action === 'read-snippet') {
+    const snippet = (vault.snippets || []).find(item => item.id === input.snippetId);
+    return snippet ? {snippet} : denied();
+  }
+  if (action === 'set-snippet') {
+    const snippets = (vault.snippets || []).filter(item => item.id !== input.snippet.id);
+    if (snippets.some(item => item.name === input.snippet.name && (item.package || '') === (input.snippet.package || ''))) return conflict();
+    snippets.push(input.snippet);
+    if (!validSnippets(snippets)) return {status:413,error:'团队剪藏总量超过 200 条或 112 KiB。'};
+    vault.snippets = snippets;
+  }
+  if (action === 'remove-snippet') {
+    if (!vault.snippets?.some(item => item.id === input.snippetId)) return denied();
+    vault.snippets = vault.snippets.filter(item => item.id !== input.snippetId);
+  }
 
   if (action === 'delete') {
     for (const id of [actor,...vault.members.map(entry => entry.id)]) await updateRef(tx,id,vault,null);
@@ -139,6 +165,10 @@ async function run(tx, session, input) {
     vault.members.push(invited);
   }
   if (action === 'set-hosts') vault.hosts = input.hosts;
+  // Space remains for the member list, invitation rules and bounded audit in desktop responses.
+  if (['set-hosts','set-snippet'].includes(action) &&
+      new TextEncoder().encode(JSON.stringify([vault.hosts,(vault.snippets || []).map(snippetMetadata)])).length > 100 * 1024)
+    return {status:413,error:'团队主机与剪藏目录合计超过 100 KiB。'};
   if (action === 'invite-domains') vault.inviteDomains = input.domains;
   if (action === 'accept') {
     if (!permittedDomain(vault.inviteDomains,session.profile)) return {status:403,error:'当前账号的已验证邮箱不符合邀请域名规则。'};

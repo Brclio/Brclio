@@ -26,10 +26,14 @@ async function verifyHostLibrary(terminal) {
   await dialog.locator('#remote-group').fill('工作/开发');
   await dialog.locator('#remote-tags').fill('Build, Test');
   await dialog.locator('#remote-favorite').check();
+  await terminal.evaluate(() => {
+    window.BrclioIdentities.store(localStorage).save({ name:'QA 分组身份', user:'ci-user', path:'/fixture/group-key' });
+  });
   await dialog.locator('#remote-group-editor summary').click();
   await dialog.locator('#remote-config-path').fill('工作');
   await dialog.locator('#remote-config-port').fill('2222');
   await dialog.locator('#remote-config-environment').fill('COLOR=parent');
+  await dialog.locator('#remote-config-identity').selectOption('QA 分组身份');
   await dialog.locator('#remote-config-save').click();
   await expect(dialog.locator('#remote-status')).toContainText('已保存分组设置');
   await dialog.locator('#remote-inherit').check();
@@ -45,6 +49,14 @@ async function verifyHostLibrary(terminal) {
   assert.equal(resolved.port, 2222);
   assert.equal(resolved.proxy, 'socks5://127.0.0.1:1080');
   assert.deepEqual(resolved.environment, [{ name: 'COLOR', value: 'host' }]);
+  await expect(dialog.locator('#remote-group-key-info')).toContainText('/fixture/group-key');
+  await dialog.locator('#remote-group-key').click();
+  await expect(dialog.locator('#remote-group-key')).toHaveText('撤销此主机的分组身份授权');
+  assert.equal(await terminal.evaluate(() => {
+    const bank = window.BrclioConnection.store(localStorage);
+    return bank.resolve(bank.all().find(item => item.name === '开发主机')).identityFile;
+  }), '/fixture/group-key');
+  await dialog.locator('#remote-group-key').click();
   await dialog.locator('#remote-group-editor summary').click();
   await dialog.locator('#remote-view').selectOption('favorite');
   await dialog.locator('#remote-group-filter').selectOption('工作');

@@ -28,7 +28,7 @@ async function verifySftpHelper(app) {
   await require('./verify-terminal-proxy.cjs').verifyProxyHelper(app);
 }
 
-async function verifySftpEntry(terminal) {
+async function verifySftpEntry(terminal, app) {
   // A refused loopback connection exercises the normal host library → trusted IPC path.
   const picker = terminal.locator('#native-sftp-drop-fixture');
   await terminal.evaluate(() => {
@@ -52,6 +52,30 @@ async function verifySftpEntry(terminal) {
   } finally { await picker.evaluate(el => el.remove()); }
   await terminal.evaluate(() => window.BrclioRemoteConnections.open());
   const library = terminal.locator('#remote-library');
+  const localEntry=library.getByRole('button',{name:'浏览本机目录'});
+  await expect(localEntry).toBeVisible();
+  if (app) {
+    const dir=await fs.mkdtemp(path.join(os.tmpdir(),'brclio-local-sftp-'));
+    await fs.writeFile(path.join(dir,'local-fixture.txt'),'fixture');
+    try {
+      await app.evaluate(({dialog},directory)=>{
+        global.__brclioSftpFolderPicker = dialog.showOpenDialog;
+        dialog.showOpenDialog = (...args) => args.at(-1)?.title==='选择 SFTP 本地目录'
+          ? Promise.resolve({canceled:false,filePaths:[directory]}) : global.__brclioSftpFolderPicker(...args);
+      },dir);
+      await localEntry.click();
+      const local=terminal.getByRole('dialog',{name:'SFTP 文件管理'});
+      await expect(local.getByRole('option',{name:/local-fixture/})).toHaveCount(1);
+      await local.getByRole('button',{name:'关闭'}).click();
+      await terminal.evaluate(()=>window.BrclioRemoteConnections.open());
+    } finally {
+      await app.evaluate(({dialog})=>{
+        if (global.__brclioSftpFolderPicker) dialog.showOpenDialog=global.__brclioSftpFolderPicker;
+        delete global.__brclioSftpFolderPicker;
+      });
+      await fs.rm(dir,{recursive:true,force:true});
+    }
+  }
   await library.locator('#remote-new').click();
   await library.locator('#remote-host').fill('127.0.0.1');
   await library.locator('#remote-port').fill('1');
@@ -84,6 +108,7 @@ async function verifyTransferControls() {
     service = createBrowser({
       chooseLocal: async () => local,
       launchEditor: file => { editingFile = file; },
+      chooseEditor: () => path.join(root, process.platform === 'win32' ? 'Editor.exe' : 'Editor.app'),
       start: target => connectProtocol(spawn(binary, [], { cwd: target.host === 'second' ? second : remote, windowsHide: true })),
     });
     await page.exposeFunction('sftpFixture', service.action);
@@ -121,13 +146,19 @@ async function verifyTransferControls() {
     assert.equal(await fs.readFile(path.join(local, '下载测试.txt'), 'utf8'), 'Brclio SFTP 浏览器');
     const left = dialog.locator('.sftp-pane').first(), right = dialog.locator('.sftp-pane').last();
     await remoteList.selectOption('下载测试.txt');
-    await right.getByRole('button', { name: '编辑文件' }).click();
+    await right.getByRole('button', { name: '选择编辑器…' }).click();
     await expect(dialog.getByRole('button', { name: '上传已保存的修改' })).toBeVisible();
     await fs.writeFile(editingFile, '新内容');
     await expect(dialog.getByText(/检测到本地编辑副本已保存/)).toBeVisible();
     await dialog.getByRole('button', { name: '上传已保存的修改' }).click();
     await expect(dialog.getByRole('status')).toContainText('远端文件已更新');
     assert.equal(await fs.readFile(path.join(remote, '下载测试.txt'), 'utf8'), '新内容');
+    await dialog.getByRole('button', {name:'编辑器关联'}).click();
+    const associations = dialog.getByRole('combobox', {name:'按文件类型保存的编辑器'});
+    await expect(associations.getByRole('option')).toHaveText(/\.txt.*Editor/);
+    await dialog.getByRole('button', {name:'恢复默认编辑器'}).click();
+    await expect(associations.getByRole('option')).toHaveCount(0);
+    await dialog.getByRole('button', {name:'完成',exact:true}).click();
 
     await left.getByRole('button', { name: '切换位置' }).click();
     await dialog.getByRole('textbox', { name: 'SFTP 地址' }).fill('second');
@@ -174,6 +205,11 @@ async function verifyTransferControls() {
     assert.ok(accountIsolated, 'SFTP bookmarks use the current Brclio account');
     await dialog.getByRole('button', { name: '关闭' }).click();
     await expect(dialog).toHaveCount(0);
+    await page.evaluate(() => window.BrclioSftp.open());
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('status')).toContainText('另一侧');
+    await expect(dialog.getByRole('listbox',{name:'本地文件列表'}).getByRole('option',{name:/上传测试/})).toHaveCount(1);
+    await dialog.getByRole('button',{name:'关闭'}).click();
     assert.deepEqual(errors, []);
     console.log('SFTP graphical upload, rename, download, server-to-server folder drag, hidden files, isolated bookmarks, confirmed editing and teardown passed');
   } finally {

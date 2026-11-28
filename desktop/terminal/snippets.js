@@ -46,11 +46,7 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
     display([], '');
   }
   function store(items, id, message) {
-    if (items.length > 200 || items.reduce((count, item) => count + item.text.length, 0) > 512 * 1024) {
-      throw new Error('已达到剪藏与笔记的容量上限，请先缩短内容或删除条目。');
-    }
-    if (items.length) storage.setItem(model.key, JSON.stringify(items));
-    else storage.removeItem(model.key);
+    model.store(storage, items);
     if (id && !model.search(items, query.value, filter.value ? filter.value.slice(2) : null).some(item => item.id === id)) query.value = filter.value = '';
     display(items, id);
     window.dispatchEvent(new Event('brclio-snippets-changed'));

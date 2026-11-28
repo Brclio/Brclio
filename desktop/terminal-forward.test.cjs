@@ -156,6 +156,13 @@ test('native PTYs forward real loopback traffic through local, remote and dynami
     const args = argumentsFor('ssh', withEnvironment, true, { file, env });
     const delivered = await run(file, ['-F', config, ...args, 'printenv BRCLIO_LITERAL_FIXTURE'], { env, timeout: 5000 });
     assert.equal(delivered.stdout.trimEnd(), literal);
+    const values = new Map(), storage = { getItem:name => values.get(name) ?? null, setItem:(name, data) => values.set(name, data) };
+    const hosts = require('./terminal/connection.js').store(storage);
+    require('./terminal/identity-model.js').store(storage).save({ name:'loopback key', user:os.userInfo().username, path:userKey });
+    hosts.saveGroup({ group:'Test', identity:'loopback key', port });
+    const saved = hosts.save({ name:'loopback', host:'127.0.0.1', group:'Test/child', inheritGroup:true });
+    hosts.authorizeGroupKey(saved.name, hosts.groupCredential(saved).binding);
+    assert.equal((await command(hosts.resolve(saved), 'echo group-authenticated')).stdout.trim(), 'group-authenticated');
 
     const echo = net.createServer(socket => { socket.on('error', () => {}); socket.pipe(socket); });
     const echoPort = await listen(echo);

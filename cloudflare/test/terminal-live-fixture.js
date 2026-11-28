@@ -35,14 +35,12 @@ export async function liveFixture() {
       },write() {throw new Error('read-only fixture');}};
       return {snapshot:async () => view,transaction:fn => fn(view)};
     }
-    export class TerminalLiveRoom extends ActualRoom {
-      constructor(ctx,env) {super(ctx,env);this.store=store(env);}
-    }
+    export {ActualRoom as TerminalLiveRoom};
     export default {fetch(req,env) {
       const path = new URL(req.url).pathname;
       if (path === '/api/account/apps/terminal/live-view') {
         const accounts = {fetch:r => handleAccount(r,env,{accountStore:store(env)})};
-        return accountRequest(req,{...env,BRCLIO_ACCOUNTS:accounts},store(env));
+        return accountRequest(req,{...env,BRCLIO_ACCOUNTS:accounts});
       }
       if (path.startsWith('/api/account/')) return handleAccount(req,env,{accountStore:store(env)});
       return beta.fetch(req,env);

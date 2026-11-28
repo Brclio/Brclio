@@ -20,6 +20,19 @@ test('existing literal snippets, package search and variable substitution preser
   assert.throws(() => model.fill('{{x}}'.repeat(20), new Map([['x','x'.repeat(2048)]])));
 });
 
+test('saving a team snippet preserves an existing local item, uses a private ID and can be retried', () => {
+  const map = new Map(), storage = {getItem:k => map.get(k),setItem:(k,v) => map.set(k,v)};
+  const original = {...plain,package:'ops',id:'taken'};
+  model.store(storage,[original]);
+  const shared = {...original,id:'shared',text:'new text',template:true};
+  const copy = model.addCopy(storage,shared);
+  assert.notEqual(copy.id,shared.id);
+  assert.equal(copy.name,'路径（团队副本 1）');
+  assert.deepEqual(model.addCopy(storage,shared),copy);
+  assert.deepEqual(model.read(storage),[original,copy]);
+  assert.throws(() => model.addCopy(storage,{...shared,kind:'note'}));
+});
+
 test('guest moves remap startup snippet IDs on collision and preserve distinct packages and template modes', () => {
   const map = new Map(), raw = { getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value), removeItem: key => map.delete(key) };
   const partitions = create(raw), storage = partitions.storage, hosts = store(storage);

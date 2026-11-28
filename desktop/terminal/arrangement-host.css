@@ -1,0 +1,3 @@
+.pane .pending-layout-host { position: absolute; z-index: 2; inset: 30px 0 0; padding: 14px; overflow: auto; background: var(--screen); color: #e3e7ef; }
+.pending-layout-host p { margin: 6px 0; overflow-wrap: anywhere; }
+.pending-layout-host button, .pending-layout-host select { margin: 6px 8px 6px 0; font: inherit; }

@@ -1,5 +1,4 @@
-import {decode64,digest} from './accounts-crypto.js';
-import {eligible,liveAccountStore} from './terminal-live-room.js';
+import {digest,decode64} from './accounts-crypto.js';
 import {json,readJSON,rateLimit} from './http.js';
 export {TerminalLiveRoom} from './terminal-live-room.js';
 
@@ -7,46 +6,56 @@ const userId = value => typeof value === 'string' && /^[a-zA-Z0-9-]{1,128}$/.tes
 const uuid = value => typeof value === 'string' && /^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(value);
 const codeValue = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{32}$/.test(value);
 const stubFor = (env,ref) => env.TERMINAL_LIVE_ROOMS.get(env.TERMINAL_LIVE_ROOMS.idFromName(ref.ownerId + '/' + ref.vaultId));
-export async function terminalLiveView(request, session, store, env) {
-  let input;
-  try {input = await readJSON(request,1536);} catch {return json({error:'观看请求格式无效。'},400);}
-  if (!input || input.expectedUserId !== session.id) return json({error:'登录账号已变化。'},409);
-  const {action,ownerId,vaultId} = input, ref = {ownerId,vaultId};
-  if (!userId(ownerId) || !uuid(vaultId) || !['create','join'].includes(action)) return json({error:'观看邀请格式无效。'},400);
-  const viewerId = action === 'create' ? input.viewerId : session.id;
-  if (!userId(viewerId) || viewerId === ownerId || (action === 'create' && ownerId !== session.id) ||
-      (action === 'join' && !codeValue(input.code))) return json({error:'当前账号无法使用这份邀请。'},403);
-  const grant = {id:session.id,mode:session.mode,exp:session.exp,sessionKey:session.sessionKey};
-  if (!await eligible(store,ref,[grant],viewerId)) return json({error:'须先接受共享主机库邀请。'},403);
-  const response = await stubFor(env,ref).fetch('https://room.internal/' + action,{method:'POST',
-    body:JSON.stringify({ref,viewerId,grant,code:input.code})});
-  if (!response.ok) return response;
-  return json({userId:session.id,...ref,...await response.json()});
-}
-export async function accountRequest(request,env,store = liveAccountStore(env)) {
-  if (!await rateLimit(env,'ACCOUNT_LIMITER',request.headers.get('CF-Connecting-IP') || 'local',30)) return json({error:'请求过于频繁。'},429);
+const accountOrigin = 'https://tools.brclio.com';
+
+export async function accountRequest(request,env) {
+  if (!await rateLimit(env,'ACCOUNT_LIMITER',request.headers.get('CF-Connecting-IP') || 'local',60)) return json({error:'请求过于频繁。'},429);
   const authorization = request.headers.get('Authorization') || '';
   if (request.headers.has('Origin') || request.headers.get('X-Brclio-Client') !== 'native' ||
       authorization.length > 4103 || !/^Bearer [a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+$/.test(authorization)) return json({error:'请先登录 Brclio。'},401);
-  // The existing account service verifies the original native token. The beta
-  // relay never needs the account signing key and never sends a bearer to a peer.
-  const response = await env.BRCLIO_ACCOUNTS.fetch(new Request('https://tools.brclio.com/api/account/session',{
-    headers:{Authorization:authorization,'X-Brclio-Client':'native'},redirect:'manual'}));
-  if (!response.ok) return json({error:'无法验证账号。'},503);
-  const id = (await response.json()).user?.id;
-  if (!userId(id)) return json({error:'登录已失效。'},401);
-  let claims;
-  try {claims = JSON.parse(new TextDecoder().decode(decode64(authorization.slice(7).split('.')[0])));}
+  let input;
+  try {input = await readJSON(request,1536);} catch {return json({error:'观看请求格式无效。'},400);}
+  if (!input || typeof input !== 'object') return json({error:'账号或邀请格式无效。'},400);
+  const {action,ownerId,vaultId,expectedUserId:id} = input, ref = {ownerId,vaultId};
+  if (!userId(id) || !userId(ownerId) || !uuid(vaultId) || !['create','join','renew'].includes(action)) return json({error:'观看邀请格式无效。'},400);
+  const viewerId = id === ownerId ? input.viewerId : id;
+  if (!userId(viewerId) || viewerId === ownerId || (action === 'create' && id !== ownerId) ||
+      (action === 'join' && (id === ownerId || !codeValue(input.code))) ||
+      (action === 'renew' && !codeValue(input.challenge))) return json({error:'当前账号无法使用这份邀请。'},403);
+  const headers = {Authorization:authorization,'X-Brclio-Client':'native','Content-Type':'application/json'};
+  if (action !== 'renew') {
+    const session = await env.BRCLIO_ACCOUNTS.fetch(new Request(accountOrigin + '/api/account/session',{headers,redirect:'manual'}));
+    if (!session.ok || (await session.json()).user?.id !== id) return json({error:'登录已失效。'},401);
+  }
+  // Only the existing account service receives the bearer. Its authenticated
+  // response binds the claimed account and current ACL to one pinned vault.
+  const response = await env.BRCLIO_ACCOUNTS.fetch(new Request(accountOrigin + '/api/account/apps/terminal/shared-vaults',{
+    method:'POST',headers,redirect:'manual',body:JSON.stringify({action:'open',expectedUserId:id,...ref})}));
+  if (!response.ok) return json({error:'共享主机库授权无法验证。'},[401,403,404,409].includes(response.status) ? 403 : 503);
+  const result = await response.json(), vault = result.vault;
+  if (result.userId !== id || vault?.ownerId !== ownerId || vault.vaultId !== vaultId || vault.state !== 'active' ||
+      (id === ownerId ? vault.role !== 'owner' || !vault.members?.some(m => m.state === 'active' && m.id === viewerId) :
+        !['editor','reader'].includes(vault.role))) return json({error:'须先接受共享主机库邀请。'},403);
+  // Read only expiration from the just-verified native token. Never extend a
+  // lease past the account service's original session expiry.
+  let exp;
+  try {exp = JSON.parse(new TextDecoder().decode(decode64(authorization.slice(7).split('.')[0]))).exp;}
   catch {return json({error:'登录已失效。'},401);}
-  if (claims?.typ !== 'account' || claims.id !== id || claims.mode !== 'native' || typeof claims.sid !== 'string' ||
-      !Number.isSafeInteger(claims.exp) || claims.exp <= Date.now()/1000) return json({error:'登录已失效。'},401);
-  return terminalLiveView(request,{id,mode:claims.mode,exp:claims.exp,sessionKey:await digest(claims.sid)},store,env);
+  const until = Math.min(Date.now()+15000,exp*1000);
+  if (!Number.isSafeInteger(exp) || until <= Date.now()) return json({error:'登录已过期。'},401);
+  const grant = {id,proof:await digest(authorization),until};
+  // The room never receives account tokens, private profiles or hosts from the vault.
+  const roomResponse = await stubFor(env,ref).fetch('https://room.internal/' + action,{method:'POST',
+    body:JSON.stringify({ref,viewerId,grant,code:input.code,challenge:input.challenge})});
+  if (!roomResponse.ok) return roomResponse;
+  return json({userId:id,...ref,...await roomResponse.json()});
 }
 export default {
   async fetch(request,env) {
     const path = new URL(request.url).pathname;
     if (path === '/api/account/apps/terminal/live-view' && request.method === 'POST') {
-      return accountRequest(request,env);
+      try {return await accountRequest(request,env);}
+      catch {return json({error:'观看验证服务暂不可用。'},503);}
     }
     const match = /^\/terminal-live-socket\/([\da-z-]+)\/([\da-f-]+)$/i.exec(path);
     if (!match || !userId(match[1]) || !uuid(match[2]) || request.method !== 'GET' || request.headers.has('Origin') ||
