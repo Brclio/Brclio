@@ -66,6 +66,7 @@
   const paneTools = window.BrclioPaneTools({ tabs, getTab: () => currentTab, selectPane, sendInput, mac });
   const tabGroups = window.BrclioTabGroups({ tabs, activeTab: () => currentTab, selectTab, clearSelection });
   function refreshTools() {
+    window.BrclioCommandLibrary.refreshPane?.();
     paneTools.refresh();
     window.BrclioTerminalHistory.refresh();
     const pane = activePane();
@@ -490,6 +491,7 @@
 
   function shortcuts(event) {
     if (document.querySelector('dialog[open]')) return;
+    if (event.target.closest('#workspace-drawer')) return;
     if (bufferKeyboard(event)) return;
     if (event.isComposing) return;
     const key = event.key.toLowerCase();
@@ -588,7 +590,7 @@
   });
   window.BrclioAdvancedPaste({ api, activePane, actions, paste: paneTools.pasteOnly });
   const snippets = window.BrclioSnippets({ activePane, actions, paste: paneTools.pasteOnly });
-  window.BrclioCommandLibrary.bind(activePane, paneTools.pasteOnly, snippets.draft, sendInput, snippets.editCommand);
+  window.BrclioCommandLibrary.bind(activePane, paneTools.pasteOnly, snippets.draft, sendInput);
   const filter = byId('actions-filter');
   const actionList = byId('actions-list');
   const actionGroups = [...actionList.querySelectorAll('fieldset, details')];
@@ -627,11 +629,7 @@
     byId('actions-empty').hidden = !text || matches.length > 0;
   }
   filter.oninput = filterActions;
-  const actionsTitle = byId('actions-title');
-  const defaultTitle = actionsTitle.textContent;
   actions.addEventListener('close', () => {
-    actions.classList.remove('appearance-only');
-    actionsTitle.textContent = defaultTitle;
     filter.value = '';
     filterActions();
   });
@@ -647,14 +645,6 @@
     };
   }
   byId('terminal-actions').onclick = () => { inspector.refresh(); locations.render(); tabGroups.render(); actions.showModal(); };
-  byId('quick-ssh').onclick = () => window.BrclioRemoteConnections.open('ssh');
-  byId('quick-commands').onclick = () => window.BrclioCommandLibrary.open();
-  byId('quick-appearance').onclick = () => {
-    actions.classList.add('appearance-only');
-    actionsTitle.textContent = '终端外观';
-    actions.showModal();
-    byId('preset-theme').focus();
-  };
   window.BrclioRemoteConnections.bind(api, activePane, (kind, name, connection, startupSnippet, savedHost) => {
     actions.close();
     const pane = newTab(name, { profile: kind, connection, cwd: nextDirectory, shellIntegration: false });
@@ -668,6 +658,8 @@
   window.BrclioTerminalSync.bind(api);
   window.BrclioConnectionCenter.bind({ api, newTab });
   window.BrclioVaultControls.bind(api, activePane);
+  window.BrclioWorkspaceHosts.bind();
+  window.BrclioTerminalWorkspace.bind(activePane);
   byId('actions-close').onclick = () => actions.close();
   actions.addEventListener('close', () => {
     const focused = document.activeElement;

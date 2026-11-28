@@ -70,6 +70,12 @@
   <script defer src="command-library.js"></script>
   <script defer src="host-import-ui.js"></script>
   <script defer src="connection-center.js"></script>
+  <link rel="stylesheet" href="workspace.css">
+  <link rel="stylesheet" href="workspace-hosts.css">
+  <link rel="stylesheet" href="command-workspace.css">
+  <link rel="stylesheet" href="profile-workspace.css">
+  <script defer src="workspace-hosts.js"></script>
+  <script defer src="workspace.js"></script>
   <script defer src="terminal.js"></script>
   <link rel="stylesheet" href="tmux.css">
   <script defer src="tmux-protocol.js"></script>
@@ -85,14 +91,15 @@
     <symbol id="sheets" viewBox="0 0 20 20"><path d="M7 6V3h9v11h-3"/><rect x="3" y="6" width="10" height="11" rx="1"/></symbol>
     <symbol id="clipboard" viewBox="0 0 20 20"><path d="M7 4H4v13h12V4h-3"/><rect x="7" y="2" width="6" height="4" rx="1"/></symbol>
     <symbol id="folder" viewBox="0 0 20 20"><path d="M2.5 5h5l1.5 2H17v9H2.5z"/></symbol>
+    <symbol id="host-icon" viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="6" rx="1.5"/><rect x="2.5" y="11" width="15" height="6" rx="1.5"/><path d="M5 6h1m-1 8h1"/></symbol>
+    <symbol id="command-icon" viewBox="0 0 20 20"><rect x="2" y="3" width="16" height="14" rx="2"/><path d="m5.5 7 3 3-3 3M11 13h3"/></symbol>
+    <symbol id="settings-icon" viewBox="0 0 20 20"><path d="M2 6h4m4 0h8M2 14h9m4 0h3"/><circle cx="8" cy="6" r="2"/><circle cx="13" cy="14" r="2"/></symbol>
+    <symbol id="tools-icon" viewBox="0 0 20 20"><rect x="3" y="3" width="5" height="5" rx="1"/><rect x="12" y="3" width="5" height="5" rx="1"/><rect x="3" y="12" width="5" height="5" rx="1"/><rect x="12" y="12" width="5" height="5" rx="1"/></symbol>
+    <symbol id="collapse-icon" viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14" rx="2"/><path d="M7 3v14m6.5-10-3 3 3 3"/></symbol>
   </svg>
   <header>
     <h1><img src="../../web/assets/icon.png" alt="">Brclio <span>终端</span></h1>
     <div class="actions" role="group" aria-label="会话操作">
-      <button id="quick-ssh" type="button" aria-haspopup="dialog" title="已保存的主机和最近的连接">SSH 主机</button>
-      <button id="quick-commands" type="button" aria-haspopup="dialog" title="收藏、查找和填入命令">常用命令</button>
-      <button id="quick-appearance" type="button" aria-haspopup="dialog" title="配色、字体和光标">外观</button>
-      <button id="connection-center" aria-haspopup="dialog">连接中心</button>
       <button id="new-tab" class="primary"><svg aria-hidden="true"><use href="#plus"/></svg>新建标签</button>
       <button id="split-right" aria-label="左右分屏"><svg aria-hidden="true"><use href="#columns"/></svg></button>
       <button id="split-down" aria-label="上下分屏"><svg aria-hidden="true"><use href="#rows"/></svg></button>
@@ -105,50 +112,105 @@
       <button id="presentation" type="button">弹出窗口</button>
     </div>
   </header>
-  <div id="tabs" role="tablist" aria-label="终端标签"></div>
-  <div id="pane-mode-bar" hidden>
-    <button type="button" id="pane-restore" hidden>还原窗格</button>
-    <span id="broadcast-status" role="status" hidden></span>
-    <button type="button" id="broadcast-stop" hidden>停止广播</button>
-  </div>
-  <div id="find-bar" role="search" hidden>
-    <label for="find-input">查找</label><input id="find-input" type="search" placeholder="在当前窗格中查找" autocomplete="off" spellcheck="false">
-    <label><input id="find-case" type="checkbox">区分大小写</label>
-    <label><input id="find-word" type="checkbox">整词</label>
-    <label><input id="find-regex" type="checkbox">正则</label>
-    <span id="find-result" role="status"></span>
-    <button id="find-prev" title="上一个（Shift + Enter）">上一个</button><button id="find-next" title="下一个（Enter）">下一个</button>
-    <button id="find-close" aria-label="关闭查找" title="关闭查找（Esc）"><svg aria-hidden="true"><use href="#cross"/></svg></button>
-  </div>
-  <main id="workspace" aria-label="终端工作区">
-    <div id="empty" hidden><p id="empty-message">所有会话已关闭</p><button id="empty-new">新建标签</button><button id="empty-recall" hidden>找回隐藏标签</button></div>
-  </main>
-  <footer>
-    <span id="status" role="status" aria-live="polite">正在打开终端…</span>
-    <span id="status-components" aria-label="当前窗格状态" hidden></span>
-    <div class="defaults">
-      <label for="profile">新会话</label><select id="profile" aria-label="新会话的 Shell"><option value="default">默认 Shell</option></select>
-      <button id="directory" title="选择新会话的起始目录"><svg aria-hidden="true"><use href="#folder"/></svg><span id="directory-label">主目录</span></button>
+  <div id="terminal-layout">
+    <nav id="workspace-nav" aria-label="终端导航">
+      <button id="quick-ssh" type="button" data-panel="hosts" aria-controls="workspace-hosts" aria-label="SSH 主机" title="SSH 主机"><svg aria-hidden="true"><use href="#host-icon"/></svg><span>主机</span></button>
+      <button id="quick-commands" type="button" data-panel="commands" aria-controls="workspace-commands" aria-label="常用命令" title="常用命令"><svg aria-hidden="true"><use href="#command-icon"/></svg><span>命令</span></button>
+      <button id="quick-appearance" type="button" data-panel="appearance" aria-controls="workspace-appearance" title="终端外观"><svg aria-hidden="true"><use href="#settings-icon"/></svg><span>外观</span></button>
+      <button id="connection-center" type="button" data-panel="tools" aria-controls="connection-dialog" aria-label="连接中心" title="连接中心"><svg aria-hidden="true"><use href="#tools-icon"/></svg><span>更多</span></button>
+    </nav>
+    <aside id="workspace-drawer" aria-labelledby="workspace-panel-title" hidden>
+      <div class="workspace-panel-head">
+        <h2 id="workspace-panel-title">SSH 主机</h2>
+        <button id="workspace-collapse" type="button" aria-label="收起侧栏" title="收起侧栏"><svg aria-hidden="true"><use href="#collapse-icon"/></svg></button>
+      </div>
+      <section id="workspace-hosts" aria-label="SSH 主机" hidden></section>
+      <section id="workspace-commands" aria-label="常用命令" hidden></section>
+      <section id="workspace-appearance" aria-label="终端外观" hidden>
+        <label>配色主题<select id="preset-theme"></select></label>
+        <samp id="preset-preview" aria-label="终端外观预览"><span>user@host</span> ~ $ ls <span class="profile-caret" aria-hidden="true"></span></samp>
+        <label>字体<select id="preset-font-choice"></select></label>
+        <label>自定义字体<input id="preset-font" maxlength="200"></label>
+        <div class="profile-pair">
+          <label>字号<input id="preset-size" type="number" min="8" max="40"></label>
+          <label>光标<select id="preset-cursor"><option value="block">方块</option><option value="bar">竖线</option><option value="underline">下划线</option></select></label>
+        </div>
+        <label><input id="preset-blink" type="checkbox">光标闪烁</label>
+        <div class="profile-buttons">
+          <button id="preset-apply">应用到当前窗格</button><button id="preset-save">保存为新会话默认配置</button>
+        </div>
+        <span id="preset-status" role="status"></span>
+        <details id="appearance-presets"><summary>配置文件</summary>
+          <label>配置名称<input id="preset-name" maxlength="64" placeholder="默认"></label>
+          <label>标签<input id="preset-tags" maxlength="180" placeholder="用逗号分隔"></label>
+          <label>搜索配置<input id="preset-filter" type="search" placeholder="名称或标签"></label>
+          <select id="preset-list" aria-label="已保存的配置"></select>
+          <div class="profile-buttons">
+            <button id="preset-load">载入</button><button id="preset-delete">删除配置</button>
+          </div>
+        </details>
+        <details id="appearance-advanced"><summary>高级外观设置</summary>
+          <label>导入 iTerm2 配色<input id="preset-colors" type="file" accept=".itermcolors"></label>
+          <label>历史行数<input id="preset-scrollback" type="number" min="100" max="50000"></label>
+          <label>最低对比度<input id="preset-contrast" type="number" min="1" max="21" step="0.1"></label>
+          <label><input id="preset-autocopy" type="checkbox">选中即复制</label>
+          <label><input id="preset-follow" type="checkbox">焦点跟随鼠标</label>
+        </details>
+        <details id="dynamic-details"><summary>iTerm2 动态配置</summary>
+          <button type="button" id="dynamic-import">选择本地 JSON</button>
+          <label><input type="checkbox" id="dynamic-watch">跟踪所选文件的变化</label>
+          <select id="dynamic-list" aria-label="已导入的动态配置"></select>
+          <button type="button" id="dynamic-apply">应用到当前窗格</button>
+          <span id="dynamic-status" role="status"></span>
+        </details>
+      </section>
+      <section id="connection-dialog" aria-label="连接中心" hidden>
+        <section aria-label="连接与文件"><h3>远程工作</h3><div class="connection-grid">
+          <button data-center="hosts"><strong>主机</strong><small>SSH 连接、分组与收藏</small></button>
+          <button data-center="files"><strong>SFTP 文件</strong><small>浏览、上传和下载</small></button>
+          <button data-center="forward"><strong>端口转发</strong><small>本地、远程和动态转发</small></button>
+          <button data-center="devices"><strong>其他协议</strong><small>Telnet、Mosh 和串口</small></button>
+        </div></section>
+        <section aria-label="连接设置"><h3>连接设置</h3><div class="connection-links">
+          <button data-center="commands">命令历史与补全</button>
+          <button data-center="sessions">工作区会话</button>
+          <button data-center="inventory">本机 API 与 Ansible</button>
+          <button data-center="snippetSync">个人剪藏同步</button>
+          <button data-center="importHosts">导入主机</button>
+          <button data-center="identities">SSH 身份</button><button data-center="trust">主机指纹</button>
+          <button data-center="logs">会话日志与书签</button><button data-center="passwords">本机密码库</button><button data-center="terminalLock">终端锁</button><button data-center="liveView" hidden>实时观看</button><button data-center="sharing">共享主机库</button><button data-center="sync">账号同步</button>
+        </div></section>
+      </section>
+    </aside>
+    <div id="terminal-sessions">
+      <div id="tabs" role="tablist" aria-label="终端标签"></div>
+      <div id="pane-mode-bar" hidden>
+        <button type="button" id="pane-restore" hidden>还原窗格</button>
+        <span id="broadcast-status" role="status" hidden></span>
+        <button type="button" id="broadcast-stop" hidden>停止广播</button>
+      </div>
+      <div id="find-bar" role="search" hidden>
+        <label for="find-input">查找</label><input id="find-input" type="search" placeholder="在当前窗格中查找" autocomplete="off" spellcheck="false">
+        <label><input id="find-case" type="checkbox">区分大小写</label>
+        <label><input id="find-word" type="checkbox">整词</label>
+        <label><input id="find-regex" type="checkbox">正则</label>
+        <span id="find-result" role="status"></span>
+        <button id="find-prev" title="上一个（Shift + Enter）">上一个</button><button id="find-next" title="下一个（Enter）">下一个</button>
+        <button id="find-close" aria-label="关闭查找" title="关闭查找（Esc）"><svg aria-hidden="true"><use href="#cross"/></svg></button>
+      </div>
+      <main id="workspace" aria-label="终端工作区">
+        <div id="empty" hidden><p id="empty-message">所有会话已关闭</p><button id="empty-new">新建标签</button><button id="empty-recall" hidden>找回隐藏标签</button></div>
+      </main>
+      <footer>
+        <span id="status" role="status" aria-live="polite">正在打开终端…</span>
+        <span id="status-components" aria-label="当前窗格状态" hidden></span>
+        <div class="defaults">
+          <label for="profile">新会话</label><select id="profile" aria-label="新会话的 Shell"><option value="default">默认 Shell</option></select>
+          <button id="directory" title="选择新会话的起始目录"><svg aria-hidden="true"><use href="#folder"/></svg><span id="directory-label">主目录</span></button>
+        </div>
+      </footer>
     </div>
-  </footer>
-  <dialog id="connection-dialog" class="connection-sheet" aria-labelledby="connection-title">
-    <div class="dialog-head"><h2 id="connection-title">连接中心</h2><button id="connection-close" type="button">返回终端</button></div>
-    <section aria-label="连接与文件"><h3>远程工作</h3><div class="connection-grid">
-      <button data-center="hosts"><strong>主机</strong><small>SSH 连接、分组与收藏</small></button>
-      <button data-center="files"><strong>SFTP 文件</strong><small>浏览、上传和下载</small></button>
-      <button data-center="forward"><strong>端口转发</strong><small>本地、远程和动态转发</small></button>
-      <button data-center="devices"><strong>其他协议</strong><small>Telnet、Mosh 和串口</small></button>
-    </div></section>
-    <section aria-label="连接设置"><h3>连接设置</h3><div class="connection-links">
-      <button data-center="commands">命令历史与补全</button>
-      <button data-center="sessions">工作区会话</button>
-      <button data-center="inventory">本机 API 与 Ansible</button>
-      <button data-center="snippetSync">个人剪藏同步</button>
-      <button data-center="importHosts">导入主机</button>
-      <button data-center="identities">SSH 身份</button><button data-center="trust">主机指纹</button>
-      <button data-center="logs">会话日志与书签</button><button data-center="passwords">本机密码库</button><button data-center="terminalLock">终端锁</button><button data-center="liveView" hidden>实时观看</button><button data-center="sharing">共享主机库</button><button data-center="sync">账号同步</button>
-    </div></section>
-  </dialog>
+  </div>
   <dialog id="device-dialog" class="connection-sheet" aria-labelledby="device-title">
     <div class="dialog-head"><h2 id="device-title">其他协议</h2><button id="device-close" type="button">关闭</button></div>
     <form id="device-form">
@@ -220,31 +282,7 @@
       <span id="paste-progress" role="status"></span>
     </fieldset>
     <fieldset id="terminal-appearance"><legend>终端外观与配置文件</legend>
-      <label>配色主题<select id="preset-theme"></select></label>
-      <samp id="preset-preview" aria-label="终端外观预览">user@host ~ $ ls</samp>
-      <label>字体<input id="preset-font" maxlength="200"></label>
-      <label>字号<input id="preset-size" type="number" min="8" max="40"></label>
-      <label>历史行数<input id="preset-scrollback" type="number" min="100" max="50000"></label>
-      <label>光标<select id="preset-cursor"><option value="block">方块</option><option value="bar">竖线</option><option value="underline">下划线</option></select></label>
-      <label>最低对比度<input id="preset-contrast" type="number" min="1" max="21" step="0.1"></label>
-      <label><input id="preset-blink" type="checkbox">光标闪烁</label>
-      <label><input id="preset-autocopy" type="checkbox">选中即复制</label>
-      <label><input id="preset-follow" type="checkbox">焦点跟随鼠标</label>
-      <label>导入 iTerm2 配色<input id="preset-colors" type="file" accept=".itermcolors"></label>
-      <label>配置名称<input id="preset-name" maxlength="64" placeholder="默认"></label>
-      <label>标签<input id="preset-tags" maxlength="180" placeholder="用逗号分隔"></label>
-      <button id="preset-apply">应用到当前窗格</button><button id="preset-save">保存为新会话默认配置</button>
-      <span id="preset-status" role="status"></span>
-      <label>搜索配置<input id="preset-filter" type="search" placeholder="名称或标签"></label>
-      <select id="preset-list" aria-label="已保存的配置"></select>
-      <button id="preset-load">载入</button><button id="preset-delete">删除配置</button>
-      <details id="dynamic-details"><summary>iTerm2 动态配置</summary>
-        <button type="button" id="dynamic-import">选择本地 JSON</button>
-        <label><input type="checkbox" id="dynamic-watch">跟踪所选文件的变化</label>
-        <select id="dynamic-list" aria-label="已导入的动态配置"></select>
-        <button type="button" id="dynamic-apply">应用到当前窗格</button>
-        <span id="dynamic-status" role="status"></span>
-      </details>
+      <button id="open-workspace-appearance" type="button">在工作区设置配色、字体与光标</button>
     </fieldset>
     <fieldset><legend>终端密码</legend>
       <details id="vault-controls"><summary>管理终端密码库</summary>

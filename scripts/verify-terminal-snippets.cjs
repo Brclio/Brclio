@@ -26,7 +26,8 @@ async function verifySnippetTemplates(page) {
   await page.locator('[data-center=commands]').click();
   await page.locator('#command-library-query').fill('QA 工具包');
   await page.locator('#command-library-insert').click();
-  const draft = page.locator('#snippet-draft');
+  const draft = page.locator('#command-library-draft');
+  await expect(page.locator('dialog[open]')).toHaveCount(0);
   await expect(draft).toBeVisible();
   await expect(draft.locator('[data-send]')).toBeDisabled();
   await draft.locator('input[name=value]').fill('BRCLIO-LOCAL-TEMPLATE');
@@ -56,11 +57,12 @@ async function verifySnippetTemplates(page) {
     await expect(page.locator('#remote-status')).toContainText('已保存');
     await page.locator('#remote-ssh').click();
     await expect(active.locator('.startup-snippet')).toBeVisible();
-    await expect(draft).toBeHidden();
+    const startupDraft = page.locator('#snippet-draft');
+    await expect(startupDraft).toBeHidden();
     await active.locator('.startup-snippet').click();
-    await expect(draft.locator('[data-target]')).toContainText('127.0.0.1:' + server.address().port);
-    await expect(draft.locator('[data-send]')).toBeDisabled();
-    await draft.locator('[data-cancel]').click();
+    await expect(startupDraft.locator('[data-target]')).toContainText('127.0.0.1:' + server.address().port);
+    await expect(startupDraft.locator('[data-send]')).toBeDisabled();
+    await startupDraft.locator('[data-cancel]').click();
     await page.locator('#close-pane').click();
     await page.evaluate(() => window.BrclioRemoteConnections.open());
     await page.locator('#remote-remove').click(); await page.locator('#remote-delete-confirm').click();

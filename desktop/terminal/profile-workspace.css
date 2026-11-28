@@ -1,0 +1,78 @@
+/* Brclio Design System · app. © Brclio · CC BY-NC-SA 4.0 */
+#workspace-appearance {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+}
+#workspace-appearance[hidden] { display: none; }
+#workspace-appearance label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+#workspace-appearance label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#workspace-appearance :is(select, input:not([type="checkbox"])) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--cream);
+  color: var(--ink);
+}
+#workspace-appearance #preset-preview {
+  margin: 0;
+  padding: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+#workspace-appearance .profile-caret {
+  display: inline-block;
+  width: 1ch;
+  height: 1em;
+  vertical-align: -0.14em;
+}
+#workspace-appearance .profile-caret[data-shape="bar"] { width: 2px; }
+#workspace-appearance .profile-caret[data-shape="underline"] { height: 2px; }
+@media (prefers-reduced-motion: no-preference) {
+  #workspace-appearance .profile-caret.blinking { animation: profile-caret-blink 1.2s step-end infinite; }
+  @keyframes profile-caret-blink { 50% { opacity: 0; } }
+}
+#workspace-appearance .profile-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+#workspace-appearance .profile-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+#workspace-appearance button {
+  min-height: 29px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+}
+#workspace-appearance #preset-save {
+  background: var(--blue-dark);
+  border-color: var(--blue-dark);
+  color: white;
+}
+#workspace-appearance [role="status"] { color: var(--blue-dark); }
+#workspace-appearance [role="status"]:empty { display: none; }
+#workspace-appearance details {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+#workspace-appearance summary { cursor: pointer; font-weight: 600; }
+#workspace-appearance details[open] > :not(summary) { margin-top: 8px; }

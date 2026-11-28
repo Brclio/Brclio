@@ -56,11 +56,18 @@ async function main() {
       localStorage.setItem('terminal-isolation-fixture','only-account-a');
       window.BrclioConnection.store(localStorage).save({name:'A private fixture',host:'a.example.test'});
     });
+    await terminal.locator('#quick-ssh').click();
+    await terminal.locator('#workspace-hosts').getByRole('button',{name:'编辑主机 A private fixture'}).click();
+    await terminal.locator('#workspace-hosts input[name=name]').fill('A private draft');
     const previous = terminal.waitForEvent('close');
     await account({path:'/api/account/logout',method:'POST',body:{}});
     await previous;
     await login('fixture-b');
     terminal = await openTerminal('fixture-b');
+    await terminal.locator('#quick-ssh').click();
+    await expect(terminal.locator('#workspace-hosts [data-host=list]')).toHaveText('还没有保存的主机。');
+    await expect(terminal.locator('#workspace-hosts [data-host=editor]')).toBeHidden();
+    await expect(terminal.locator('#workspace-hosts input[name=name]')).toHaveValue('');
     assert.deepEqual(await terminal.evaluate(() => window.BrclioConnection.store(localStorage).all()),[]);
     assert.equal(await terminal.evaluate(() => localStorage.getItem('terminal-isolation-fixture')), null);
     await terminal.evaluate(() => window.BrclioConnection.store(localStorage).save({name:'B private fixture',host:'b.example.test'}));
@@ -68,6 +75,9 @@ async function main() {
     await login('fixture-a');
     await closed;
     terminal = await openTerminal('fixture-a');
+    await terminal.locator('#quick-ssh').click();
+    await expect(terminal.locator('#workspace-hosts [data-host=list]')).toContainText('A private fixture');
+    await expect(terminal.locator('#workspace-hosts [data-host=list]')).not.toContainText('B private fixture');
     assert.equal(await terminal.evaluate(() => localStorage.getItem('terminal-isolation-fixture')), 'only-account-a');
     assert.deepEqual(await terminal.evaluate(() => window.BrclioConnection.store(localStorage).all().map(h => h.name)),['A private fixture']);
     await require('./verify-terminal-unbound-transfer.cjs').verifyUnboundTransfer(app, terminal);

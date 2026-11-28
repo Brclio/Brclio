@@ -17,12 +17,11 @@ async function verifyConnectionCenter(page,app) {
   await page.locator('#import-close').click();
   await page.locator('#connection-center').click();
   await center.locator('[data-center=hosts]').click();
-  await page.locator('#remote-view').selectOption('all');
-  await page.locator('#remote-group-filter').selectOption('');
-  await page.locator('#remote-search').fill('Import UI Fixture');
-  await expect(page.locator('#remote-list button')).toContainText('import.example.test');
-  await page.locator('#remote-search').fill('');
-  await page.locator('#remote-close').click();
+  const hosts = page.locator('#workspace-hosts');
+  await hosts.locator('[data-view=all]').click();
+  await hosts.locator('[data-host=search]').fill('Import UI Fixture');
+  await expect(hosts.locator('.ws-host-launch')).toContainText('import.example.test');
+  await hosts.locator('[data-host=search]').fill('');
   await page.locator('#connection-center').click();
   await center.locator('[data-center=inventory]').click();
   await page.locator('#inventory-enable').click();
@@ -42,8 +41,8 @@ async function verifyConnectionCenter(page,app) {
   await center.locator('[data-center=commands]').click();
   await expect(page.locator('#command-library-enable')).not.toBeChecked();
   await page.locator('#command-library-query').fill('git status');
-  await expect(page.locator('#command-library-list option').first()).toHaveText('命令 · git status');
-  await page.locator('#command-library-close').click();
+  await expect(page.locator('#command-library-list').getByRole('option', {name:'命令 · git status'})).toBeVisible();
+  await page.locator('#workspace-collapse').click();
   await page.locator('#connection-center').click();
   await center.locator('[data-center=devices]').click();
   await page.locator('#device-kind').selectOption('serial');

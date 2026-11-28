@@ -4,9 +4,24 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
   const $ = key => document.getElementById('preset-' + key);
   const status = text => { $('status').textContent = text; };
   const storage = window.BrclioTerminalPartitions?.storage || localStorage;
+  const defaultFont = '"SFMono-Regular", Consolas, Menlo, "Liberation Mono", monospace';
+  const fontChoice = $('font-choice');
+  const fonts = window.brclioTerminal.platform === 'win32'
+    ? ['Consolas', 'Courier New'] : ['Menlo', 'Monaco', 'Courier'];
+  fontChoice.add(new Option('系统默认等宽字体', defaultFont));
+  for (const name of fonts) fontChoice.add(new Option(name, '"' + name + '", monospace'));
+  fontChoice.add(new Option('自定义字体…', 'custom'));
+  const customFont = $('font').closest('label');
+  const preview = $('preview');
+  const prompt = preview.firstElementChild;
+  const caret = preview.querySelector('.profile-caret');
+  document.getElementById('open-workspace-appearance').onclick = () => {
+    document.getElementById('actions-dialog').close();
+    window.BrclioTerminalWorkspace.show('appearance');
+  };
   let generation = 0;
   const key = 'brclio.terminal.profiles.v1';
-  const defaults = { name: '默认', tags: '', font: '"SFMono-Regular", Consolas, Menlo, "Liberation Mono", monospace',
+  const defaults = { name: '默认', tags: '', font: defaultFont,
     size: 14, scrollback: 10000, cursor: 'block', blink: true, contrast: 1, autocopy: false, follow: false, colors: {} };
   const integers = { size: [8, 40], scrollback: [100, 50000] };
   const palette = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
@@ -48,16 +63,20 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
     customColors = selected ? null : value;
     customOption.disabled = !customColors;
     $('theme').value = selected?.[0] || 'custom';
-    preview();
+    updatePreview();
   }
-  function preview() {
-    const style = $('preview').style;
+  function updatePreview() {
+    const style = preview.style;
     const colors = { ...theme, ...editColors };
     style.color = colors.foreground;
     style.backgroundColor = colors.background;
     style.fontFamily = $('font').value.trim() || defaults.font;
     const size = Number($('size').value);
     style.fontSize = (size >= 8 && size <= 40 ? size : defaults.size) + 'px';
+    prompt.style.color = colors.green;
+    caret.style.backgroundColor = colors.cursor;
+    caret.dataset.shape = $('cursor').value;
+    caret.classList.toggle('blinking', $('blink').checked);
   }
   function normalize(input = {}) {
     const value = { ...defaults, colors: {} };
@@ -104,6 +123,8 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
     generation++;
     for (const field of ['name','tags','font','size','scrollback','cursor','contrast']) $(field).value = value[field];
     for (const field of ['blink','autocopy','follow']) $(field).checked = value[field];
+    fontChoice.value = [...fontChoice.options].some(option => option.value === value.font) ? value.font : 'custom';
+    customFont.hidden = fontChoice.value !== 'custom';
     selectColors(value.colors);
     $('colors').value = '';
   }
@@ -111,10 +132,17 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
     generation++;
     const selected = schemes.get($('theme').value);
     editColors = selected ? selected.colors : customColors;
-    preview();
+    updatePreview();
     status('点击应用或保存以使用所选配色。');
   };
-  $('font').oninput = $('size').oninput = preview;
+  $('font').oninput = $('size').oninput = updatePreview;
+  $('cursor').onchange = $('blink').onchange = updatePreview;
+  fontChoice.onchange = () => {
+    customFont.hidden = fontChoice.value !== 'custom';
+    if (customFont.hidden) $('font').value = fontChoice.value;
+    else { $('font').focus(); $('font').select(); }
+    updatePreview();
+  };
   function fromForm() {
     const value = { colors: editColors, ...readSession() };
     for (const field of ['name','tags','font','cursor']) value[field] = $(field).value;

@@ -16,6 +16,9 @@ async function verifyDynamicProfiles(app, page) {
     await app.evaluate(({ dialog }, target) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [target] }); }, file);
     await page.locator('#new-tab').click();
     await page.locator('#terminal-actions').click();
+    await page.locator('#terminal-appearance button').click();
+    await expect(page.locator('#workspace-appearance')).toBeVisible();
+    await expect(page.locator('dialog:modal')).toHaveCount(0);
     await page.locator('#dynamic-details summary').click();
     await page.locator('#dynamic-watch').check();
     await page.locator('#dynamic-import').click();
@@ -32,7 +35,7 @@ async function verifyDynamicProfiles(app, page) {
     await expect(page.locator('#dynamic-list option')).toContainText('Theme Two');
     await expect.poll(() => screen.evaluate(node => getComputedStyle(node).fontSize)).toBe('21px');
     await page.locator('#dynamic-watch').uncheck();
-    await page.locator('#actions-close').click();
+    await page.locator('#workspace-collapse').click();
     await page.locator('#tabs .tab:has([aria-selected=true]) .tab-close').click();
   } finally {
     await app.evaluate(({ dialog }, original) => { dialog.showOpenDialog = original; }, openDialog);

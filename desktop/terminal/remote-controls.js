@@ -109,6 +109,16 @@ window.BrclioRemoteConnections = {
       window.dispatchEvent(new Event('brclio-terminal-host-editor-changed'));
     }
 
+    function listItems(view, search = '', group = '') {
+      if (view !== 'recent') return library.select(storage.all(), { search, group, favorites: view === 'favorite' });
+      const terms = search.trim().toLowerCase().split(/\s+/);
+      return storage.recents().filter(item => {
+        const text = [item.name, library.format(item), kindLabels[item.kind]].join(' ').toLowerCase();
+        return terms.every(word => text.includes(word));
+      });
+    }
+    const lastOpened = item => item.openedAt ? '上次发起 ' + localDate.format(item.openedAt) : '';
+
     function render() {
       const records = storage.all();
       const configs = storage.groupConfigs();
@@ -125,10 +135,7 @@ window.BrclioRemoteConnections = {
       byId('clear-recent').hidden = !recents;
       const list = byId('list');
       list.replaceChildren();
-      const items = recents ? storage.recents().filter(item => {
-        const text = [item.name, library.format(item), kindLabels[item.kind]].join(' ').toLowerCase();
-        return search.toLowerCase().split(/\s+/).every(word => text.includes(word));
-      }) : library.select(records, { search, group: filter.value, favorites: byId('view').value === 'favorite' });
+      const items = listItems(byId('view').value, search, filter.value);
       if (!items.length) {
         const empty = document.createElement('p');
         empty.textContent = recents && !search ? '还没有最近打开的连接。' : records.length || search ? '没有匹配的主机。' : '还没有保存的主机。';
@@ -161,7 +168,7 @@ window.BrclioRemoteConnections = {
         if (item.openedAt) {
           const time = document.createElement('time');
           time.dateTime = new Date(item.openedAt).toISOString();
-          time.textContent = '上次发起 ' + localDate.format(item.openedAt);
+          time.textContent = lastOpened(item);
           row.append(time);
         }
         const reconnect = document.createElement('button');
@@ -171,12 +178,7 @@ window.BrclioRemoteConnections = {
         reconnect.onclick = () => guarded(async () => {
           reconnect.disabled = true;
           try {
-            const saved = item.name && storage.all().find(host => host.name === item.name);
-            if (item.name && (!saved || library.routing(storage.resolve(saved)) !== library.routing(item))) {
-              render();
-              throw new Error('此主机的连接配置已更新，请从全部主机重新选择。');
-            }
-            await connect(item.kind, saved || item, item.name);
+            await reconnectRecent(item);
           } finally { reconnect.disabled = false; }
         });
         const group = document.createElement('div');
@@ -218,11 +220,15 @@ window.BrclioRemoteConnections = {
       if (missing.length) status('未找到 ' + missing.join('、') + '，请安装系统 OpenSSH 客户端。');
     }
 
-    async function connect(kind, value, name = '') {
+    async function connect(kind, value, name = '', expectedRecord) {
       const epoch = accountGeneration;
-      const target = storage.resolve(value);
+      if (!window.BrclioTerminalPartitions.ready) throw new Error('正在确认当前账号，请稍后再试。');
       const program = kind === 'files' ? 'ssh' : kind;
+      if (!available[program]) await clients();
+      if (epoch !== accountGeneration) return;
       if (!available[program]) throw new Error('未找到 ' + program + '，请安装系统 OpenSSH 客户端。');
+      if (expectedRecord) currentRecord(expectedRecord);
+      const target = storage.resolve(value);
       const saved = storage.all().find(item => item.name === name);
       const matches = saved && JSON.stringify(storage.resolve(saved)) === JSON.stringify(target);
       if (kind === 'files') {
@@ -231,14 +237,37 @@ window.BrclioRemoteConnections = {
       } else {
         const reference = matches ? await window.BrclioArrangements.reference(saved.name,kind,target) : undefined;
         if (epoch !== accountGeneration) return;
+        if (matches) {
+          const current = currentRecord(saved);
+          if (JSON.stringify(storage.resolve(current)) !== JSON.stringify(target)) throw new Error('主机配置已更新，请重新选择。');
+        }
         launch(kind, kindLabels[kind] + ' · ' + (value.name || target.host).slice(0, 64), target, value.startupSnippet, reference);
       }
       if (epoch !== accountGeneration) return;
-      dialog.close();
+      if (dialog.open) dialog.close();
       // A connection can use unsaved edits. Keep that exact destination in its history.
       storage.recordUse(kind, target, matches ? saved.name : '');
+      window.dispatchEvent(new Event('brclio-terminal-recents-changed'));
     }
 
+    function currentRecord(record) {
+      const current = storage.all().find(item => item.name === record.name);
+      if (JSON.stringify(current) !== JSON.stringify(record)) throw new Error('已保存的主机配置已更新，请重新选择。');
+      return current;
+    }
+
+    function reconnectRecent(item) {
+      const saved = item.name && storage.all().find(host => host.name === item.name);
+      if (item.name && (!saved || library.routing(storage.resolve(saved)) !== library.routing(item))) {
+        throw new Error('此主机的连接配置已更新，请从全部主机重新选择。');
+      }
+      return connect(item.kind, saved || item, item.name, saved);
+    }
+
+    function quickConnect(text) {
+      const target = library.quick(text);
+      return connect(target.protocol, target);
+    }
     function open(mode) {
       const actions = document.getElementById('actions-dialog');
       if (actions.open) actions.close();
@@ -284,7 +313,32 @@ window.BrclioRemoteConnections = {
         render();
       });
     });
-    window.BrclioRemoteConnections.open = open;
+    // Both host editors use the same endpoint checks, account partition and change detection.
+    function prepareBasicEditor(source, editingSaved, fields) {
+      if (!window.BrclioTerminalPartitions.ready) throw new Error('正在确认当前账号，请稍后再试。');
+      if (editingSaved) currentRecord(source);
+      activeRecent = null;
+      showItem(source, editingSaved ? source.name : '');
+      for (const key of ['name', 'host', 'user', 'port']) byId(key).value = fields[key];
+      byId('favorite').checked = fields.favorite;
+      checkAddress();
+    }
+    Object.assign(window.BrclioRemoteConnections, {
+      open, listItems, lastOpened, kindLabels, quickConnect, reconnectRecent,
+      connectHost(item) { return connect('ssh', item, item.name, item); },
+      saveBasic(source, editingSaved, fields) {
+        prepareBasicEditor(source, editingSaved, fields);
+        const saved = saveEditor();
+        showItem(saved, saved.name);
+        return saved;
+      },
+      editAdvanced(source, editingSaved, fields) {
+        prepareBasicEditor(source, editingSaved, fields);
+        open();
+        byId('advanced').open = true;
+        byId('name').focus();
+      },
+    });
     byId('open').onclick = open;
     byId('close').onclick = () => dialog.close();
     dialog.addEventListener('close', () => {
@@ -375,14 +429,15 @@ window.BrclioRemoteConnections = {
       status('可编辑副本，再保存为新主机。');
       byId('name').focus();
     });
+    function saveEditor() {
+      checkAddress();
+      if (original) currentRecord(original);
+      return storage.save(form(), selected || null);
+    }
     byId('form').onsubmit = event => {
       event.preventDefault();
       guarded(() => {
-        checkAddress();
-        if (original && JSON.stringify(storage.all().find(item => item.name === selected)) !== JSON.stringify(original)) {
-          throw new Error('此主机的已保存配置已更新。请重新选择，或复制为新主机以保留当前编辑。');
-        }
-        const saved = storage.save(form(), selected || null);
+        const saved = saveEditor();
         activeRecent = null;
         showItem(saved, saved.name);
         render();
@@ -405,16 +460,14 @@ window.BrclioRemoteConnections = {
     });
     byId('clear-recent').onclick = () => guarded(() => {
       storage.clearRecent();
+      window.dispatchEvent(new Event('brclio-terminal-recents-changed'));
       activeRecent = null;
       render();
       status('最近记录已清空。');
     });
     byId('quick-form').onsubmit = event => {
       event.preventDefault();
-      guarded(() => {
-        const target = library.quick(byId('quick').value);
-        return connect(target.protocol, target);
-      });
+      guarded(() => quickConnect(byId('quick').value));
     };
     for (const kind of ['ssh', 'sftp', 'files']) byId(kind).onclick = () => guarded(() => {
       checkAddress();

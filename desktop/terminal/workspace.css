@@ -1,0 +1,41 @@
+/* Brclio Design System · app. © Brclio · CC BY-NC-SA 4.0 */
+body > header { flex: none; border-bottom: 1px solid var(--border); }
+#terminal-layout, #terminal-sessions { display: flex; min-width: 0; min-height: 0; flex: 1; }
+#terminal-sessions { flex-direction: column; }
+#terminal-sessions > #tabs { border-top: 0; }
+#workspace-nav {
+  display: flex; flex: 0 0 58px; flex-direction: column; align-items: stretch; gap: 4px;
+  box-sizing: border-box; padding: 8px 4px; background: var(--paper); border-right: 1px solid var(--border);
+}
+#workspace-nav button {
+  flex: none; flex-direction: column; gap: 3px; height: 50px; padding: 4px;
+  color: var(--muted); font-size: 11px; font-weight: 500;
+}
+#workspace-nav button svg { width: 19px; height: 19px; }
+#workspace-nav button[aria-current] { background: #e8eef4; color: var(--blue-dark); }
+#workspace-nav #connection-center { margin-top: auto; }
+#workspace-drawer {
+  box-sizing: border-box; flex: 0 0 clamp(222px, 26vw, 310px); min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--cream);
+}
+.workspace-panel-head {
+  display: flex; flex: none; align-items: center; justify-content: space-between;
+  box-sizing: border-box; min-height: 38px; padding: 3px 10px 3px 14px; border-bottom: 1px solid var(--border);
+}
+.workspace-panel-head h2 { margin: 0; font-size: 14px; font-weight: 650; }
+.workspace-panel-head button { height: 30px; width: 30px; color: var(--muted); }
+#workspace-drawer > section { box-sizing: border-box; flex: 1; min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; }
+#connection-dialog { padding: 0 12px 12px; }
+#connection-dialog h3 { margin: 14px 0 7px; color: var(--muted); font-size: 12px; }
+#connection-dialog .connection-grid { grid-template-columns: 1fr; }
+#connection-dialog .connection-grid button { padding: 7px 8px; }
+#connection-dialog .connection-links button { padding: 4px 7px; }
+@media (max-width: 620px) {
+  #terminal-layout { flex-direction: column; }
+  #workspace-nav { flex: none; flex-direction: row; padding: 3px 5px; border-right: 0; border-bottom: 1px solid var(--border); }
+  #workspace-nav button { flex-direction: row; height: 30px; padding: 3px 9px; font-size: 12px; }
+  #workspace-nav button svg { width: 15px; height: 15px; }
+  #workspace-nav #connection-center { margin: 0 0 0 auto; }
+  #workspace-drawer { flex: 0 1 40%; border-right: 0; border-bottom: 1px solid var(--border); }
+  #terminal-sessions { flex: 1 1 48%; }
+}

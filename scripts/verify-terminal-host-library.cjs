@@ -113,6 +113,81 @@ async function verifyHostLibrary(terminal) {
   await expect(rows.filter({ hasText: '开发主机' })).toHaveCount(1);
   await dialog.locator('#remote-close').click();
   assert.equal(await terminal.locator('#tabs [role=tab]').count(), count);
+  await verifyWorkspaceHosts(terminal);
+}
+
+async function verifyWorkspaceHosts(terminal) {
+  const net = require('node:net');
+  const { once } = require('node:events');
+  const fixture = net.createServer(socket => { attempts++; socket.destroy(); });
+  let attempts = 0;
+  fixture.listen(0, '127.0.0.1');
+  await once(fixture, 'listening');
+  try {
+    const tabs = terminal.locator('#tabs [role=tab]');
+    const count = await tabs.count();
+    await terminal.locator('#quick-ssh').click();
+    const panel = terminal.locator('#workspace-hosts');
+    const library = terminal.locator('#remote-library');
+    const editor = panel.locator('[data-host=editor]');
+    const search = panel.locator('[data-host=search]');
+    const list = panel.locator('[data-host=list]');
+    const closeTab = () => terminal.locator('#tabs .tab:has([aria-selected=true]) .tab-close').click();
+    await expect(panel).toBeVisible();
+    await panel.locator('[data-host=new]').click();
+    await editor.getByLabel('名称').fill('侧栏 CI');
+    await editor.getByLabel('主机地址').fill('127.0.0.1');
+    await editor.getByLabel('用户名').fill('fixture');
+    await editor.getByLabel('端口').fill(String(fixture.address().port));
+    await editor.getByLabel('收藏主机').check();
+    await editor.getByRole('button', {name:'保存主机'}).click();
+    await expect(panel.getByRole('status')).toHaveText('已保存 侧栏 CI');
+    await panel.getByRole('button', {name:'收藏',exact:true}).click();
+    await search.fill('侧栏 CI');
+    await expect(list.getByRole('listitem')).toHaveCount(1);
+    await list.getByRole('button',{name:'连接 SSH 侧栏 CI'}).click();
+    await expect.poll(() => attempts).toBe(1);
+    await expect(tabs).toHaveCount(count + 1);
+    await expect(panel).toBeVisible();
+    await expect(terminal.locator('dialog[open]')).toHaveCount(0);
+    await closeTab();
+    await panel.getByRole('button',{name:'最近',exact:true}).click();
+    await expect(list.locator('time')).toContainText('上次发起');
+    await list.getByRole('button',{name:'重新打开 SSH 侧栏 CI'}).click();
+    await expect.poll(() => attempts).toBe(2);
+    await closeTab();
+    await list.getByRole('button',{name:'编辑主机 侧栏 CI'}).click();
+    await editor.getByLabel('名称').fill('侧栏改名');
+    await editor.getByRole('button',{name:'更多选项…'}).click();
+    await expect(library.locator('#remote-name')).toHaveValue('侧栏改名');
+    await expect(library.locator('#remote-advanced')).toHaveAttribute('open', '');
+    await library.locator('#remote-environment').fill('BRCLIO_FIXTURE=test');
+    await library.locator('#remote-save').click();
+    await library.locator('#remote-close').click();
+    await search.fill('侧栏改名');
+    await list.getByRole('button',{name:'编辑主机 侧栏改名'}).click();
+    await editor.getByLabel('用户名').fill('other-fixture');
+    await editor.getByRole('button',{name:'保存主机'}).click();
+    assert.equal(await terminal.evaluate(() => window.BrclioConnection.store(localStorage).all()
+      .find(item => item.name === '侧栏改名').environment), undefined);
+    const quick = panel.locator('[data-host=quick]');
+    await quick.fill('ssh://127.0.0.1:99999');
+    await quick.press('Enter');
+    await expect(panel.getByRole('status')).toContainText('65535');
+    await quick.fill('fixture@127.0.0.1:' + fixture.address().port);
+    await quick.press('Enter');
+    await expect.poll(() => attempts).toBe(3);
+    await expect(panel.locator('[data-view=recent]')).toHaveAttribute('aria-pressed','true');
+    await expect(quick).toHaveValue('');
+    await closeTab();
+    await list.getByRole('button',{name:/保存主机 fixture@127\.0\.0\.1/}).click();
+    await expect(editor.getByLabel('用户名')).toHaveValue('fixture');
+    await editor.getByRole('button',{name:'取消'}).click();
+    await terminal.locator('#workspace-collapse').click();
+    await expect(tabs).toHaveCount(count);
+  } finally {
+    await new Promise(resolve => fixture.close(resolve));
+  }
 }
 
 module.exports = { verifyHostLibrary };

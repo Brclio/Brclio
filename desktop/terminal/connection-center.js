@@ -3,11 +3,9 @@
 window.BrclioConnectionCenter = { bind({ api, newTab }) {
   const $ = id => document.getElementById(id);
   const center = $('connection-dialog'), devices = $('device-dialog'), kind = $('device-kind');
-  $('connection-center').onclick = () => center.showModal();
-  $('connection-close').onclick = () => center.close();
   $('device-close').onclick = () => devices.close();
   const open = {
-    hosts: () => window.BrclioRemoteConnections.open(),
+    hosts: () => window.BrclioTerminalWorkspace.show('hosts'),
     files: () => window.BrclioRemoteConnections.open('files'),
     forward: () => window.BrclioForwardControls.open(),
     logs: () => window.BrclioLocalLogs.open(),
@@ -34,7 +32,7 @@ window.BrclioConnectionCenter = { bind({ api, newTab }) {
     },
   };
   for (const button of center.querySelectorAll('[data-center]')) {
-    button.onclick = () => { center.close(); open[button.dataset.center](); };
+    button.onclick = () => open[button.dataset.center]();
   }
   async function refresh() {
     const field = $('serial-device');

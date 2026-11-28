@@ -28,40 +28,44 @@ async function verify(executablePath) {
     const windowCount = () => app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().length);
     await expect.poll(windowCount).toBe(1);
     await expect(pane).toHaveAttribute('data-state','running',{timeout:20000});
+    const session = await pane.getAttribute('data-id');
     for (const width of [800, 1220]) {
       await homeWindow.evaluate((win, width) => win.setContentSize(width, 850), width);
+      await terminal.locator('#quick-ssh').click();
       await expect.poll(() => terminal.evaluate(() => {
-        const tabsTop = document.getElementById('tabs').getBoundingClientRect().top;
-        return [...document.querySelectorAll('header button')].every(button => {
-          const {left, right, bottom} = button.getBoundingClientRect();
-          return left >= 0 && right <= innerWidth && bottom <= tabsTop + 1;
-        });
+        const rect = id => document.getElementById(id).getBoundingClientRect();
+        const panel = rect('workspace-drawer'), screen = rect('workspace');
+        const separate = innerWidth > 620 ? panel.right <= screen.left + 1 : panel.bottom <= screen.top + 1;
+        return separate && screen.width >= 200 && screen.height >= 150 && panel.width > 100 &&
+          screen.right <= innerWidth && screen.bottom <= innerHeight;
       })).toBe(true);
       await expect(footer).toBeInViewport({ratio:1});
+      await expect(terminal.locator('dialog[open]')).toHaveCount(0);
     }
-    await terminal.getByRole('button', {name:'SSH 主机', exact:true}).click();
-    await expect(terminal.locator('#remote-library')).toBeVisible();
-    await terminal.locator('#remote-close').click();
+    await expect(terminal.locator('#workspace-hosts')).toBeVisible();
     await terminal.getByRole('button', {name:'常用命令', exact:true}).click();
+    await expect(terminal.locator('#workspace-commands')).toBeVisible();
     await expect(terminal.locator('#command-library-query')).toBeFocused();
-    await terminal.locator('#command-library-close').click();
     await terminal.getByRole('button', {name:'外观', exact:true}).click();
+    await expect(terminal.locator('#workspace-appearance')).toBeVisible();
     await expect(terminal.locator('#preset-theme')).toBeFocused();
     await expect(terminal.locator('#preset-preview')).toBeVisible();
-    await terminal.locator('#actions-close').click();
+    await expect(terminal.locator('dialog[open]')).toHaveCount(0);
     const windows = process.platform === 'win32';
     await expect(pane.locator('.xterm-rows')).toContainText(windows ? /PS [^>]*>/ : /[%#$]/,{timeout:20000});
-    const session = await pane.getAttribute('data-id');
     await pane.locator('textarea').focus();
     await terminal.keyboard.type(windows ? "[Console]::WriteLine(('PREVIEW-' + 'READY'))" : "printf 'PREVIEW-%s\\n' READY");
     await terminal.keyboard.press('Enter');
     await expect(pane.locator('.xterm-rows')).toContainText('PREVIEW-READY');
+    await expect(terminal.locator('#workspace-appearance')).toBeVisible();
     await terminal.locator('#presentation').click();
     await expect.poll(windowCount).toBe(2);
     await terminal.locator('#presentation').click();
     await expect.poll(windowCount).toBe(1);
     await expect(pane).toHaveAttribute('data-id',session);
     await expect(pane.locator('.xterm-rows')).toContainText('PREVIEW-READY');
+    await terminal.locator('#workspace-collapse').click();
+    await expect(terminal.locator('#workspace-drawer')).toBeHidden();
     const result = await app.evaluate(({app,globalShortcut}) => ({
       title:app.getName(),data:app.getPath('userData'),hotkey:globalShortcut.isRegistered('Alt+P'),
     }));

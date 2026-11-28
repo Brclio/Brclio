@@ -1,0 +1,75 @@
+#workspace-commands {
+  min-width: 0;
+  padding: 12px;
+}
+#workspace-commands [hidden] { display: none; }
+#command-library-browse, #command-library-editor {
+  display: grid;
+  gap: 10px;
+}
+#workspace-commands .command-filter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+}
+#workspace-commands :is(input:not([type=checkbox]), textarea, select) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--cream);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+#workspace-commands textarea { resize: vertical; }
+#workspace-commands button {
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+#workspace-commands .primary {
+  background: #ebf2f7;
+  color: var(--blue-dark);
+  border-color: #c6d9ea;
+}
+#workspace-commands .command-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+#command-library-list {
+  display: grid;
+  align-content: start;
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+}
+#command-library-list:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+#command-library-list [role=option] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px;
+  min-width: 0;
+  padding: 7px;
+  cursor: pointer;
+  border-radius: 5px;
+}
+#command-library-list code { grid-column: 1 / -1; }
+#command-library-list small { color: var(--muted); font-size: 10px; }
+#command-library-list [role=option]:hover { background: var(--paper); }
+#command-library-list [aria-selected=true] { background: #e5edf4; color: var(--blue-dark); }
+#command-library-list :is(.command-name, code) { text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+#command-library-list code, #command-library-settings p { color: var(--muted); font-size: 11px; }
+#workspace-commands :is(h3, p, h2) { margin: 0; }
+#workspace-commands :is(h3, h2) { font-size: 14px; }
+#workspace-commands [role=status] { color: var(--blue-dark); overflow-wrap: anywhere; }
+#workspace-commands [role=status]:empty { display: none; }
+#command-library-settings { padding-block: 8px; border-top: 1px solid var(--border); }
+#command-library-settings summary { cursor: pointer; }
+#command-library-settings > :not(summary) { margin-top: 8px; }
+#workspace-commands label { display: grid; gap: 4px; }
+#workspace-commands label:has(input[type=checkbox]) { display: flex; align-items: center; }
+#command-library-draft > div { display: grid; gap: 9px; }
+#command-library-draft .dialog-head { display: flex; align-items: center; justify-content: space-between; }
+#workspace-commands :is(#command-library-draft, #command-library-empty) p { overflow-wrap: anywhere; }

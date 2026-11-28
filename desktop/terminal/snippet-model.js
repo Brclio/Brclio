@@ -42,6 +42,13 @@
     });
   }
   const label = item => [item.package, item.name].filter(Boolean).join(' / ');
+  function applyEdit(items, raw, original) {
+    const item = normalize(raw);
+    const current = items.find(entry => entry.id === item.id);
+    if (JSON.stringify(current) !== JSON.stringify(original)) throw new Error('条目已更改，请重新打开。');
+    if (items.some(other => other.id !== item.id && other.kind === item.kind && other.name === item.name && other.package === item.package)) throw new Error('同一包中该类型的名称已存在。');
+    return current ? items.map(other => other.id === item.id ? item : other) : [...items, item];
+  }
   function store(storage, items) {
     if (items.length > 200 || items.reduce((count, item) => count + item.text.length, 0) > 512 * 1024) {
       throw new Error('已达到剪藏与笔记的容量上限，请先缩短内容或删除条目。');
@@ -66,7 +73,7 @@
     store(storage,[...entries,copy]);
     return copy;
   }
-  const api = { key, read, normalize, fill, variables, search, label, store, addCopy };
+  const api = { key, read, normalize, applyEdit, fill, variables, search, label, store, addCopy };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else window.BrclioSnippetModel = api;
 })();

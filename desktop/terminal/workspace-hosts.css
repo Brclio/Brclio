@@ -1,0 +1,54 @@
+#workspace-hosts { padding: 12px; }
+#workspace-hosts [data-host=browse], #workspace-hosts .ws-host-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#workspace-hosts input:not([type=checkbox]) {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+  height: 34px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--cream);
+  color: var(--ink);
+  font: inherit;
+}
+#workspace-hosts input:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+#workspace-hosts .ws-host-quick { display: grid; gap: 6px; }
+#workspace-hosts .ws-host-quick label, #workspace-hosts .ws-host-editor label { color: var(--muted); font-size: 12px; }
+#workspace-hosts .ws-host-quick > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; }
+#workspace-hosts button { text-align: start; min-height: 30px; }
+#workspace-hosts button.ws-host-primary {
+  background: var(--blue-dark); color: white; padding-inline: 10px;
+}
+#workspace-hosts button.ws-host-primary:hover { background: var(--blue); }
+#workspace-hosts .ws-host-filters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+#workspace-hosts .ws-host-filters button { color: var(--muted); }
+#workspace-hosts .ws-host-filters button[aria-pressed=true] {
+  color: var(--blue-dark); background: #e5eef8; font-weight: 600;
+}
+#workspace-hosts .ws-host-tools, #workspace-hosts .ws-host-edit-actions { display: flex; gap: 6px; align-items: center; }
+#workspace-hosts .ws-host-tools { justify-content: space-between; }
+#workspace-hosts .ws-host-tools button { padding-inline: 5px; color: var(--blue-dark); }
+#workspace-hosts .ws-host-tools [data-host=advanced-library] { color: var(--muted); font-size: 12px; }
+#workspace-hosts .ws-host-list { display: grid; gap: 3px; }
+#workspace-hosts .ws-host-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px; align-items: center;
+  padding: 4px 0; border-top: 1px solid var(--border);
+}
+#workspace-hosts .ws-host-launch { display: grid; justify-content: stretch; gap: 3px; padding: 5px; min-width: 0; }
+#workspace-hosts .ws-host-launch :is(strong, small, time) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#workspace-hosts .ws-host-launch strong { font-size: 13px; }
+#workspace-hosts .ws-host-launch small { color: var(--muted); font: 11px var(--mono); }
+#workspace-hosts .ws-host-launch time, #workspace-hosts .ws-host-edit { color: var(--muted); font-size: 11px; }
+#workspace-hosts .ws-host-edit { padding-inline: 5px; }
+#workspace-hosts .ws-host-editor h3 { margin: 0; font-size: 14px; font-weight: 600; }
+#workspace-hosts .ws-host-editor label { display: grid; gap: 5px; }
+#workspace-hosts .ws-host-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(64px, .65fr); gap: 7px; }
+#workspace-hosts .ws-host-editor .ws-host-favorite { display: flex; align-items: center; }
+#workspace-hosts .ws-host-editor [data-host=advanced] { align-self: start; padding-inline: 0; color: var(--blue-dark); }
+#workspace-hosts p { margin: 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+#workspace-hosts [role=status]:not(:empty) { margin-top: 12px; color: var(--blue-dark); }

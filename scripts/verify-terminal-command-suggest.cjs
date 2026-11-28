@@ -26,17 +26,22 @@ async function main() {
     return find();
   }
   async function openLibrary(page) {
-    await page.locator('#connection-center').click();
-    await page.locator('[data-center=commands]').click();
+    if (!await page.locator('#command-library-browse').isVisible()) await page.locator('#quick-commands').click();
+    await expect(page.locator('#workspace-commands')).toBeVisible();
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+  }
+  async function settings(page) {
+    const controls = page.locator('#command-library-settings');
+    if (!await controls.evaluate(node => node.open)) await controls.locator('summary').click();
   }
   try {
     const page = await launchTerminal();
     const pane = page.locator('.pane.active:visible');
-    await page.locator('#connection-center').click();
-    await page.locator('[data-center=commands]').click();
+    await openLibrary(page);
+    await settings(page);
     await page.locator('#command-library-enable').check();
     await page.locator('#command-library-suggest').check();
-    await page.locator('#command-library-close').click();
+    await page.locator('#workspace-collapse').click();
     await app.evaluate(({dialog},folder) => { dialog.showOpenDialog = async () => ({canceled:false,filePaths:[folder]}); },temp);
     await page.locator('#directory').click();
     await expect(page.locator('#directory-label')).toHaveText(temp);
@@ -98,11 +103,11 @@ async function main() {
     const login = windows ? '' : path.basename(os.userInfo().shell || '');
     const profiles = windows ? ['default'] : ['zsh','bash'].map(shell => shell === login ? 'default' : shell);
     for (const profile of profiles) {
-      await page.locator('#connection-center').click();
-      await page.locator('[data-center=commands]').click();
+      await openLibrary(page);
+      await settings(page);
       const clear = page.locator('#command-library-clear');
       if (await clear.isEnabled()) await clear.click();
-      await page.locator('#command-library-close').click();
+      await page.locator('#workspace-collapse').click();
       await page.locator('#profile').selectOption(profile);
       await page.locator('#new-tab').click();
       await expect(pane).toHaveAttribute('data-state','running',{timeout:15000});
@@ -165,27 +170,54 @@ async function main() {
     }
     await openLibrary(page);
     await page.locator('#command-library-source').selectOption('history');
-    await page.locator('#command-library-list').selectOption('pwd');
+    await page.locator('#command-library-list').getByRole('option', {name:'历史 · pwd',exact:true}).click();
     await page.locator('#command-library-remember').click();
     await expect(page.locator('#command-library-status')).toHaveText('已收藏。');
     await expect(page.locator('#command-library-remember')).toBeDisabled();
     await page.locator('#command-library-edit').click();
-    await expect(page.locator('#snippets-text')).toHaveValue('pwd');
-    await page.locator('#snippets-name').fill('查看当前目录');
-    await page.locator('#snippets-save').click();
-    await page.locator('#actions-close').click();
+    await expect(page.locator('#command-library-text')).toHaveValue('pwd');
+    await page.locator('#command-library-name').fill('查看当前目录');
+    await page.locator('#quick-appearance').click();
+    await page.evaluate(() => {
+      const model = window.BrclioSnippetModel, store = window.BrclioTerminalPartitions.storage;
+      const items = model.read(store);
+      items.find(item => item.text === 'pwd').name = '另一设备的名称';
+      model.store(store, items);
+      window.dispatchEvent(new Event('brclio-snippets-changed'));
+    });
+    await page.locator('#quick-commands').click();
+    await expect(page.locator('#command-library-name')).toHaveValue('查看当前目录');
+    await page.locator('#command-library-save').click();
+    await expect(page.locator('#command-library-editor-status')).toContainText('条目已更改');
+    await page.locator('#command-library-cancel').click();
+    await page.locator('#command-library-edit').click();
+    await expect(page.locator('#command-library-name')).toHaveValue('另一设备的名称');
+    await page.locator('#command-library-name').fill('查看当前目录');
+    await page.locator('#command-library-save').click();
     await openLibrary(page);
     await page.locator('#command-library-new').click();
-    await expect(page.locator('#snippets-name')).toHaveValue('');
-    await page.locator('#snippets-name').fill('写入回忆测试文件');
+    await page.locator('#command-library-name').fill('临时草稿');
+    await page.locator('#quick-ssh').click();
+    await page.locator('#workspace-collapse').click();
+    await openLibrary(page);
+    await page.locator('#command-library-new').click();
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    await expect(pane).toBeVisible();
+    await expect(page.locator('#command-library-name')).toHaveValue('');
+    await page.locator('#command-library-name').fill('写入回忆测试文件');
     const proof = path.join(temp,'shortcut-proof.txt');
     const command = 'echo recalled > "' + proof + '"';
-    await page.locator('#snippets-text').fill(command);
-    await page.locator('#snippets-save').click();
-    await expect(page.locator('#snippets-status')).toHaveText('已保存。');
-    await page.locator('#actions-close').click();
+    await page.locator('#command-library-text').fill(command);
+    await page.locator('#quick-ssh').click();
+    await page.locator('#quick-commands').click();
+    await expect(page.locator('#command-library-text')).toHaveValue(command);
+    await page.locator('#command-library-save').click();
+    await expect(page.locator('#command-library-status')).toHaveText('已保存。');
 
     // A pane from the old account must not contribute commands to the new one.
+    await page.locator('#command-library-new').click();
+    await page.locator('#command-library-text').fill('previous-account-draft');
+    await page.locator('#quick-ssh').click();
     const isolated = await page.evaluate(() => {
       const parts = window.BrclioTerminalPartitions;
       const recorder = window.BrclioCommandLibrary.recorder({profile:'default'});
@@ -193,32 +225,36 @@ async function main() {
       try {
         parts.activate('command-recall-test-account');
         window.dispatchEvent(new Event('brclio-terminal-account-changed'));
+        const draftCleared = document.getElementById('command-library-text').value === '';
         const key = 'brclio.terminal.command-history.v1';
         parts.storage.setItem(key, JSON.stringify({enabled:true,entries:[]}));
         recorder.add('pwd');
         window.BrclioCommandLibrary.open();
         const oldPaneBlocked = document.getElementById('command-library-insert').disabled;
-        document.getElementById('command-library').close();
-        return {snippets:window.BrclioSnippetModel.read(parts.storage).length,
+        window.BrclioTerminalWorkspace.close();
+        return {draftCleared, snippets:window.BrclioSnippetModel.read(parts.storage).length,
           history:JSON.parse(parts.storage.getItem(key)).entries.length, oldPaneBlocked};
       } finally {
         parts.activate(owner);
         window.dispatchEvent(new Event('brclio-terminal-account-changed'));
       }
     });
-    assert.deepEqual(isolated,{snippets:0,history:0,oldPaneBlocked:true});
+    assert.deepEqual(isolated,{draftCleared:true,snippets:0,history:0,oldPaneBlocked:true});
     await app.close(); app = undefined;
     const restarted = await launchTerminal();
     await openLibrary(restarted);
+    await settings(restarted);
     await expect(restarted.locator('#command-library-enable')).toBeChecked();
     await restarted.locator('#command-library-source').selectOption('history');
-    await expect(restarted.locator('#command-library-list option[value=pwd]')).toHaveCount(1);
+    await expect(restarted.locator('#command-library-list').getByRole('option',{name:'历史 · pwd',exact:true})).toHaveCount(1);
     await restarted.locator('#command-library-clear').click();
-    await expect(restarted.locator('#command-library-list option')).toHaveCount(0);
+    await expect(restarted.locator('#command-library-list').getByRole('option')).toHaveCount(0);
     await restarted.locator('#command-library-source').selectOption('saved');
-    await expect(restarted.locator('#command-library-list option')).toHaveCount(2);
+    await expect(restarted.locator('#command-library-list').getByRole('option')).toHaveCount(2);
     await restarted.locator('#command-library-query').fill('回忆测试');
     await restarted.locator('#command-library-list').press('Enter');
+    await expect(restarted.locator('#workspace-commands')).toBeVisible();
+    await expect(restarted.locator('dialog[open]')).toHaveCount(0);
     const target = restarted.locator('.pane.active:visible');
     await expect(target.locator('.xterm-rows')).toContainText('echo recalled');
     assert.equal(await fs.stat(proof).then(() => true, () => false),false);

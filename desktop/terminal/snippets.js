@@ -58,17 +58,6 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
     try { const items = read(); loaded = true; display(items, ''); }
     catch (error) { closeEditor(); $('status').textContent = error.message; }
   }
-  function editCommand(id) {
-    document.getElementById('terminal-actions').click();
-    const search = document.getElementById('actions-filter');
-    search.value = details.querySelector('summary').textContent;
-    search.dispatchEvent(new Event('input'));
-    syncEditor();
-    if (!loaded) return;
-    query.value = filter.value = '';
-    display(entries, id || '');
-    name.focus();
-  }
   window.addEventListener('brclio-terminal-library-moved', () => { closeEditor(); syncEditor(); });
   details.addEventListener('toggle', syncEditor);
   details.addEventListener('focusin', syncEditor);
@@ -81,10 +70,8 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
     try {
       const items = read();
       const id = list.value || crypto.randomUUID();
-      const item = model.normalize({ id, name: name.value.trim(), kind: kind.value, text: text.value, package: packageName.value, template: template.checked });
-      if (items.some(other => other.id !== id && other.kind === item.kind && other.name === item.name && other.package === item.package)) throw new Error('同一包中该类型的名称已存在。');
-      if (list.value && JSON.stringify(items.find(other => other.id === id)) !== JSON.stringify(selected())) throw new Error('条目已更改，请重新打开。');
-      store(list.value ? items.map(other => other.id === id ? item : other) : [...items, item], id, '已保存。');
+      const raw = {id, name:name.value.trim(), kind:kind.value, text:text.value, package:packageName.value, template:template.checked};
+      store(model.applyEdit(items, raw, selected()), id, '已保存。');
     } catch (error) { $('status').textContent = error.message; }
   };
   $('remove').onclick = () => {
@@ -96,24 +83,32 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
   const dialog = document.createElement('dialog');
   dialog.className = 'terminal-network-dialog'; dialog.id = 'snippet-draft';
   dialog.setAttribute('aria-labelledby', 'snippet-draft-title');
-  dialog.innerHTML = `<div class="dialog-head"><h2 id="snippet-draft-title">剪藏草稿</h2><button type="button" data-cancel>关闭</button></div>
+  const content = document.createElement('div');
+  content.innerHTML = `<div class="dialog-head"><h2 id="snippet-draft-title">剪藏草稿</h2><button type="button" data-cancel>关闭</button></div>
     <p data-target></p><div class="forward-grid" data-vars></div><button type="button" data-fill>生成草稿</button>
     <div class="forward-grid"><label class="forward-wide">确认要粘贴的内容<textarea data-preview rows="5" maxlength="32768" spellcheck="false"></textarea></label></div>
     <p class="forward-hint">请先完成登录并确认窗格已显示命令提示符。多行内容粘贴时可能立即执行。</p>
     <div class="network-actions"><button data-send type="button">粘贴到此窗格</button></div><p data-status role="status"></p>`;
-  document.body.append(dialog);
-  const part = attr => dialog.querySelector('[data-' + attr + ']');
+  dialog.append(content); document.body.append(dialog);
+  const part = attr => content.querySelector('[data-' + attr + ']');
   let destination, rendered = false;
   const pending = new Set();
   function resetDraft() {
+    const previous = destination;
     destination = null; rendered = false;
     part('vars').replaceChildren(); part('target').textContent = part('status').textContent = part('preview').value = '';
+    if (previous?.inline) {
+      dialog.append(content);
+      previous.inline.onClose();
+    }
   }
+  function closeDraft() { if (dialog.open) dialog.close(); resetDraft(); }
   function controls() { part('send').disabled = !rendered || !part('preview').value; }
-  function draft(item, pane) {
+  function draft(item, pane, inline) {
     if (!item || !pane?.node.isConnected || pane.state !== 'running') return;
-    resetDraft();
-    destination = { pane, item, epoch };
+    closeDraft();
+    const opened = { pane, item, epoch, inline };
+    destination = opened;
     const target = pane.launch?.profile === 'ssh' ? window.BrclioConnection.format(pane.launch.connection) : pane.tab.name.textContent;
     part('target').textContent = model.label(item) + ' → ' + target;
     const vars = item.template ? model.variables(item.text) : [];
@@ -126,8 +121,10 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
     part('fill').hidden = rendered;
     part('preview').value = item.text;
     controls();
-    if (!dialog.open) dialog.showModal();
+    if (inline) inline.mount.append(content);
+    else dialog.showModal();
     (part('vars').querySelector('input') || part('preview')).focus();
+    return () => { if (destination === opened) closeDraft(); };
   }
   part('vars').oninput = () => { rendered = false; controls(); };
   part('preview').oninput = controls;
@@ -147,10 +144,10 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
     if (epoch !== destination.epoch || !pane.node.isConnected || pane !== activePane() || pane.state !== 'running') {
       part('status').textContent = '目标窗格已切换或关闭。请关闭草稿并重新选择。'; return;
     }
-    paste(pane, part('preview').value); dialog.close(); pane.terminal.focus();
+    paste(pane, part('preview').value); closeDraft(); pane.terminal.focus();
   };
-  part('cancel').onclick = () => dialog.close();
-  dialog.addEventListener('close', () => { if (!dialog.open) resetDraft(); });
+  part('cancel').onclick = closeDraft;
+  dialog.addEventListener('close', () => { if (!dialog.open && !destination?.inline) resetDraft(); });
   $('paste').onclick = () => {
     const item = selected(), pane = activePane();
     if (!item) return;
@@ -181,5 +178,5 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
     epoch++; details.open = false; closeEditor(); if (dialog.open) dialog.close(); resetDraft();
     for (const button of pending) button.remove(); pending.clear();
   });
-  return { draft, startup, editCommand };
+  return { draft, startup };
 };

@@ -32,6 +32,7 @@ async function main() {
     async function launch(protocol) {
       await page.locator('#connection-center').click();
       await page.locator('[data-center=hosts]').click();
+      await page.locator('#workspace-hosts [data-host="advanced-library"]').click();
       await page.locator('#remote-library').getByText('layout-'+protocol,{exact:true}).first().click();
       await page.locator('#remote-'+protocol).click();
     }
