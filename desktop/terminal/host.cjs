@@ -24,12 +24,11 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
 
   const lockPage = path.join(__dirname,'terminal-lock-screen.html');
   const electron = require('electron');
+  const deviceVerification = require('./biometrics.cjs').provider({preferences:electron.systemPreferences,
+    getOwner:() => owner, packaged:app.isPackaged});
   const lock = require('./terminal-lock.cjs').terminalLock({directory:app.getPath('userData'),
-    secureStorage:() => electron.safeStorage, biometrics:() => ({
-      available:() => process.platform === 'darwin' && electron.systemPreferences.canPromptTouchID(),
-      authenticate:() => electron.systemPreferences.promptTouchID('解锁 Brclio 终端'),
-    })});
-  let parked, screen, idleCheck;
+    secureStorage:() => electron.safeStorage, biometrics:() => deviceVerification});
+  let parked, screen, idleCheck, liveView;
   const heldEvents = new Map(), pendingAcks = new Map();
   let vault;
   const channels = [];
@@ -37,6 +36,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   const touchBar = process.platform === 'darwin' && require('./touch-bar.cjs').terminalTouchBar(id => send('toolbar-action', id));
 
   function send(channel, payload) {
+    if (channel === 'exit') liveView?.paneExited(payload.id);
     logs.observe(channel, payload);
     if (lock.locked) {
       // The PTY service pauses at its existing per-pane high-water mark while
@@ -104,7 +104,23 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
       const user = await localUser();
       return !viewScope?.temporary && user?.id === viewScope?.userId ? user?.id : undefined;
     } });
+  liveView = require('./live-view-host.cjs').registerLiveView({handle,accountRequest,localUser,scope:() => viewScope,paneTarget:sessions.target,send});
+  require('./terminal-log-cloud.cjs').registerCloudLogs({handle,accountRequest,localUser,scope:() => lock.locked ? null : viewScope,readStopped:logs.readStopped,
+    confirm:async ({name,host,destination,days}) => (await dialog.showMessageBox(owner, {type:'question',noLink:true,
+      message:'上传「' + name + '」的加密日志副本？',
+      detail:'记录主机：' + host + '\n访问范围：' + destination + '\n可访问期限：' + days + ' 天。\n完整文本可能含有敏感信息。名称、主机和分享者可见。口令由你单独交付。',
+      buttons:['取消','上传这份日志'],defaultId:0,cancelId:0})).response === 1});
   require('./shared-vault-host.cjs').registerSharedVault({handle, accountRequest, localUser, scope: () => viewScope});
+  handle('snippet-sync', async (operation,payload) => {
+    const scope = viewScope;
+    if (!scope?.userId || scope.temporary || (await localUser())?.id !== scope.userId || scope !== viewScope) throw new Error('请先登录当前 Brclio 账号。');
+    if (!['read','write'].includes(operation)) throw new Error('未知的剪藏同步操作。');
+    const path = '/api/account/apps/terminal/snippets';
+    const result = await accountRequest(operation === 'read' ? {path} :
+      {path,method:'PUT',body:{expectedUserId:scope.userId,revision:payload?.revision,data:payload?.data}});
+    if (scope !== viewScope || result.userId !== scope.userId || (await localUser())?.id !== scope.userId || scope !== viewScope) throw new Error('账号已变化。');
+    return result;
+  });
   handle('sync-config', async (op, payload) => {
     const targetView = view;
     if (viewScope?.temporary) {
@@ -411,6 +427,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
 
   function lockTerminal() {
     inventoryBridge.stop();
+    liveView?.stop();
     if (!view || !lock.enabled) return;
     lock.lock();
     if (screen) return;

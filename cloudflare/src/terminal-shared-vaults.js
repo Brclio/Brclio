@@ -10,13 +10,13 @@ const title = value => typeof value === 'string' && value === value.trim() && va
   !/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/u.test(value);
 const roleValue = role => role === 'editor' || role === 'reader';
 const referencePath = id => appDataPath(id, 'terminal-vault-list');
-const vaultPath = (owner, id) => appDataPath(owner, 'terminal-vault-' + id.replaceAll('-', ''));
+export const sharedVaultPath = (owner, id) => appDataPath(owner, 'terminal-vault-' + id.replaceAll('-', ''));
 const denied = () => ({status:404, error:'共享主机库不存在或当前账号没有访问权限。'});
 const invalid = () => ({status:400, error:'共享主机库请求格式无效。'});
 const conflict = () => ({status:409, error:'共享主机库已发生变化，请刷新后重试。'});
 
 const actionFields = {
-  list: [], create: ['name','vaultId'], open: [], 'set-hosts': ['hosts'], invite: ['username','role'],
+  list: [], create: ['name','vaultId'], open: [], 'invite-domains':['domains'], 'set-hosts': ['hosts'], invite: ['username','role'],
   accept: [], decline: [], leave: [], revoke: ['memberId'], role: ['memberId','role'], delete: [],
 };
 function validInput(input) {
@@ -34,6 +34,9 @@ function validInput(input) {
   switch (input.action) {
     case 'create': return title(input.name) && vaultId(input.vaultId);
     case 'invite': return typeof input.username === 'string' && /^[\p{L}\p{N}][\p{L}\p{N}_.-]{2,31}$/u.test(input.username) && roleValue(input.role);
+    case 'invite-domains': return Array.isArray(input.domains) && input.domains.length <= 16 &&
+      input.domains.every(s => typeof s === 'string' && s.length <= 253 && /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(s)) &&
+      new Set(input.domains).size === input.domains.length;
     case 'role': return accountId(input.memberId) && roleValue(input.role);
     case 'revoke': return accountId(input.memberId);
     case 'set-hosts': return Array.isArray(input.hosts) && input.hosts.length <= 256 &&
@@ -54,9 +57,24 @@ function detail(vault, actor) {
   const member = actor === vault.ownerId ? {role:'owner', state:'active'} : vault.members.find(entry => entry.id === actor);
   const result = {...summary(vault, member), revision:vault.revision};
   if (member.state === 'active') result.hosts = vault.hosts;
-  if (member.role === 'owner') result.members = vault.members;
+  if (member.role === 'owner') {
+    result.members = vault.members;
+    result.inviteDomains = vault.inviteDomains || [];
+    result.audit = vault.audit || [];
+  }
   return result;
 }
+function permittedDomain(domains, profile) {
+  if (!domains?.length) return true;
+  if (profile?.emailVerified !== true || typeof profile.email !== 'string') return false;
+  return domains.includes(profile.email.split('@').at(-1).toLowerCase());
+}
+function audit(vault,actor,action,subject) {
+  const entry = {at:new Date().toISOString(), actor, action};
+  if (subject) entry.subject = subject;
+  vault.audit = [...(vault.audit || []),entry].slice(-64);
+}
+
 async function updateRef(tx, user, vault, member) {
   const index = await refs(tx, user);
   index.vaults = index.vaults.filter(v => v.vaultId !== vault.vaultId || v.ownerId !== vault.ownerId);
@@ -76,16 +94,16 @@ async function run(tx, session, input) {
 
   if (action === 'list') return {vaults:(await refs(tx,actor)).vaults};
   if (action === 'create') {
-    const existing = await tx.read(vaultPath(actor,input.vaultId));
+    const existing = await tx.read(sharedVaultPath(actor,input.vaultId));
     if (existing) return existing.ownerId === actor && existing.name === input.name && existing.vaultId === input.vaultId
       ? {vault:detail(existing,actor)} : conflict();
     const vault = {version:1, ownerId:actor, ownerName:session.profile.username, vaultId:input.vaultId,
       name:input.name, revision:1, members:[], hosts:[]};
     if (!await updateRef(tx, actor, vault, {role:'owner', state:'active'})) return {status:409, error:'每个账号最多保留 64 个共享主机库和邀请。'};
-    tx.write(vaultPath(actor,vault.vaultId), vault);
+    tx.write(sharedVaultPath(actor,vault.vaultId), vault);
     return {vault:detail(vault, actor)};
   }
-  const path = vaultPath(input.ownerId,input.vaultId);
+  const path = sharedVaultPath(input.ownerId,input.vaultId);
   const vault = await tx.read(path);
   if (!vault || vault.deleted) return denied();
   if (vault.version !== 1 || vault.ownerId !== input.ownerId || vault.vaultId !== input.vaultId ||
@@ -115,12 +133,15 @@ async function run(tx, session, input) {
     if (id === actor || vault.members.some(entry => entry.id === id)) return {status:409, error:'该用户已在主机库或邀请列表中。'};
     const profile = await tx.read(userPath(id,'profile'));
     if (!profile || profile.id !== id || profile.username.toLowerCase() !== key) return conflict();
+    if (!permittedDomain(vault.inviteDomains,profile)) return {status:403,error:'受邀账号的已验证邮箱不符合此主机库的邀请域名规则。'};
     const invited = {id, username:profile.username, role:input.role, state:'invited'};
     if (!await updateRef(tx,id,vault,invited)) return {status:409, error:'对方的共享主机库和邀请已达上限。'};
     vault.members.push(invited);
   }
   if (action === 'set-hosts') vault.hosts = input.hosts;
+  if (action === 'invite-domains') vault.inviteDomains = input.domains;
   if (action === 'accept') {
+    if (!permittedDomain(vault.inviteDomains,session.profile)) return {status:403,error:'当前账号的已验证邮箱不符合邀请域名规则。'};
     member.state = 'active';
     await updateRef(tx,actor,vault,member);
   }
@@ -136,6 +157,7 @@ async function run(tx, session, input) {
       await updateRef(tx,id,vault,null);
     }
   }
+  audit(vault,session.profile.username,action, input.username || (input.memberId ? input.memberId : undefined));
   vault.revision++;
   tx.write(path,vault);
   return ['decline','leave'].includes(action) ? {removed:true} : {vault:detail(vault,actor)};

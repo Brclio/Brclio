@@ -7,6 +7,8 @@ const isSuggestionRequest = require('../web/suggestion-routes.js');
 
 const ORIGIN = 'https://tools.brclio.com';
 const MAX_BYTES = 128 * 1024;
+const LOG_COPIES = '/api/account/apps/terminal/log-copies';
+const LOG_BYTES = 560 * 1024;
 const FEEDBACK_MAX_BYTES = 1024 * 1024;
 const ROUTES = { '/api/account/session': ['GET'], '/api/account/code': ['POST'],
   '/api/account/register': ['POST'], '/api/account/login': ['POST'],
@@ -67,7 +69,7 @@ function createAccountClient({ directory, onSessionChange = () => {}, fetch = gl
   }), pollInterval = 2000, googleTimeout = 300000, browserLoginTimeout = googleTimeout } = {}) {
   let pendingLogin, pendingLink, csrf = '', authVersion = 0;
   const controllers = new Set();
-  async function requestRaw(target, method, body, outerSignal) {
+  async function requestRaw(target, method, body, outerSignal, origin = ORIGIN) {
     if (controllers.size >= 8) throw new Error('账号操作繁忙，请稍后重试。');
     const controller = new AbortController();
     const cancel = () => controller.abort();
@@ -77,7 +79,7 @@ function createAccountClient({ directory, onSessionChange = () => {}, fetch = gl
     const timer = setTimeout(cancel, target === '/api/account/feedback' ? 90000 : 30000);
     try {
       const token = await store.read();
-      const response = await fetch(`${ORIGIN}${target}`, { method, body, redirect: 'manual', credentials: 'omit',
+      const response = await fetch(`${origin}${target}`, { method, body, redirect: 'manual', credentials: 'omit',
         headers: { Accept: 'application/json', 'X-Brclio-Client': 'native', ...(body ? { 'Content-Type': 'application/json' } : {}),
           ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }, signal: controller.signal });
       if (response.status >= 300 && response.status < 400) throw new Error('账号服务跳转无效，请稍后重试。');
@@ -87,7 +89,7 @@ function createAccountClient({ directory, onSessionChange = () => {}, fetch = gl
       const chunks = []; let size = 0;
       if (reader) {
         try { while (true) { const { done, value } = await reader.read(); if (done) break;
-          size += value.byteLength; if (size > MAX_BYTES) throw new Error('账号服务响应过大。'); chunks.push(Buffer.from(value));
+          size += value.byteLength; if (size > (target === LOG_COPIES ? LOG_BYTES : MAX_BYTES)) throw new Error('账号服务响应过大。'); chunks.push(Buffer.from(value));
         } } finally { await reader.cancel().catch(() => {}); }
       }
       let value;
@@ -188,12 +190,13 @@ function createAccountClient({ directory, onSessionChange = () => {}, fetch = gl
   // This scoped entry point is only wired to the isolated terminal view.
   async function requestTerminal(input) {
     if (input.path === '/api/account/session') return request(input);
-    const sharing = input.path === '/api/account/apps/terminal/shared-vaults' && input.method === 'POST';
-    if (!sharing && input.path !== '/api/account/apps/terminal/data') throw new Error('终端同步路径无效。');
+    const live = input.path === '/api/account/apps/terminal/live-view' && input.method === 'POST' && require('./terminal/live-target.cjs').liveTarget();
+    const sharing = [LOG_COPIES,'/api/account/apps/terminal/shared-vaults'].includes(input.path) && input.method === 'POST';
+    if (!live && !sharing && !['/api/account/apps/terminal/data','/api/account/apps/terminal/snippets'].includes(input.path)) throw new Error('终端同步路径无效。');
     const version = authVersion;
-    const body = sharing || input.method === 'PUT' ? JSON.stringify(input.body) : undefined;
-    if (body && Buffer.byteLength(body) > MAX_BYTES) throw new Error('终端配置超过同步容量。');
-    const value = await requestRaw(input.path, input.method || 'GET', body);
+    const body = live || sharing || input.method === 'PUT' ? JSON.stringify(input.body) : undefined;
+    if (body && Buffer.byteLength(body) > (input.path === LOG_COPIES ? LOG_BYTES : MAX_BYTES)) throw new Error('终端配置超过同步容量。');
+    const value = await requestRaw(input.path, input.method || 'GET', body, undefined, live || ORIGIN);
     if (version !== authVersion) throw new Error('账号状态已变化。');
     return value;
   }

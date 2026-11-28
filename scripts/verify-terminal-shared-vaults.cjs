@@ -128,4 +128,5 @@ async function main() {
     await fs.rm(temp,{recursive:true,force:true});
   }
 }
-main().catch(error => {console.error(error);process.exitCode = 1;});
+module.exports = {accountServer};
+if (require.main === module) main().catch(error => {console.error(error);process.exitCode = 1;});

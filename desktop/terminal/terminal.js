@@ -112,6 +112,7 @@
   }
 
   function selectPane(pane, focus = true) {
+    window.BrclioLiveView.selection(pane);
     const previous = pane.tab.active;
     if (previous && previous !== pane) previous.node.classList.remove('active');
     pane.tab.active = pane;
@@ -196,6 +197,7 @@
       pane.commandExit = code;
       statusBar.refresh(pane);
     }, window.BrclioCommandLibrary?.recorder(launch));
+    window.BrclioCommandLibrary.attach(pane);
     locations.attach(pane);
     pane.disposeTriggers = attachTriggers(pane);
     inspector.attach(pane);
@@ -497,8 +499,10 @@
     return;
   }
   window.BrclioTerminalHistory.bind(activePane, paneTools.pasteOnly);
+  window.BrclioLiveView.bind(activePane);
   const removeData = api.onData(({id, data}) => {
     const pane = panes.get(id);
+    if (pane) window.BrclioLiveView.output(pane,data);
     if (pane) pane.terminal.write(data, () => { if (panes.has(id)) api.ack(id, data.length); });
   });
   const removeExit = api.onExit(({id, exitCode, signal, error}) => {

@@ -38,6 +38,7 @@
   <script defer src="remote-controls.js"></script>
   <script defer src="vault-controls.js"></script>
   <link rel="stylesheet" href="local-logs.css">
+  <script defer src="terminal-log-cloud-ui.js"></script>
   <script defer src="local-logs-ui.js"></script>
   <link rel="stylesheet" href="host-library.css">
   <link rel="stylesheet" href="forward.css">
@@ -54,8 +55,13 @@
   <script defer src="sync-controls.js"></script>
   <link rel="stylesheet" href="shared-vaults.css">
   <script defer src="terminal-lock-ui.js"></script>
+  <link rel="stylesheet" href="live-view.css">
+  <script defer src="live-view-ui.js"></script>
   <script defer src="shared-vaults.js"></script>
+  <script defer src="snippet-sync-model.js"></script>
+  <script defer src="snippet-sync-ui.js"></script>
   <script defer src="inventory-ui.js"></script>
+  <script defer src="host-import-sessions.js"></script>
   <script defer src="host-import.js"></script>
   <script defer src="command-library.js"></script>
   <script defer src="host-import-ui.js"></script>
@@ -130,9 +136,10 @@
       <button data-center="commands">命令历史与补全</button>
       <button data-center="sessions">工作区会话</button>
       <button data-center="inventory">本机 API 与 Ansible</button>
+      <button data-center="snippetSync">个人剪藏同步</button>
       <button data-center="importHosts">导入主机</button>
       <button data-center="identities">SSH 身份</button><button data-center="trust">主机指纹</button>
-      <button data-center="logs">会话日志与书签</button><button data-center="passwords">本机密码库</button><button data-center="terminalLock">终端锁</button><button data-center="sharing">共享主机库</button><button data-center="sync">账号同步</button>
+      <button data-center="logs">会话日志与书签</button><button data-center="passwords">本机密码库</button><button data-center="terminalLock">终端锁</button><button data-center="liveView" hidden>实时观看</button><button data-center="sharing">共享主机库</button><button data-center="sync">账号同步</button>
     </div></section>
   </dialog>
   <dialog id="device-dialog" class="connection-sheet" aria-labelledby="device-title">
@@ -269,6 +276,7 @@
                   <label>SSH 用户名<input id="remote-config-user" maxlength="128" placeholder="继承上一级"></label>
                   <label>SSH 端口<input id="remote-config-port" type="number" min="1" max="65535" placeholder="继承上一级"></label>
                   <label>跳板链<input id="remote-config-jump" maxlength="2048" placeholder="user@jump:22" spellcheck="false"></label>
+                  <label>本机 SSH 身份<select id="remote-config-identity"><option value="">继承上一级</option></select></label>
                   <label>SSH 环境变量<textarea id="remote-config-environment" rows="3" maxlength="4096" placeholder="LANG=zh_CN.UTF-8" spellcheck="false"></textarea></label>
                   <p>本机当前账号使用。子分组和主机可以覆盖上一级的设置。修改连接目标后，受影响主机需重新选择身份和主机环境变量。</p>
                   <div class="host-row"><button type="button" id="remote-config-save">保存分组设置</button><button type="button" id="remote-config-remove" disabled>清除本级设置</button></div>
@@ -289,6 +297,8 @@
                 <datalist id="remote-groups"></datalist>
                 <label class="host-favorite"><input id="remote-inherit" type="checkbox" checked> 使用本机分组默认设置</label>
                 <small id="remote-inherited"></small>
+                <div id="remote-group-key-row" hidden><small id="remote-group-key-info"></small>
+                  <button type="button" id="remote-group-key"></button></div>
                 <label>SSH 启动剪藏<select id="remote-startup-snippet"><option value="">无</option></select></label>
                 <label class="host-favorite"><input id="remote-favorite" type="checkbox"> 收藏主机</label>
                 <details id="remote-advanced"><summary>跳板、身份和 SSH 认证</summary>

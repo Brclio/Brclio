@@ -35,7 +35,7 @@ window.BrclioLocalLogs = (() => {
     const side = el('section', ''), content = el('section', '');
     const heading = el('div', '', { className: 'log-row' });
     heading.append(el('h2', '本机会话日志'), button('关闭', () => view.close()));
-    const note = el('p', '手动记录当前窗格此后的输出。回显的命令和敏感文字也会写入。每份最多 256 KiB，每个账号最多 16 份，仅保存于本机。');
+    const note = el('p', '手动记录当前窗格此后的输出。回显的命令和敏感文字也会写入。每份最多 256 KiB，每个账号最多 16 份。云端副本需逐份选择并确认。');
     const grid = el('div', '', { className: 'log-grid' });
     grid.append(side, content);
     const status = el('p', '');
@@ -149,7 +149,11 @@ window.BrclioLocalLogs = (() => {
       output.scrollTop = line * parseFloat(getComputedStyle(output).lineHeight);
     };
     const row = (...nodes) => { const r = el('div', '', { className: 'log-row' }); r.append(...nodes); return r; };
-    side.append(name, row(start, stop), hostFilter, list, row(reload, remove, clear), row(retention, saveRetention));
+    const cloud = button('云端日志副本', () => {
+      const record = chosen && chosen !== state.active ? state.logs?.find(item => item.id === chosen) : null;
+      void window.BrclioCloudLogs.open(record);
+    });
+    side.append(name, row(start, stop), hostFilter, list, row(reload, remove, clear), row(retention, saveRetention),cloud);
     content.append(output, row(mark, add, bookmarks));
     view.append(heading, note, grid, confirmation, status);
     view.addEventListener('close', () => { if (dialog === view) dialog = null; view.remove(); }, { once: true });

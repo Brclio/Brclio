@@ -13,6 +13,7 @@ async function verifyConnectionCenter(page) {
   await expect(page.locator('#import-preview label')).toContainText('tester@import.example.test:2200');
   await page.locator('#import-apply').click();
   await expect(page.locator('#import-status')).toContainText('已导入 1 台');
+  await require('./verify-terminal-session-import.cjs').verifySessionImports(page);
   await page.locator('#import-close').click();
   await page.locator('#connection-center').click();
   await center.locator('[data-center=hosts]').click();

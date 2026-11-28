@@ -33,12 +33,22 @@ export function validTerminalData(v) {
     new TextEncoder().encode(JSON.stringify(v)).length <= maxBytes;
 }
 
-export async function terminalData(request, session, store) {
-  const key = appDataPath(session.id, 'terminal');
-  const initial = {version: 1, revision: 0, data: {hosts: [], forwards: []}, updatedAt: null};
+export const snippetRoute = '/api/account/apps/terminal/snippets';
+export function validSnippets(items) {
+  return Array.isArray(items) && items.length <= 200 && items.every(s => only(s,['id','kind','name','text','package','template']) &&
+    text(s.id,256) && s.id.length > 0 && s.kind === 'snippet' && text(s.name,80) && s.name.trim() &&
+    typeof s.text === 'string' && s.text.length > 0 && s.text.length <= 32768 &&
+    (s.package === undefined || text(s.package,64)) && (s.template === undefined || typeof s.template === 'boolean')) &&
+    new Set(items.map(s => s.id)).size === items.length && new TextEncoder().encode(JSON.stringify(items)).length <= maxBytes;
+}
+
+export async function terminalData(request, session, store, snippets = false) {
+  const key = appDataPath(session.id, snippets ? 'terminal-snippets' : 'terminal');
+  const valid = snippets ? validSnippets : validTerminalData;
+  const initial = {version: 1, revision: 0, data: snippets ? [] : {hosts: [], forwards: []}, updatedAt: null};
   async function read(state) {
     const record = await state.read(key, initial);
-    if (record.version !== 1 || !Number.isSafeInteger(record.revision) || record.revision < 0 || !validTerminalData(record.data))
+    if (record.version !== 1 || !Number.isSafeInteger(record.revision) || record.revision < 0 || !valid(record.data))
       throw new Error('Invalid stored terminal configuration');
     return record;
   }
@@ -48,7 +58,7 @@ export async function terminalData(request, session, store) {
   try { input = await readJSON(request, maxBytes + 1024); }
   catch (error) { return json({error:'终端同步请求格式无效或超过大小限制。'}, error instanceof RangeError ? 413 : 400); }
   if (!object(input) || input.expectedUserId !== session.id) return json({error:'账号已变化，请重新打开终端同步。'},409);
-  if (!Number.isSafeInteger(input.revision) || input.revision < 0 || !validTerminalData(input.data))
+  if (!Number.isSafeInteger(input.revision) || input.revision < 0 || !valid(input.data))
     return json({error:'终端配置格式无效或超过 112 KiB。'},400);
   const result = await store.transaction(async tx => {
     const grant = (await tx.read(userPath(session.id,'credentials')))?.sessions?.[session.sessionKey];

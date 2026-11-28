@@ -214,3 +214,16 @@ test('opt-in command search captures visible shell input between B and C across 
   await write(terminal,prompt + 'aborted\r\n' + osc(133,'D;130'));
   assert.deepEqual(commands,['echo example command']);
 });
+
+test('prompt completion reads only the live visible prefix at the end of a marked command', async t => {
+  const terminal = new Terminal({allowProposedApi:true,cols:12,rows:8});
+  const marks = attach(terminal,undefined,{enabled:() => false, suggestions:() => true});
+  t.after(() => { marks.dispose(); terminal.dispose(); });
+  assert.equal(marks.inputPrefix(),undefined);
+  await write(terminal,osc(133,'A') + '$ ' + osc(133,'B') + 'git st');
+  assert.equal(marks.inputPrefix(),'git st');
+  await write(terminal,'\x1b[D');
+  assert.equal(marks.inputPrefix(),undefined);
+  await write(terminal,'\x1b[C\r\n' + osc(133,'C') + 'Password: ');
+  assert.equal(marks.inputPrefix(),undefined);
+});

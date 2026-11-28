@@ -6,6 +6,7 @@ window.BrclioRemoteConnections = {
     document.body.append(byId('library-template').content.cloneNode(true));
     const library = window.BrclioConnection;
     const storage = library.store(localStorage);
+    const identities = window.BrclioIdentities.store(localStorage);
     const dialog = byId('library');
     const fields = ['name', 'host', 'user', 'port', 'group', 'tags', 'jump', 'proxy', 'proxyUser', 'identityFile', 'certificateFile'];
     const kindLabels = { ssh: 'SSH', sftp: 'SFTP 命令行', files: '文件浏览' };
@@ -44,6 +45,19 @@ window.BrclioRemoteConnections = {
       } catch { /* The host library remains usable if a local snippet cannot be read. */ }
     }
     window.addEventListener('brclio-snippets-changed', () => snippetChoices());
+    let displayedKey;
+    function keyPreview() {
+      displayedKey = null;
+      try { displayedKey = storage.groupCredential(form()); } catch { /* The user may be editing an incomplete address. */ }
+      byId('group-key-row').hidden = !displayedKey;
+      if (!displayedKey) { byId('group-key-info').textContent = ''; return; }
+      const saved = selected && storage.all().find(item => item.name === selected);
+      const canApprove = saved && storage.groupCredential(saved)?.binding === displayedKey.binding;
+      byId('group-key').disabled = !canApprove;
+      byId('group-key-info').textContent = displayedKey.identity.name + ' · ' + displayedKey.identity.path +
+        ' → ' + library.format(displayedKey.target) + (canApprove ? '' : '（保存主机后可授权）');
+      byId('group-key').textContent = displayedKey.approved ? '撤销此主机的分组身份授权' : '授权此主机使用分组身份';
+    }
     function inheritedPreview() {
       const group = byId('group').value.trim();
       let text = '';
@@ -55,6 +69,7 @@ window.BrclioRemoteConnections = {
         } catch { /* Incomplete group paths have no defaults to show yet. */ }
       }
       byId('inherited').textContent = text ? '分组默认值　' + text : '';
+      keyPreview();
     }
 
     function showGroup(path) {
@@ -62,6 +77,10 @@ window.BrclioRemoteConnections = {
       byId('config-path').value = path;
       for (const field of ['user', 'port', 'jump']) byId('config-' + field).value = config?.[field] ?? '';
       byId('config-environment').value = envText(config?.environment);
+      const picker = byId('config-identity');
+      picker.replaceChildren(new Option('继承上一级', ''), ...identities.all().map(item => new Option(item.name, item.name)));
+      if (config?.identity && ![...picker.options].some(opt => opt.value === config.identity)) picker.add(new Option(config.identity + '（引用已失效）', config.identity));
+      picker.value = config?.identity || '';
       byId('config-remove').disabled = !config;
     }
 
@@ -248,6 +267,17 @@ window.BrclioRemoteConnections = {
       inheritedPreview();
     }
     for (const key of [...authFields, 'group', 'inherit']) byId(key).addEventListener('input', checkAddress);
+    for (const key of ['name', 'identityFile']) byId(key).addEventListener('input', keyPreview);
+    window.addEventListener('brclio-identities-changed', () => guarded(() => {
+      if (byId('group-editor').open) showGroup(byId('config-path').value);
+      keyPreview();
+    }));
+    byId('group-key').onclick = () => guarded(() => {
+      if (!displayedKey || !selected) return;
+      if (displayedKey.approved) storage.revokeGroupKey(selected);
+      else storage.authorizeGroupKey(selected, displayedKey.binding);
+      keyPreview();
+    });
     byId('config-path').addEventListener('input', () => guarded(() => showGroup(byId('config-path').value)));
     byId('group-editor').querySelector('summary').addEventListener('click', () => {
       if (!byId('group-editor').open) guarded(() => showGroup(byId('group').value.trim() || byId('group-filter').value));
@@ -256,7 +286,7 @@ window.BrclioRemoteConnections = {
       const group = library.groupPath(byId('config-path').value);
       const prior = selected && storage.all().find(item => item.name === selected);
       if (remove) storage.removeGroup(group);
-      else storage.saveGroup({ group, ...Object.fromEntries(['user', 'port', 'jump', 'environment'].map(field =>
+      else storage.saveGroup({ group, ...Object.fromEntries(['user', 'port', 'jump', 'environment', 'identity'].map(field =>
         [field, byId('config-' + field).value])) });
       if (selected && JSON.stringify(original) === JSON.stringify(prior)) original = storage.all().find(item => item.name === selected);
       showGroup(group);

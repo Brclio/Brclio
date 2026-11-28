@@ -22,6 +22,8 @@
     }
     function write(items) {
       storage.setItem(key, JSON.stringify(items));
+      const hosts = node ? require('./connection.js') : window.BrclioConnection;
+      hosts.store(storage).pruneGroupKeys();
       if (!node) window.dispatchEvent(new Event('brclio-identities-changed'));
     }
     return { all,

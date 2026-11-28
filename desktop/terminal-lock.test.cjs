@@ -54,3 +54,28 @@ test('Touch ID is optional, rejects canceled prompts and binds delayed verificat
   assert.equal(await lock.offeredBiometric(),false);
   await assert.rejects(lock.unlock('biometric',null,active),/未开启/);
 });
+
+test('Windows Hello uses the current Electron-owned HWND and accepts only an explicit verified result', async t => {
+  const { provider } = require('./terminal/biometrics.cjs');
+  const handle = Buffer.alloc(8, 1), calls = [];
+  const owner = { isFocused: () => true, isDestroyed: () => false, getNativeWindowHandle: () => handle };
+  let outcome = false, registered = false;
+  const device = provider({ platform:'win32', getOwner:() => owner, packaged:true, resources:'fixture', load(file) {
+    assert.equal(path.basename(file),'brclio_hello.node');
+    return { available: async () => registered, verify: async buffer => { calls.push(buffer); return outcome; } };
+  } });
+  const { create } = await fixture(t);
+  const lock = create(() => device); await lock.initialize();
+  assert.equal((await lock.status()).biometricAvailable, false);
+  await assert.rejects(lock.enable('246813', true, active), /暂时无法/);
+  registered = true; await lock.enable('246813', true, active); lock.lock();
+  for (outcome of [false, null, 0, 'verified']) {
+    await assert.rejects(lock.unlock('biometric',null,active), /未完成/);
+    assert.equal(lock.locked,true); assert.strictEqual(calls.at(-1),handle);
+  }
+  outcome = true; await lock.unlock('biometric',null,active); assert.equal(lock.locked,false);
+  lock.lock(); registered = false; await assert.rejects(lock.unlock('biometric',null,active), /未开启/);
+  await lock.unlock('pin','246813',active);
+  const missing = provider({platform:'win32',resources:'fixture',packaged:true,load:()=>{throw new Error('missing');}});
+  assert.equal(await missing.available(), false);
+});

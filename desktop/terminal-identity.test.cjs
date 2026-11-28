@@ -110,3 +110,17 @@ test('native key generation restricts algorithms and binds the selected type to 
   }
   await assert.rejects(handlers.get('identity-choose')({action:'generate',algorithm:'other'}));
 });
+
+test('generated RSA and ECDSA keys are readable by the OS client on this platform', async t => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(),'brclio-key-algorithms-'));
+  t.after(() => fs.rm(home,{recursive:true,force:true}));
+  for (const [algorithm,prefix] of [['rsa','ssh-rsa'],['ecdsa','ecdsa-sha2-nistp521']]) {
+    const keyPath = path.join(home,algorithm);
+    let spec;
+    try { spec = keygen({keyPath,algorithm},process.platform,process.env); }
+    catch (err) { if (/未找到/.test(err.message)) return t.skip('OpenSSH not installed'); throw err; }
+    // Use a disposable fixture passphrase, not the operator's own keychain.
+    await run(spec.file,[...spec.args,'-q','-N','fixture-only-passphrase'],{timeout:45000,windowsHide:true});
+    assert.equal((await publicPart(keyPath)).text.split(' ')[0],prefix);
+  }
+});

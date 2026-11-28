@@ -19,10 +19,12 @@ window.BrclioConnectionCenter = { bind({ api, newTab }) {
       $('inspect-filter').focus();
     },
     inventory: () => window.BrclioInventoryBridge.open(),
+    snippetSync: () => window.BrclioSnippetSync.open(),
     importHosts: () => window.BrclioHostImportDialog.open(),
     identities: () => window.BrclioIdentityControls.open(),
     sync: () => window.BrclioTerminalSync.open(),
     terminalLock: () => window.BrclioTerminalLock.open(),
+    liveView: () => window.BrclioLiveView.open(),
     sharing: () => window.BrclioSharedVaults.open(),
     devices: () => { devices.showModal(); showProtocol(); },
     passwords: () => {

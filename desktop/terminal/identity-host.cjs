@@ -37,6 +37,20 @@ function algorithm(value = 'ed25519') {
   return value;
 }
 
+async function securityKeyAlgorithms() {
+  const ssh = program('ssh', process.platform, process.env);
+  if (!ssh) return [];
+  keygenProgram(process.platform, process.env);
+  // Query compiled key formats only. This does not enumerate resident keys,
+  // invoke a security token, or perform an enrollment.
+  const { stdout } = await require('node:util').promisify(execFile)(ssh, ['-Q', 'key'], {
+    timeout: 4000, maxBuffer: 65536, windowsHide: true,
+  });
+  const supported = new Set(stdout.split(/\s+/));
+  return [['ed25519-sk', 'sk-ssh-ed25519@openssh.com'], ['ecdsa-sk', 'sk-ecdsa-sha2-nistp256@openssh.com']]
+    .filter(([, key]) => supported.has(key)).map(([type]) => type);
+}
+
 function keygen(value, platform, env) {
   const type = algorithm(value?.algorithm);
   return { file: keygenProgram(platform, env), args: ['-t', type, ...algorithms.get(type), '-a', '64', '-f', newPath(value?.keyPath)] };
@@ -90,6 +104,7 @@ async function verifyCertificate(file) {
 
 function register({ handle, dialog, getOwner, home }) {
   const grants = new Map();
+  handle('identity-security-key-algorithms', securityKeyAlgorithms);
   handle('identity-public', publicPart);
   handle('identity-choose', async mode => {
     if (mode === 'existing' || mode === 'certificate') {
@@ -124,4 +139,4 @@ function register({ handle, dialog, getOwner, home }) {
   } };
 }
 
-module.exports = { register, keygen, publicPart, verifyCertificate };
+module.exports = { register, keygen, publicPart, verifyCertificate, securityKeyAlgorithms };

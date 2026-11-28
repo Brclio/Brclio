@@ -75,8 +75,8 @@
       forget(command);
     }
 
-    function captureInput(record) {
-      const start = resolve(record?.inputStart), end = resolve(record?.start);
+    function readInput(input, cursor) {
+      const start = resolve(input), end = resolve(cursor);
       if (!start || !end || start.row > end.row || end.row - start.row > 32) return;
       const parts = [];
       for (let row = start.row; row <= end.row; row++) {
@@ -87,7 +87,7 @@
         if (row > start.row && !line.isWrapped) return;
         parts.push(line.translateToString(row === end.row || !terminal.buffer.normal.getLine(row + 1)?.isWrapped, row === start.row ? start.column : 0, row === end.row ? end.column : terminal.cols));
       }
-      commandHistory.add(parts.join(''));
+      return parts.join('');
     }
 
     function onCommand(data) {
@@ -108,12 +108,15 @@
       } else if (code === 'B' && command) {
         command.input = true;
         command.inputStart?.mark?.dispose();
-        command.inputStart = commandHistory?.enabled() ? position() : undefined;
+        command.inputStart = commandHistory?.enabled() || commandHistory?.suggestions?.() ? position() : undefined;
       } else if (code === 'C') {
         if (!command) command = mark('prompt');
         if (command && !command.start) {
           command.start = position();
-          if (command.inputStart && commandHistory?.enabled()) captureInput(command);
+          if (command.inputStart && commandHistory?.enabled()) {
+            const input = readInput(command.inputStart,command.start);
+            if (input !== undefined) commandHistory.add(input);
+          }
           command.inputStart?.mark?.dispose();
           command.inputStart = undefined;
         }
@@ -172,6 +175,13 @@
       previous: () => navigate(true),
       next: () => navigate(false),
       selectOutput,
+      inputPrefix() {
+        if (!normal() || !command?.inputStart || command.start) return;
+        const buffer = terminal.buffer.normal, row = buffer.baseY + buffer.cursorY;
+        if (buffer.getLine(row)?.translateToString(true,buffer.cursorX) || buffer.getLine(row + 1)?.isWrapped) return;
+        const cursor = position();
+        try { return readInput(command.inputStart,cursor); } finally { cursor.mark?.dispose(); }
+      },
       dispose() {
         for (const handler of handlers) handler.dispose();
         for (const record of history.splice(0)) forget(record);

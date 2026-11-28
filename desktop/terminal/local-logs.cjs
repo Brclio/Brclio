@@ -187,6 +187,11 @@ function registerLogs({ handle, owner, directory, storage, target }) {
     return next;
   }
   handle('local-logs', action);
-  return { observe, reset };
+  return { observe, reset, async readStopped(expected,id) {
+    const before = epoch;
+    if ((await owner()) !== expected || before !== epoch) throw new Error('日志账号已变化。');
+    if (active?.log.id === id) throw new Error('请先停止这份日志的录制。');
+    return read(expected,id);
+  } };
 }
 module.exports = { registerLogs };

@@ -9,13 +9,14 @@
     <p>在这台设备启用后，重新进入终端、切换账号、系统锁屏或闲置五分钟均需解锁。</p>
     <form><label>本机终端 PIN <input name="pin" type="password" inputmode="numeric" minlength="6" maxlength="12" pattern="[0-9]{6,12}" autocomplete="off" placeholder="6 至 12 位数字" required></label>
     <label data-lock="repeat">再次输入 PIN <input name="repeat" type="password" inputmode="numeric" autocomplete="off" maxlength="12"></label>
-    <label data-lock="biometric"><input name="biometric" type="checkbox">允许 Touch ID 解锁</label>
+    <label data-lock="biometric"><input name="biometric" type="checkbox"><span></span></label>
     <button data-lock="submit" type="submit"></button></form>
     <button data-lock="now" type="button">立即锁定</button><p role="status"></p>`;
   document.body.append(dialog);
   const field = key => dialog.querySelector('[data-lock="' + key + '"]');
   const form = dialog.querySelector('form'), message = dialog.querySelector('[role=status]');
   const api = window.brclioTerminal;
+  field('biometric').querySelector('span').textContent = api?.platform === 'win32' ? '允许 Windows Hello 解锁' : '允许 Touch ID 解锁';
   let enabled, busy;
   function render(state) {
     enabled = state.enabled;

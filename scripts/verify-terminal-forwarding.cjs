@@ -76,6 +76,8 @@ async function verifyIdentity(terminal, app, directory) {
     await terminal.evaluate(() => window.BrclioIdentityControls.open());
     const dialog = terminal.locator('#identity-dialog');
     const click = name => dialog.locator('[data-id-action="' + name + '"]').click();
+    await click('probe');
+    await expect(dialog.locator('#identity-support')).toContainText('OpenSSH');
     await dialog.locator('#identity-name').fill('临时 CI 身份');
     await dialog.locator('#identity-user').fill('fixture');
     await click('generate');

@@ -13,14 +13,18 @@ const { connectProtocol } = require('./terminal/sftp-protocol.cjs');
 const { createBrowser, startConnection } = require('./terminal/sftp-host.cjs');
 const { prepareAskpass } = require('./terminal/sftp-askpass.cjs');
 
+async function cleanup(service, root) {
+  service.close();
+  await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 });
+}
+
 const id = 'brclio-sftp-fixture';
 const daemon = process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32', 'OpenSSH', 'sftp-server.exe') :
   process.platform === 'darwin' ? '/usr/libexec/sftp-server' : '/usr/lib/openssh/sftp-server';
 
-test('real SFTP subsystem browses, uploads, downloads and modifies only selected files', async t => {
+test('real SFTP subsystem browses, uploads, downloads and modifies only selected files', { timeout: 30000 }, async t => {
   try { await fs.access(daemon); } catch { t.skip('OpenSSH server component unavailable'); return; }
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-sftp-test-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const local = path.join(dir, 'local'), remote = path.join(dir, 'remote');
   await fs.mkdir(local); await fs.mkdir(remote);
   const data = randomBytes(235111);
@@ -30,7 +34,7 @@ test('real SFTP subsystem browses, uploads, downloads and modifies only selected
     chooseLocal: async () => local,
     start: () => connectProtocol(spawn(daemon, [], { cwd: remote, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })),
   });
-  t.after(() => browser.close());
+  t.after(() => cleanup(browser, dir));
   const call = (op, args = {}) => browser.action(op, { id, ...args });
   assert.equal((await call('open')).entries.length, 0);
   const localList = await call('choose');
@@ -136,10 +140,9 @@ test('real SSH exchanges prompted private key passphrase and host fingerprint, r
   try { await assert.rejects(rejected.ready, /CHANGED|verification failed/i); } finally { rejected.stop(); }
 });
 
-test('two independent SFTP servers transfer nested directories and never overwrite existing entries', async t => {
+test('two independent SFTP servers transfer nested directories and never overwrite existing entries', { timeout: 30000 }, async t => {
   try { await fs.access(daemon); } catch { t.skip('OpenSSH server component unavailable'); return; }
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-two-sftp-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const remoteA = path.join(root, 'server-a'), remoteB = path.join(root, 'server-b'), local = path.join(root, 'local');
   await Promise.all([remoteA, remoteB, local].map(dir => fs.mkdir(dir)));
   const label = '两端 [files]';
@@ -152,7 +155,7 @@ test('two independent SFTP servers transfer nested directories and never overwri
     chooseLocal: () => local,
     start: dest => connectProtocol(spawn(daemon, [], { cwd: dest.host === 'first' ? remoteA : remoteB, windowsHide: true })),
   });
-  t.after(() => service.close());
+  t.after(() => cleanup(service, root));
   const call = (op, args = {}) => service.action(op, { id, ...args });
   await call('open', { target: { host: 'first' } });
   await call('connect', { side: 'local', target: { host: 'second' } });
@@ -183,10 +186,9 @@ test('two independent SFTP servers transfer nested directories and never overwri
   }
 });
 
-test('canceling a real inter-server transfer removes partial data and leaves both browsers usable', async t => {
+test('canceling a real inter-server transfer removes partial data and leaves both browsers usable', { timeout: 30000 }, async t => {
   try { await fs.access(daemon); } catch { t.skip('OpenSSH server component unavailable'); return; }
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-sftp-cancel-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const source = path.join(root, 'src'), destination = path.join(root, 'dest');
   await fs.mkdir(source); await fs.mkdir(destination);
   await fs.mkdir(path.join(source, 'tree'));
@@ -208,12 +210,12 @@ test('canceling a real inter-server transfer removes partial data and leaves bot
     }
     return client;
   } });
-  t.after(() => { resume(); service.close(); });
+  t.after(() => { resume(); return cleanup(service, root); });
   const call = (op, args = {}) => service.action(op, {id, ...args});
   await call('open', { target: { host: 'first' } });
   await call('connect', { side: 'local', target: { host: 'second' } });
   const copying = call('transfer', { side: 'remote', name: 'tree' });
-  await writing;
+  await Promise.race([writing, copying.then(() => { throw new Error('Transfer finished before the destination received any bytes'); })]);
   assert.equal((await call('progress')).size, 100000);
   assert.equal((await call('progress')).current, 'tree/large');
   await call('cancel');
@@ -224,10 +226,9 @@ test('canceling a real inter-server transfer removes partial data and leaves bot
   assert.deepEqual((await call('list', {side: 'local'})).entries, []);
 });
 
-test('external editor changes require confirmation, reject stale remote versions, retain file mode, and remove local drafts', async t => {
+test('external editor changes require confirmation, reject stale remote versions, retain file mode, and remove local drafts', { timeout: 30000 }, async t => {
   try { await fs.access(daemon); } catch { t.skip('OpenSSH server component unavailable'); return; }
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-sftp-editor-test-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const remote = path.join(root, 'note.txt');
   await fs.writeFile(remote, 'original', { mode: 0o640 });
   const originalMode = (await fs.stat(remote)).mode & 0o777;
@@ -236,7 +237,7 @@ test('external editor changes require confirmation, reject stale remote versions
     start: () => connectProtocol(spawn(daemon, [], { cwd: root, windowsHide: true })),
     chooseEditor: async () => 'fixture-editor', launchEditor: (file, application) => { edited = file; chosen = application; },
   });
-  t.after(() => service.close());
+  t.after(() => cleanup(service, root));
   const call = (op, args = {}) => service.action(op, { id, ...args });
   await call('open');
   await call('edit-file', { side: 'remote', name: 'note.txt', choose: true });

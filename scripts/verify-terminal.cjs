@@ -171,6 +171,15 @@ async function main() {
     await require('./verify-terminal-center.cjs').verifyConnectionCenter(terminal);
     await require('./verify-terminal-forwarding.cjs').verifyForwarding(terminal);
     await require('./verify-terminal-forwarding.cjs').verifyIdentity(terminal, app, temporary);
+    if (windows && executable) {
+      const hello = await app.evaluate(async ({ app }) => {
+        const load = process.getBuiltinModule('module').createRequire(app.getAppPath() + '/package.json');
+        const native = load(load('node:path').join(process.resourcesPath, 'terminal-auth', 'brclio_hello.node'));
+        return { available: await native.available(), invalidWindow: await native.verify(Buffer.alloc(8)) };
+      });
+      assert.equal(typeof hello.available, 'boolean');
+      assert.equal(hello.invalidWindow, false);
+    }
     await require('./verify-terminal-sftp.cjs').verifySftpHelper(app);
     await require('./verify-terminal-sftp.cjs').verifySftpEntry(terminal);
     await terminal.locator('#terminal-actions').click();

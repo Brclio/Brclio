@@ -137,10 +137,10 @@
 
   function groupConfig(value) {
     const group = groupPath(value?.group);
-    // Local identities, certificates and agent forwarding must be selected per host.
+    const identity = value.identity ? label(value.identity, 64, '请选择本机 SSH 身份。') : '';
     const { user, port, jump, environment } = endpoint({ host: 'group', user: value.user, port: value.port,
       jump: value.jump, environment: value.environment });
-    return { group, ...(user && { user }), ...(port && { port }), ...(jump && { jump }), ...(environment && { environment }) };
+    return { group, ...(user && { user }), ...(port && { port }), ...(jump && { jump }), ...(environment && { environment }), ...(identity && { identity }) };
   }
 
   function resolve(value, configs) {
@@ -198,10 +198,45 @@
           !Array.isArray(library.recent) || library.recent.length > 24) throw new Error('已保存的主机库格式无效。');
       const configs = library.groupConfigs ?? [];
       if (!Array.isArray(configs) || configs.length > 128) throw new Error('本机分组配置格式无效。');
-      return { hosts: library.hosts.map(named), recent: library.recent.map(recent), groupConfigs: configs.map(groupConfig) };
+      const approvals = library.groupKeyGrants ?? [];
+      if (!Array.isArray(approvals) || approvals.length > 2048 || approvals.some(item =>
+        typeof item?.name !== 'string' || typeof item.binding !== 'string' || item.binding.length > 8192)) throw new Error('本机分组身份授权格式无效。');
+      return { hosts: library.hosts.map(named), recent: library.recent.map(recent), groupConfigs: configs.map(groupConfig), groupKeyGrants: approvals };
     }
     const write = library => storage.setItem(libraryKey, JSON.stringify(library));
     const notify = () => { if (typeof window === 'object') window.dispatchEvent(new Event('brclio-terminal-library-changed')); };
+    function candidate(value, data) {
+      if (!value?.name || !value.inheritGroup || !value.group || value.identityFile) return null;
+      const path = groupPath(value.group);
+      const configured = data.groupConfigs.filter(item => item.identity && (path === item.group || path.startsWith(item.group + '/')))
+        .sort((a, b) => b.group.length - a.group.length)[0];
+      if (!configured) return null;
+      const model = typeof module === 'object' && module.exports ? require('./identity-model.js') : window.BrclioIdentities;
+      const identity = model.store(storage).all().find(item => item.name === configured.identity);
+      if (!identity) return null;
+      const target = resolve(value, data.groupConfigs);
+      if (!target.user) target.user = identity.user;
+      const binding = JSON.stringify([value.name, path, configured.group, identity.name, identity.user, identity.path, routing(target)]);
+      const approved = data.groupKeyGrants.some(grant => grant.name === value.name && grant.binding === binding);
+      return { target, identity, binding, approved };
+    }
+    function prune(data) {
+      data.groupKeyGrants = data.groupKeyGrants.filter(grant => {
+        const host = data.hosts.find(item => item.name === grant.name);
+        return host && candidate(host, data)?.binding === grant.binding;
+      });
+    }
+    function connection(value, data) {
+      if (value.groupKeySource) {
+        const current = data.hosts.find(item => item.name === value.groupKeySource);
+        const access = candidate(current, data);
+        if (!access?.approved || routing(access.target) !== routing(value)) throw new Error('分组身份授权已变化，请从主机库重新选择。');
+        value = current;
+      }
+      const access = candidate(value, data);
+      if (access?.approved) return { ...access.target, identityFile: access.identity.path, groupKeySource: value.name };
+      return resolve(value, data.groupConfigs);
+    }
     function updateGroups(group, item) {
       const data = read();
       const next = data.groupConfigs.filter(config => config.group !== group);
@@ -214,6 +249,7 @@
         changed.add(host.name);
       }
       data.groupConfigs = next;
+      prune(data);
       data.recent = data.recent.filter(entry => !changed.has(entry.name));
       write(data);
       notify();
@@ -221,7 +257,24 @@
     return {
       all: () => read().hosts,
       groupConfigs: () => read().groupConfigs,
-      resolve: value => resolve(value, read().groupConfigs),
+      resolve: value => connection(value, read()),
+      groupCredential: value => candidate(value, read()),
+      authorizeGroupKey(name, binding) {
+        const data = read();
+        const info = candidate(data.hosts.find(host => host.name === name), data);
+        if (!info || info.binding !== binding) throw new Error('请先保存主机，再确认当前分组身份和目标。');
+        data.groupKeyGrants = [...data.groupKeyGrants.filter(item => item.name !== name), { name, binding }];
+        write(data); notify();
+      },
+      revokeGroupKey(name) {
+        const data = read();
+        data.groupKeyGrants = data.groupKeyGrants.filter(item => item.name !== name);
+        write(data); notify();
+      },
+      pruneGroupKeys() {
+        const data = read(), before = data.groupKeyGrants.length;
+        prune(data); if (data.groupKeyGrants.length !== before) write(data);
+      },
       saveGroup(value) {
         const item = groupConfig(value);
         updateGroups(item.group, item);
@@ -235,6 +288,7 @@
         if (hosts.length !== names.size) throw new Error('主机名称重复。');
         const library = read();
         library.hosts = hosts;
+        prune(library);
         library.recent = library.recent.filter(item => !item.name || names.has(item.name));
         write(library);
       },
@@ -252,6 +306,7 @@
           library.recent = library.recent.map(entry => entry.name === previous ?
             recent({ ...resolve(item, library.groupConfigs), name: item.name, kind: entry.kind }) : entry);
         }
+        prune(library);
         write(library);
         notify();
         return item;
@@ -259,6 +314,7 @@
       remove(name) {
         const library = read();
         library.hosts = library.hosts.filter(host => host.name !== name);
+        library.groupKeyGrants = library.groupKeyGrants.filter(item => item.name !== name);
         library.recent = library.recent.filter(entry => entry.name !== name);
         write(library);
         notify();
@@ -266,6 +322,7 @@
       recordUse(kind, target, name) {
         const library = read();
         const item = recent({ ...target, kind, name });
+        if (target.groupKeySource) delete item.identityFile;
         const signature = value => JSON.stringify([value.kind, value.host, value.user, value.port, value.jump, value.proxy, value.proxyUser, value.identityFile, value.certificateFile, value.agentForwarding]);
         library.recent = [item, ...library.recent.filter(entry => signature(entry) !== signature(item))].slice(0, 24);
         write(library);

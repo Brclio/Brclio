@@ -145,6 +145,19 @@
     if (canWrite) content.append(form.node);
 
     if (vault.role === 'owner') {
+      const domains = input('允许邀请的已验证邮箱域名',1024);
+      domains.value = (vault.inviteDomains || []).join(', ');
+      domains.placeholder = '留空允许所有域名';
+      content.append(el('h3','邀请域名规则'),row(domains,button('保存域名规则',() => update('invite-domains',
+        {domains:domains.value.toLowerCase().split(/[,，\s]+/).filter(Boolean)}))),
+        el('small','适用于新邀请及待接受的邀请。已加入成员可在下方移除。'));
+      const audit = el('details');
+      audit.append(el('summary','最近管理记录'));
+      const labels = {invite:'发送邀请',accept:'接受邀请',decline:'拒绝邀请',role:'修改权限',revoke:'撤销访问',
+        leave:'退出主机库','set-hosts':'更新共享主机','invite-domains':'设置邀请域名'};
+      for (const entry of [...(vault.audit || [])].reverse()) audit.append(el('p',
+        new Date(entry.at).toLocaleString() + ' · ' + entry.actor + ' · ' + (labels[entry.action] || entry.action) + (entry.subject ? ' · ' + entry.subject : '')));
+      content.append(audit);
       const username = input('Brclio 用户名',32), role = roleSelect();
       content.append(el('h3','成员与邀请'),row(username,role,button('发送邀请',() =>
         update('invite',{username:username.value.trim().normalize('NFKC'),role:role.value}))));

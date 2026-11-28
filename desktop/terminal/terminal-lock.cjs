@@ -29,11 +29,12 @@ function terminalLock({directory, secureStorage, biometrics, now = Date.now}) {
     queue = result.catch(() => {});
     return result;
   }
-  function capability() {
-    try {return biometrics().available();} catch {return false;}
+  async function capability() {
+    try {return await biometrics().available() === true;} catch {return false;}
   }
-  function status() {
-    return {enabled:Boolean(record),locked,biometricAvailable:capability()};
+  async function status() {
+    const biometricAvailable = await capability();
+    return {enabled:Boolean(record),locked,biometricAvailable};
   }
   function lock() {
     generation++;
@@ -76,7 +77,7 @@ function terminalLock({directory, secureStorage, biometrics, now = Date.now}) {
       const start = generation;
       return transact(async () => {
         if (record || !validPin(pin) || typeof biometric !== 'boolean') throw new Error('请输入 6 至 12 位数字 PIN。');
-        if (biometric && !capability()) throw new Error('此设备无法使用 Touch ID。');
+        if (biometric && !await capability()) throw new Error('此设备暂时无法使用系统身份验证。');
         const salt = randomBytes(16), digest = await derive(pin,salt,32);
         const storage = secureStorage();
         if (!await storage.isAsyncEncryptionAvailable()) throw new Error('系统密钥存储暂不可用。');
@@ -104,9 +105,10 @@ function terminalLock({directory, secureStorage, biometrics, now = Date.now}) {
         if (!locked || !record) throw new Error('终端锁状态已变化。');
         const fields = await protectedFields();
         if (method === 'pin') await verify(pin,fields);
-        else if (method === 'biometric' && fields.biometric && capability())
+        else if (method === 'biometric' && fields.biometric && await capability()) {
+          requireSame(start,active);
           await biometrics().authenticate();
-        else throw new Error('此终端未开启 Touch ID 解锁，请输入 PIN。');
+        } else throw new Error('此终端未开启可用的系统身份验证，请输入 PIN。');
         requireSame(start,active);
         if (record.failures) await persist({...record,failures:0,until:0});
         requireSame(start,active);
@@ -115,7 +117,7 @@ function terminalLock({directory, secureStorage, biometrics, now = Date.now}) {
     },
     async offeredBiometric() {
       await initialize();
-      return Boolean(record && capability() && (await protectedFields()).biometric);
+      return Boolean(record && (await protectedFields()).biometric && await capability());
     },
   };
 }

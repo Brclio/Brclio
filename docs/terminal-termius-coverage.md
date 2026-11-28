@@ -31,14 +31,14 @@
 | 主机、分组、标签 | 支持增删改、复制、收藏、分组过滤、搜索和最近连接。 |
 | 分组配置与环境变量 | 可按层级继承 SSH 用户名、端口、跳板和变量；主机可覆盖。组配置与环境变量仅在当前设备的账号内使用。组级凭据及其同步尚缺。服务端须允许接收相应环境变量。 |
 | Shell 历史 | 设备内按账号主动开启，可按命令内容搜索或清理。只采集带集成标记的已回显单行命令。远端 Bash 的既有历史文件和跨设备历史尚未接入。 |
-| 命令补全 | 搜索当前账号的命令历史、剪藏和常用命令，选择后填入当前窗格；普通 Shell 的 Tab 仍可用。尚缺基于远端文件与参数的行内建议。 |
+| 命令补全 | 搜索当前账号的命令历史、剪藏和常用命令，选择后填入当前窗格；启用建议后，在有 Shell 标记的命令行输入前缀会显示可点击的单行补全，普通 Shell 的 Tab 仍可用。尚缺基于远端文件与参数的行内建议。 |
 | 工作区 | 多标签、分屏、命名、保存/恢复布局及工作区模板。选择器支持查看运行状态和最近活动；恢复远端连接需用户选择。 |
 | 剪藏 | 可分包、搜索、填写变量、预览、填入当前窗格。旧的剪藏和笔记可继续使用。 |
 | 启动剪藏 | 每台已保存的主机可指定启动剪藏；建立会话后由用户确认，填入当前窗格。 |
 | 多窗格输入与片段多目标执行 | 已打开窗格支持手动广播。未提供自动登录一组主机并运行片段的功能。 |
 | OpenSSH config 导入 | 选择文件后预览具体主机，支持 User、Port、IdentityFile、CertificateFile、ProxyJump、部分 Host 通配规则和首值优先。Include、Match 条件段及 ProxyCommand 不执行。私钥文件及 known_hosts 不批量导入。 |
 | CSV 和 PuTTY 导入 | CSV 支持名称、地址、端口、用户、组和标签；PuTTY 支持 UTF-8/UTF-16 注册表导出的 SSH 会话。PuTTY 自动注册表发现、PPK 转换、隧道与密码迁移尚缺。 |
-| MobaXterm 与 SecureCRT 导入 | 尚缺完整的会话、隧道、加密导出及凭据迁移。 |
+| MobaXterm 与 SecureCRT 导入 | MobaXterm 明文书签支持 .mxtsessions、INI 的 Bookmarks 节和单个 .moba，读取 SSH 主机、端口、用户名、嵌套分组，支持 Windows-1252。SecureCRT 支持明文 VanDyke 设置 XML 的 Sessions 树和单个会话 INI，读取 SSH 主机、端口、用户名和 XML 分组。文件选择后逐项预览，加密导出、密码、隧道及其他协议配置尚未覆盖。[SecureCRT 官方导出说明](https://www.vandyke.com/products/securecrt/faq/)、[SecureCRT XML 生成示例](https://github.com/tonhe/moba2secure/blob/main/moba2secure.py)、[MobaXterm 书签格式及样例](https://gist.github.com/Ruzgfpegk/ab597838e4abbe8de30d7224afd062ea)。 |
 
 测试入口包括 [分组与 SSH 变量](../desktop/terminal-groups.test.cjs)、[命令边界](../desktop/terminal-marks.test.cjs)、[剪藏](../scripts/verify-terminal-snippets.cjs) 和 [导入](../desktop/terminal-host-import.test.cjs)。官方参考包括 [现有主机导入](https://docs.termius.com/getting-started/import-existing-hosts)、[工作区](https://docs.termius.com/terminal/workspaces)、[剪藏](https://docs.termius.com/terminal/snippets) 和 [Shell 集成](https://docs.termius.com/terminal/autocomplete-and-shell-integration)。
 
@@ -47,13 +47,13 @@
 | 功能 | Brclio 测试版与验收边界 |
 | --- | --- |
 | 本地与个人库 | 支持仅本机使用；登录后可选择同步主机及转发模板，按账号分区、检查版本并处理冲突。 |
-| 跨设备 | 桌面个人主机及转发模板可同步。私钥文件、密码、日志、剪藏、终端历史和布局均不在现有个人同步接口内。手机配对按用户先前指定的范围暂缓。 |
+| 跨设备 | 桌面个人主机及转发模板可同步。个人剪藏和剪藏包有独立同步开关、按条目处理冲突。笔记、私钥文件、密码、日志、终端历史和布局均不在主机同步接口内。手机配对按用户先前指定的范围暂缓。 |
 | 团队及多个库 | 测试接口可创建多个共享主机库，逐人邀请、接受、授予读/编辑权限、撤销、退出。成员必须由有效账号授权，私人主机不会因加入团队自动共享。 |
 | 安全数据共享 | 仅分享明确选中的主机名称、地址、SSH 用户名和端口。资料存储在用户指定的私有 GitHub 仓库。端到端加密的全量团队保险库与密钥共享尚缺。 |
-| 实时协作、多人终端 | 共享主机库提供版本冲突检查。多人共同控制实时 Shell 尚缺。 |
+| 实时协作、多人终端 | 共享主机库提供版本冲突检查。独立 beta Worker 支持双方同意后分享指定窗格的可见文本，见 [只读协作的边界与限额](../cloudflare/terminal-live-beta.md)。公网部署及多人共同控制实时 Shell 尚缺。 |
 | 本地会话记录 | 登录后在选定窗格手动开启，支持查看、按主机筛选、删除、设置时间保留策略。已有旧日志可在“本地或未记录主机”中查到。 |
 | 书签 | 支持给日志选区或末尾添加书签、跳转；按时间清理时保留带书签的日志。 |
-| 跨设备 / 团队日志 | 尚缺按主机、成员跨设备访问日志、团队保留策略与审计。 |
+| 跨设备 / 团队日志 | 已停止的本机日志可逐份确认分享给个人账号或含该主机的共享库。独立口令在设备端加密正文和书签。可按主机和记录者筛选，读者只读，记录者和库主可删除副本。逐份设置 1、7、30、90 或 365 天访问期限，访问时清理过期记录，Git 历史可能保留密文。云端保留名称、主机、记录者和日期。团队强制统一保留策略和访问审计尚缺。 |
 
 参见 [存储与账号边界](terminal-account-sync.md)、[两账号共享验证](../scripts/verify-terminal-shared-vaults.cjs) 和 [会话日志验证](../desktop/terminal-local-logs.test.cjs)。官方参考包括 [团队库](https://docs.termius.com/team-collaboration/team-vaults)、[团队日志](https://docs.termius.com/team-collaboration/team-session-logs) 和 [密钥与密码同步](https://docs.termius.com/keychain/sync-of-keys-and-passwords)。
 

@@ -34,3 +34,30 @@ test('PuTTY import extracts user-selected SSH sessions from registry exports, pr
   assert.throws(() => parse('__proto__','text'));
   assert.throws(() => parse('csv','a'.repeat(1024*1024+1)));
 });
+
+test('MobaXterm plaintext SSH bookmarks retain their folder and login without touching credentials or tunnel sections', () => {
+  const result = parse('mobaxterm', [
+    '[Passwords]','secret=#109#0%excluded.example.test%22%hidden',
+    '[Bookmarks]','SubRep=','ImgNum=42','Gateway=#109#0%first.example.test%22%<default>%%-1#MobaFont%10',
+    '[Bookmarks_1]','Gateway=#109#0%second.example.test%2200%tester%%-1#MobaFont%10',
+    'SubRep=Region\\Lab','ImgNum=41','Old=#109#1%telnet.example.test%23%login',
+    '[Tunnels]','Tunnel=#109#0%ignored.example.test%22%ignored',
+  ].join('\r\n'));
+  assert.deepEqual(result.hosts, [
+    {name:'Gateway',host:'first.example.test',user:'',port:22},
+    {name:'Gateway · Region/Lab',host:'second.example.test',user:'tester',port:2200,group:'Region/Lab'},
+  ]);
+  assert.equal(result.notices.length,1);
+  assert.equal(parse('mobaxterm','Local=#109#0%one.example.test%22%operator%%#', 'local.moba').hosts.length,1);
+  assert.throws(() => parse('mobaxterm','[Passwords]\nany=foo'), /Bookmarks/);
+});
+
+test('SecureCRT single exported INI reads only public SSH fields and hex port', () => {
+  const result = parse('securecrt', [
+    '# $language = "English"', 'S:"Hostname"=appliance.example.test', 'S:"Protocol Name"=SSH2',
+    'S:"Username"=operator', 'D:"[SSH2] Port"=000008ae','S:"Password V2"=ignored-test-placeholder',
+  ].join('\r\n'), 'Lab appliance.ini');
+  assert.deepEqual(result.hosts, [{name:'Lab appliance',host:'appliance.example.test',port:2222,user:'operator'}]);
+  assert.throws(() => parse('securecrt','[encrypted]\nsample=fixture'), /未找到/);
+  assert.throws(() => parse('securecrt','<!DOCTYPE x [<!ENTITY y "unused">]><VanDyke/>'), /DTD/);
+});

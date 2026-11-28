@@ -44,6 +44,33 @@ async function verifySnippetLibrary(page) {
   return snippet;
 }
 
+async function verifyStartupDraft(page) {
+  await openSnippetEditor(page);
+  await page.locator('#snippets-name').fill('变量测试');
+  await page.locator('#snippets-text').fill('echo {{message}}');
+  await page.locator('#snippets-template').check();
+  await page.locator('#snippets-save').click();
+  const snippet = await page.locator('#snippets-list').inputValue();
+  await page.locator('#actions-close').click();
+  await page.evaluate(() => window.BrclioRemoteConnections.open());
+  await page.locator('#remote-host').fill('synthetic.invalid');
+  await page.locator('#remote-startup-snippet').selectOption(snippet);
+  await page.locator('#remote-ssh').click();
+  const target = page.locator('.pane.active:visible');
+  const id = await target.getAttribute('data-id');
+  await target.locator('.startup-snippet').click();
+  const draft = page.locator('#snippet-draft');
+  await draft.locator('input[name=message]').fill('draft only');
+  await draft.locator('[data-fill]').click();
+  assert.deepEqual(await page.evaluate(() => inputProbe.writes), []);
+  await draft.locator('[data-preview]').fill('user confirmed');
+  await draft.locator('[data-send]').click();
+  await page.waitForFunction(() => inputProbe.writes.length);
+  assert.deepEqual(await page.evaluate(() => inputProbe.writes.map(({ id, data }) => [id, data])), [[id, 'user confirmed']]);
+  await page.locator('#close-pane').click();
+  await page.evaluate(() => { inputProbe.writes.length = 0; });
+}
+
 for (const platform of ['darwin', 'win32']) {
   test(platform + ' broadcasts only deliberate input to explicitly joined local panes', async () => {
     const browser = await chromium.launch({ executablePath: process.env.BRCLIO_CHROME ||
@@ -64,6 +91,7 @@ for (const platform of ['darwin', 'win32']) {
             throw new Error('The signed-out terminal fixture must not contact account services.');
           },
           create: async ({ id }) => ({ id, shell: 'test', pid: 1 }),
+          remoteClients: async () => ({ ssh: true, sftp: true }),
           write: async (id, data, binary) => { state.writes.push({ id, data, binary }); },
           close: async () => {}, resize: async () => {}, ack() {},
           onData(fn) { listeners.add(fn); return () => listeners.delete(fn); }, onExit: () => () => {},
@@ -92,6 +120,7 @@ for (const platform of ['darwin', 'win32']) {
       await page.waitForFunction(() => !document.querySelector('#inspect-panes').childElementCount);
       await page.setViewportSize({ width: 1280, height: 720 });
       const snippet = await verifySnippetLibrary(page);
+      await verifyStartupDraft(page);
       await active.locator('textarea').focus();
       await page.keyboard.press('Control+k');
       await page.waitForFunction(() => inputProbe.writes.some(item => item.data === '\x0b'));

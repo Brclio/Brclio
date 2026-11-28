@@ -39,5 +39,6 @@ module.exports = async function afterPack(context) {
   await mkdir(terminalAuth, { recursive: true });
   await require('../desktop/terminal/sftp-askpass.cjs').compileWindows(
     path.join(__dirname, '../desktop/terminal/sftp-askpass-win.cs'), path.join(terminalAuth, 'askpass.exe'));
+  await cp(await require('../desktop/terminal/windows-hello/build.cjs').build(), path.join(terminalAuth, 'brclio_hello.node'));
   console.log(JSON.stringify(result));
 };

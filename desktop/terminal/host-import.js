@@ -139,9 +139,10 @@
     finish();
   }
 
-  function parse(format, text) {
+  function parse(format, text, fileName) {
     if (typeof text !== 'string' || text.length > limit || text.includes('\0')) throw new Error('请选择 1 MiB 以内的文本配置文件。');
     const hosts = [], notices = new Set(), names = new Set();
+    const qualified = new Set();
     let skipped = 0;
     const warn = message => { if (notices.size < 12) notices.add(message); };
     const add = (input, position) => {
@@ -149,12 +150,22 @@
       let item;
       try { item = library.named(input); }
       catch (error) { skipped++; warn(String(position).slice(0,64) + ' · ' + error.message); return; }
-      if (names.has(item.name)) { skipped++; warn('文件内的重名主机已略过'); return; }
+      if (format === 'securecrt' || format === 'mobaxterm') {
+        const identity = JSON.stringify([item.group || '', item.name]);
+        if (qualified.has(identity)) { skipped++; warn('文件内的重名会话已略过'); return; }
+        qualified.add(identity);
+        if (names.has(item.name)) {
+          const base = (item.name + ' · ' + (item.group || '根目录')).slice(0, 58);
+          item.name = base;
+          for (let i = 2; names.has(item.name); i++) item.name = base + ' (' + i + ')';
+        }
+      } else if (names.has(item.name)) { skipped++; warn('文件内的重名主机已略过'); return; }
       names.add(item.name); hosts.push(item);
     };
-    const readers = new Map([['csv',csv],['openssh',config],['putty',putty]]);
+    const sessions = typeof module === 'object' ? require('./host-import-sessions.js') : window.BrclioSessionImport;
+    const readers = new Map([['csv',csv],['openssh',config],['putty',putty],['securecrt',sessions.securecrt],['mobaxterm',sessions.moba]]);
     if (!readers.has(format)) throw new Error('不支持的导入格式。');
-    readers.get(format)(text.replace(/^\uFEFF/,''), add, warn);
+    readers.get(format)(text.replace(/^\uFEFF/,''), add, warn, fileName);
     return { hosts, notices:[...notices], skipped };
   }
   const api = { parse, limit };

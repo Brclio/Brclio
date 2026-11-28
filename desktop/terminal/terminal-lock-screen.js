@@ -12,4 +12,5 @@ async function unlock(method) {
 }
 document.querySelector('form').onsubmit = event => {event.preventDefault(); unlock('pin');};
 touch.onclick = () => unlock('biometric');
+touch.textContent = '使用 ' + window.brclioUnlock.systemVerification + ' 解锁';
 window.brclioUnlock.biometric().then(available => {touch.hidden = !available;}).catch(() => {});

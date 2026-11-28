@@ -20,6 +20,7 @@
         // Reconstruct from each feature's allowlisted schema. Device paths, secrets,
         // recent connections, transcripts and active processes never enter the payload.
         const target = key === 'hosts' ? item : item.connection;
+        delete item.groupKeyHost;
         for (const field of localCredentials) delete target[field];
         if (names.has(item.name)) throw new Error('同步配置包含重复名称。');
         names.add(item.name);
@@ -80,6 +81,7 @@
             for (const field of localCredentials) delete previousAddress[field];
             if (equal(previousAddress, hosts.endpoint(target))) {
               for (const field of localCredentials) if (previous[field]) target[field] = previous[field];
+              if (key === 'forwards' && prior.groupKeyHost) record.groupKeyHost = prior.groupKeyHost;
             }
           }
         }

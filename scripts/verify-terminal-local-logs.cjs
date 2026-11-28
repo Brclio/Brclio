@@ -68,6 +68,7 @@ async function main() {
     await expect(dialog.locator('option').filter({ hasText: 'Command output' })).toHaveCount(1);
     await dialog.getByRole('button', { name: '停止记录' }).click();
     await expect(dialog.getByRole('button', { name: '停止记录' })).toBeDisabled();
+    await require('./verify-terminal-log-cloud.cjs').verifyCloudCopy(app,terminal,dialog);
     await dialog.getByRole('button', { name: '删除所选日志' }).click();
     await dialog.getByRole('button', { name: '确认删除' }).click();
     await expect(dialog.getByRole('listbox').locator('option')).toHaveCount(0);

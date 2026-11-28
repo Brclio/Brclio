@@ -19,6 +19,7 @@ window.BrclioIdentityControls = (() => {
         <label class="forward-wide">私钥文件路径<input id="identity-path" readonly></label>
       </div>
       <p class="forward-hint">私钥保存在你选择的位置。生成新密钥时，在 OpenSSH 标签中输入并确认保护口令。使用 FIDO2 时，请插入支持所选算法的安全密钥，按 OpenSSH 提示操作。</p>
+      <button type="button" data-id-action="probe">检查本机 FIDO2 算法支持</button><span id="identity-support" role="status"></span>
       <div class="network-actions"><button type="button" data-id-action="choose">选择已有私钥</button><button type="button" data-id-action="generate">生成密钥</button><button type="button" data-id-action="save">保存身份</button><button type="button" data-id-action="public">查看公钥</button><button type="button" data-id-action="copy" hidden>复制公钥</button><button type="button" data-id-action="remove">移除身份引用</button></div>
       <p id="identity-status" role="status"></p><p id="identity-fingerprint"></p>`;
     document.body.append(dialog);
@@ -52,6 +53,15 @@ window.BrclioIdentityControls = (() => {
     }
     field('list').onchange = guard(() => select(field('list').value));
     action('close').onclick = () => dialog.close();
+    action('probe').onclick = guard(async () => {
+      const generation = account;
+      const supported = await api.securityKeyAlgorithms();
+      if (generation !== account || !dialog.open) return;
+      const select = field('algorithm');
+      for (const option of select.options) if (option.value.endsWith('-sk')) option.disabled = !supported.includes(option.value);
+      if (select.selectedOptions[0]?.disabled) select.value = 'ed25519';
+      field('support').textContent = supported.length ? 'OpenSSH 支持 ' + supported.join('、') + '。生成时将验证设备。' : '本机 OpenSSH 未列出 FIDO2 密钥算法。';
+    });
     dialog.addEventListener('close', () => { version++; clearPublic(); });
     action('choose').onclick = guard(async () => {
       const token = version;

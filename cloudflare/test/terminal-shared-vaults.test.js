@@ -113,3 +113,22 @@ test('host schema rejects credentials, local paths and commands; malformed actio
   f.before(() => { f.files.get('users/alice/credentials.json').sessions = {}; });
   assert.equal((await f.change('alice','set-hosts',1,{hosts:[host]})).status,401);
 });
+
+test('only the vault owner can set approved invitation domains and inspect the management audit', async () => {
+  const f = await fixture();
+  await f.create();
+  const bob = f.files.get('users/bob/profile.json');
+  Object.assign(bob,{email:'bob@allowed.example',emailVerified:false});
+  assert.equal((await f.change('alice','invite-domains',1,{domains:['allowed.example']})).status,200);
+  assert.equal((await f.change('alice','invite',2,{username:'bob',role:'reader'})).status,403);
+  bob.emailVerified = true;
+  assert.equal((await f.change('alice','invite',2,{username:'bob',role:'reader'})).status,200);
+  bob.email = 'bob@other.example';
+  assert.equal((await f.change('bob','accept',3)).status,403);
+  bob.email = 'bob@allowed.example';
+  const member = (await f.change('bob','accept',3)).vault;
+  assert.equal(member.role,'reader');
+  assert.equal(Object.hasOwn(member,'audit'),false);
+  assert.equal((await f.change('bob','invite-domains',4,{domains:[]})).status,403);
+  assert.equal((await f.call('alice','open',f.ref)).vault.audit.at(-1).action,'accept');
+});

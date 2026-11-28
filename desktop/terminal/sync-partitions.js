@@ -158,6 +158,13 @@
         if (revision && storage.getItem(receipt) === JSON.stringify(revision)) return;
         const input = { getItem: key => snapshot[key] ?? null };
         const source = hosts(input), destination = hosts(storage);
+        const identities = combined(parse(storage, identityKey, []), parse(input, identityKey, []), 128);
+        if (source.groupConfigs) source.groupConfigs = source.groupConfigs.map(item => {
+          const { identity, ...config } = item;
+          if (!identity) return item;
+          const moved = identities.mapped.get(identity);
+          return moved ? { ...config, identity: moved } : config;
+        });
         const { hosts: importedHosts, groupConfigs } = mergeHostGroups(destination, source);
         const snippetIds = new Map();
         const importedSnippets = input.getItem(snippets) === null ? null :
@@ -173,9 +180,9 @@
           item.name && merged.mapped.has(item.name) ? { ...item, name: merged.mapped.get(item.name) } : item)];
         const values = [
           [hostKey, { hosts: merged.items, recent: [...new Map(recent.map(item => [JSON.stringify(item), item])).values()].slice(0, 24),
-            ...(groupConfigs.length && { groupConfigs }) }],
-          [forwardKey, combined(parse(storage, forwardKey, []), parse(input, forwardKey, []), 128).items],
-          [identityKey, combined(parse(storage, identityKey, []), parse(input, identityKey, []), 128).items],
+            ...(groupConfigs.length && { groupConfigs }), ...(destination.groupKeyGrants?.length && {groupKeyGrants:destination.groupKeyGrants}) }],
+          [forwardKey, combined(parse(storage, forwardKey, []), parse(input, forwardKey, []).map(({groupKeyHost, ...rule}) => rule), 128).items],
+          [identityKey, identities.items],
         ];
         let profileNames = new Map();
         if (input.getItem(profiles) !== null) {

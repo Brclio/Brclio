@@ -69,7 +69,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci
-      - run: npm ci --prefix cloudflare --omit=dev
+      - name: Build and exercise the Windows Hello desktop ABI
+        if: matrix.platform == 'win'
+        run: node desktop/terminal/windows-hello/build.cjs
+      - run: npm ci --prefix cloudflare
       - name: Provide tmux for native control-mode tests
         if: matrix.platform == 'mac'
         env:
@@ -85,14 +88,26 @@ jobs:
           }
           if (!(Test-Path $server)) { throw 'The native Windows SFTP subsystem is unavailable.' }
       - run: npm run sync
-      - run: node --test desktop/terminal-*.test.cjs
+      - name: Run terminal unit and protocol tests
         shell: bash
-        timeout-minutes: 3
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          files=()
+          for file in desktop/terminal-*.test.cjs; do
+            if [[ "$file" != "desktop/terminal-sftp.test.cjs" ]]; then files+=("$file"); fi
+          done
+          node --test "${files[@]}"
+      - name: Verify native SFTP file operations and cancellation
+        run: node --test desktop/terminal-sftp.test.cjs
+        timeout-minutes: 4
       - name: Verify local-only mode, two-account isolation and two-device sync
         run: |
           node scripts/verify-terminal-sync.cjs
           node scripts/verify-terminal-account-switch.cjs
           node scripts/verify-terminal-shared-vaults.cjs
+          node scripts/verify-terminal-snippet-sync.cjs
+          node scripts/verify-terminal-live-view.cjs
           node scripts/verify-terminal-lock.cjs
           node scripts/verify-terminal-local-logs.cjs
       - name: Exercise the graphical file browser with the local SFTP subsystem

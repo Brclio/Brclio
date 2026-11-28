@@ -18,3 +18,5 @@
 
 #import-preview { display: grid; gap: 4px; max-height: 30vh; overflow: auto; }
 #import-preview label { overflow-wrap: anywhere; }
+
+.command-completion:not([hidden]) { position: absolute; right: 10px; bottom: 8px; z-index: 3; max-width: min(38ch, 70%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 8px; color: var(--ink); background: var(--paper); border: 1px solid var(--border); }
