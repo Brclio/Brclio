@@ -4,6 +4,10 @@
 
 测试 CI 分别提供 `terminal-preview-mac-arm64`、`terminal-preview-mac-x64` 和 `terminal-preview-win-x64`。解开下载包及其中的 ZIP 后，打开 macOS 的 `Brclio Terminal Preview.app` 或 Windows 的 `Open Brclio Terminal.cmd` 即可直接进入终端。预览版使用独立用户目录，禁用正式版更新、全局快捷键、登录启动和右键菜单注册。开发者可在目标系统准备项目依赖和内置媒体运行时后，运行 `node scripts/terminal-preview-build.cjs` 构建并验证本机预览包。
 
+桌面候选版本 `0a31e95` 已通过 Windows x64、macOS Intel、macOS Apple 芯片的打包测试，以及 10 项既有功能回归。[13 项验证与测试包](https://github.com/Brclio/Brclio/actions/runs/46148981700)
+
+账号同步接口已部署到原 Cloudflare Worker。主机、剪藏、共享库、日志四个线上入口均已验证拒绝匿名请求。两设备同步、账号切换、邀请与撤权使用隔离账号测试。实时观看服务仍限隔离环境。[账号服务提交](https://github.com/Brclio/Brclio/commit/444b6cb6e5bff17dc9a0b09db1b71b4277945d0c)
+
 ## 连接、传输与认证
 
 | 功能 | Brclio 测试版与验收边界 |
@@ -25,7 +29,7 @@
 | FIDO2 | SSH 身份窗口可查询系统 OpenSSH 声明的 ECDSA-SK 和 Ed25519-SK 算法，并使用 ssh-keygen 发起生成。实体密钥注册和触摸签名待实测。 |
 | PIN 与生物识别 | 桌面 PIN 锁覆盖闲置、系统锁屏、重启解锁和会话恢复。macOS 接入 Touch ID。Windows 使用带 Brclio 窗口句柄的 UserConsentVerifier，在系统可用且用户已注册 Windows Hello 时提供解锁。实体认证及 SSH 生物识别签名待验。[微软桌面验证接口](https://learn.microsoft.com/en-us/windows/win32/api/userconsentverifierinterop/nf-userconsentverifierinterop-iuserconsentverifierinterop-requestverificationforwindowasync) |
 | SSH ID、设备绑定的 SSH passkey | 外接 FIDO2 与平台生物识别解锁各有独立路径。设备密钥托管、SSH ID 公钥分发及生命周期尚缺。 |
-| 后量子密钥交换 | 主机高级设置可用系统 `ssh -Q kex` 查看已实现的混合算法；每台主机在本机可选“跟随系统默认”或“要求后量子协商”。严格模式为目标 SSH、命令行和图形 SFTP、端口转发强制使用共同支持的混合算法并重新握手。本机 OpenSSH 10.5p1 与独立回环 sshd 实际协商 `mlkem768x25519-sha256`，仅支持传统算法的服务端被拒绝。Windows 结果以实际运行的原生 OpenSSH 版本和隔离 sshd 用例为准。 [协商测试](../desktop/terminal-post-quantum.test.cjs) · [OpenSSH 后量子密钥交换](https://www.openssh.org/pq.html) |
+| 后量子密钥交换 | 主机高级设置可用系统 `ssh -Q kex` 查看已实现的混合算法；每台主机在本机可选“跟随系统默认”或“要求后量子协商”。严格模式为目标 SSH、命令行和图形 SFTP、端口转发强制使用共同支持的混合算法并重新握手。本机 OpenSSH 10.5p1 与独立回环 sshd 实际协商 `mlkem768x25519-sha256`，仅支持传统算法的服务端被拒绝。Windows 严格模式依次检查系统自带及 Program Files 中的微软 OpenSSH，显示支持混合算法的客户端路径。Windows Server 2022 自带客户端已验证拒绝降级。隔离 Windows x64 测试将微软签名的 Win32-OpenSSH 10.4.0.0p1 解压到临时目录，原生客户端与回环测试服务器实测协商 mlkem768x25519-sha256，并拒绝只支持传统算法的服务器。 [Windows 验证](../scripts/verify-terminal-windows-pq.cjs) · [微软安装目录](https://learn.microsoft.com/en-us/troubleshoot/windows-server/system-management-components/upgrade-in-box-openssh-to-latest-openssh-release) [协商测试](../desktop/terminal-post-quantum.test.cjs) · [OpenSSH 后量子密钥交换](https://www.openssh.org/pq.html) |
 
 验证入口包括 [协议、转发及证书](../desktop/terminal-forward.test.cjs)、[SFTP 协议](../desktop/terminal-sftp.test.cjs)、[文件浏览器](../scripts/verify-terminal-sftp.cjs)、[上游代理](../desktop/terminal-proxy.test.cjs)、[身份](../desktop/terminal-identity.test.cjs) 和 [终端锁](../scripts/verify-terminal-lock.cjs)。官方参考包括 [SFTP](https://docs.termius.com/organize-and-connect-to-hosts/managing-files-with-sftp)、[密钥与证书](https://docs.termius.com/keychain/ssh-keys-and-certificates) 和 [SSH ID](https://docs.termius.com/ssh-id-passkeys-for-ssh/what-is-ssh-id)。
 
@@ -53,7 +57,7 @@
 | --- | --- |
 | 本地与个人库 | 支持仅本机使用；登录后可选择同步主机及转发模板，按账号分区、检查版本并处理冲突。 |
 | 跨设备 | 桌面个人主机及转发模板可同步。个人剪藏和剪藏包有独立同步开关、按条目处理冲突。笔记、私钥文件、密码、日志、终端历史和布局均不在主机同步接口内。手机配对按用户先前指定的范围暂缓。 |
-| 团队及多个库 | 测试接口可创建多个共享主机库，逐人邀请、接受、授予读/编辑权限、撤销、退出。成员必须由有效账号授权，私人主机不会因加入团队自动共享。 |
+| 团队及多个库 | 账号服务可创建多个共享主机库，逐人邀请、接受、授予读/编辑权限、撤销、退出。成员必须由有效账号授权，私人主机不会因加入团队自动共享。 |
 | 安全数据共享 | 可逐项分享主机名称、地址、SSH 用户名和端口。所有者与编辑成员也可从个人剪藏选取一条，在预览包名、模板和正文、核对成员及仓库可读范围后共享。接受邀请的只读成员可查看和存入个人剪藏，读取正文时重新校验成员权限。端到端加密的全量团队保险库与密钥共享尚缺。 |
 | 实时协作、多人终端 | 共享主机库提供版本冲突检查。独立 beta Worker 支持双方同意后分享指定窗格的可见文本，见 [只读协作的边界与限额](../cloudflare/terminal-live-beta.md)。观看者可提交单行草稿，由主持人审阅、填入，并亲自按 Enter。公网部署和直接共享键盘控制尚缺。 |
 | 本地会话记录 | 登录后在选定窗格手动开启，支持查看、按主机筛选、删除、设置时间保留策略。已有旧日志可在“本地或未记录主机”中查到。 |
