@@ -65,6 +65,9 @@ body {font-family:var(--sans);font-size:13px;line-height:1.65;color:var(--ink);b
   .app-sidebar:has([data-view="suggestions"]:not([hidden])) .sidebar-note { display: none; }
   .app-sidebar:has([data-view="suggestions"]:not([hidden])) .nav-bottom { margin-top: auto; }
 }
+@media (min-width: 601px) {
+  .app-sidebar:has([data-open-terminal]:not([hidden])) { overflow-y: auto; }
+}
 @media (max-width: 390px) {
   .app-sidebar:has([data-view="suggestions"]:not([hidden])) .brand { justify-self: start; }
   .app-sidebar:has([data-view="suggestions"]:not([hidden])) .nav-main { gap: 10px; }

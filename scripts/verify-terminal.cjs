@@ -34,6 +34,15 @@ async function main() {
       'Brclio initialization: ' + await home.locator('#toast span').textContent());
     if (executable) assert.equal((await home.evaluate(() => window.brclio.getPlatform())).packaged, true);
     assert.equal(await home.evaluate(() => typeof window.brclioTerminal), 'undefined');
+    const mainWindow = await app.browserWindow(home);
+    const originalWindowSize = await mainWindow.evaluate(win => win.getContentSize());
+    await mainWindow.evaluate(win => win.setContentSize(800, 765));
+    await home.locator('.platform-status').scrollIntoViewIfNeeded();
+    await expect(home.locator('.platform-status')).toBeInViewport({ ratio: 1 });
+    await home.locator('#about-button').click();
+    await expect(home.locator('#about-dialog')).toBeVisible();
+    await home.locator('#about-dialog [data-close]').first().click();
+    await mainWindow.evaluate((win, dimensions) => win.setContentSize(...dimensions), originalWindowSize);
     await home.locator('#manual-paths').fill('Brclio terminal smoke');
     await home.locator('#open-search').click();
     await home.locator('#global-search').fill('分');
