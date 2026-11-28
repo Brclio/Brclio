@@ -63,6 +63,11 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci
+      - name: Provide tmux for native control-mode tests
+        if: matrix.platform == 'mac'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: command -v tmux || brew install tmux
       - run: npm run sync
       - run: node --test desktop/terminal-*.test.cjs
         shell: bash
@@ -73,10 +78,16 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
       - name: Run commands in the packaged terminal
-        timeout-minutes: 3
+        timeout-minutes: 7
         env:
           BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
         run: node scripts/verify-terminal.cjs
+      - name: Exercise the packaged tmux control-mode workspace
+        if: matrix.platform == 'mac'
+        timeout-minutes: 3
+        env:
+          BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
+        run: node scripts/verify-terminal-tmux.cjs
       - name: Save the verified test installer
         uses: actions/upload-artifact@v4
         with:
@@ -85,5 +96,5 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Verify the development build after packaging
-        timeout-minutes: 3
+        timeout-minutes: 7
         run: node scripts/verify-terminal.cjs

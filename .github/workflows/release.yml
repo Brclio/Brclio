@@ -206,7 +206,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --mac --"$BUILD_ARCH" --publish never --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false --config.forceCodeSigning=true
       - name: Exercise a real shell in the packaged Brclio terminal
-        timeout-minutes: 3
+        timeout-minutes: 7
         env:
           BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
         run: node scripts/verify-terminal.cjs

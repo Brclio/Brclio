@@ -5,7 +5,9 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { _electron: electron, expect } = require('@playwright/test');
-const { verifyTerminalOutput } = require('./verify-terminal-output.cjs');
+const { verifyTerminalOutput, verifyShellImages } = require('./verify-terminal-output.cjs');
+const { verifyTerminalHistory } = require('./verify-terminal-history.cjs');
+const { verifyPaneTools } = require('./verify-terminal-panes.cjs');
 
 async function main() {
   const root = path.resolve(__dirname, '..');
@@ -91,6 +93,11 @@ async function main() {
       await terminal.keyboard.type(line);
       await terminal.keyboard.press('Enter');
     };
+    await terminal.locator('#new-tab').click();
+    await verifyShellImages(terminal, command, windows);
+    await verifyTerminalHistory(app, terminal, command);
+    await verifyPaneTools(terminal, command, windows);
+    await terminal.locator('#tabs .tab:has([aria-selected=true]) .tab-close').click();
     // The complete marker occurs only in shell output, never in the echoed input.
     await command(windows
       ? "[Console]::WriteLine(('BRCLIO-' + 'TTY-' + $Host.UI.RawUI.WindowSize.Width))"
@@ -152,7 +159,14 @@ async function main() {
       { timeout: 15000 }).toMatch(windows ? /PS [^>]*>$/ : /[%$#]$/);
     await command(windows ? "[Console]::WriteLine(('INTERRUPT-' + 'OK'))" : "printf 'INTERRUPT-%s\\n' OK");
     await expect(rows(active)).toContainText('INTERRUPT-OK', { timeout: 15000 });
+    await require('./verify-terminal-alerts.cjs').verifyTerminalAlerts(app, terminal, command, windows);
     await require('./verify-terminal-profile.cjs').verifyProfileAndSearch(terminal);
+    await terminal.locator('#terminal-actions').click();
+    await terminal.locator('#trigger-pattern').fill('^BRCLIO-TRIGGER-OK');
+    await terminal.locator('#trigger-add').click();
+    await terminal.locator('#actions-close').click();
+    await command(windows ? "[Console]::WriteLine(('BRCLIO-TRIGGER-' + 'OK'))" : "printf 'BRCLIO-TRIGGER-%s\\n' OK");
+    await expect(active.locator('.xterm-decoration').filter({ visible: true }).first()).toBeVisible();
     await terminal.locator('#presentation').click();
     await expect.poll(countWindows).toBe(2);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getTitle() === 'Brclio 终端').close());

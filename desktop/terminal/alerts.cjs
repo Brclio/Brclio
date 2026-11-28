@@ -28,6 +28,8 @@ function createTerminalAlerts({ storage, globalShortcut, copyShortcut, onHotkey,
   let active;
   let error = null;
   let nextBell = 0;
+  let ready;
+  let disposed = false;
   const owned = new Set();
 
   function status() {
@@ -43,19 +45,24 @@ function createTerminalAlerts({ storage, globalShortcut, copyShortcut, onHotkey,
   function release(key) {
     if (owned.delete(key)) globalShortcut.unregister(key);
   }
-  async function initialize() {
+  async function restore() {
     try {
       const value = await storage.read();
       if (!value || typeof value !== 'object') throw new Error('终端偏好文件格式无效。');
-      saved = { hotkey: value.hotkey == null ? null : normalizeShortcut(value.hotkey), bell: value.bell === true };
-      if (saved.hotkey) { register(saved.hotkey); active = saved.hotkey; }
+      await serialize(() => {
+        if (disposed) return;
+        saved = { hotkey: value.hotkey == null ? null : normalizeShortcut(value.hotkey), bell: value.bell === true };
+        if (saved.hotkey) { register(saved.hotkey); active = saved.hotkey; }
+      });
     } catch (failure) { error = failure.message; }
     return status();
   }
-  function setHotkey(value) {
+  function initialize() { return ready ??= restore(); }
+  async function setHotkey(value) {
+    await initialize();
     return serialize(async () => {
       const key = value === null ? null : normalizeShortcut(value);
-      if (key === active && globalShortcut.isRegistered(key)) return status();
+      if ((!key && !saved.hotkey) || (key && key === active && globalShortcut.isRegistered(key))) return status();
       const previous = active;
       if (key) register(key);
       try {
@@ -64,12 +71,13 @@ function createTerminalAlerts({ storage, globalShortcut, copyShortcut, onHotkey,
         saved = next;
         active = key;
         error = null;
-        release(previous);
+        if (previous !== key) release(previous);
         return status();
       } catch (failure) { release(key); throw failure; }
     });
   }
-  function setBell(enabled) {
+  async function setBell(enabled) {
+    await initialize();
     return serialize(async () => {
       if (typeof enabled !== 'boolean') throw new Error('终端铃设置无效。');
       if (saved.bell !== enabled) {
@@ -87,8 +95,8 @@ function createTerminalAlerts({ storage, globalShortcut, copyShortcut, onHotkey,
     nextBell = time + 10000;
     return notify();
   }
-  return { initialize, status, setHotkey, setBell, bell, owns: key => owned.has(key),
-    dispose() { for (const key of owned) release(key); active = undefined; } };
+  return { initialize, status, setHotkey, setBell, bell,
+    dispose() { disposed = true; for (const key of owned) release(key); active = undefined; } };
 }
 
 module.exports = { createTerminalAlerts, preferenceFile };

@@ -66,18 +66,18 @@
     if (state) return state;
     state = { frames: [], pastes: [], keepPastes: false, subscriptions: [], timer: null, units: 0 };
     states.set(terminal, state);
-    const textarea = terminal.textarea;
+    const element = terminal.element;
     const nativePaste = event => {
       if (state.keepPastes && event.isTrusted) rememberPaste(terminal, event.clipboardData?.getData('text/plain'));
     };
-    textarea.addEventListener('paste', nativePaste, true);
+    element.addEventListener('paste', nativePaste, true);
     terminal.loadAddon({
       activate() {},
       dispose() {
         stopReplay(state);
         state.pastes = [];
         states.delete(terminal);
-        textarea.removeEventListener('paste', nativePaste, true);
+        element.removeEventListener('paste', nativePaste, true);
         if (isViewing(terminal)) clearPreview();
       },
     });
@@ -131,7 +131,7 @@
     byId('paste-list').replaceChildren();
   }
 
-  function bind(getPane) {
+  function bind(getPane, paste) {
     current = getPane;
     const details = byId('history-details');
     details.addEventListener('toggle', () => { if (details.open) render(); else clearPreview(); });
@@ -176,7 +176,7 @@
       if (pane?.state !== 'running' || !text) return;
       byId('actions-dialog').close();
       pane.terminal.focus();
-      pane.terminal.paste(text);
+      paste(pane, text);
     };
   }
 

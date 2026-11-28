@@ -18,9 +18,9 @@
       record.end?.mark.dispose();
     }
 
-    function mark(kind) {
+    function mark(kind, offset = 0) {
       if (!normal()) return;
-      const marker = terminal.registerMarker();
+      const marker = terminal.registerMarker(offset);
       if (!marker) return;
       const record = { kind, mark: marker };
       history.push(record);
@@ -141,6 +141,7 @@
 
     return {
       add: () => Boolean(mark('manual')),
+      addAt: row => Boolean(mark('manual', row - terminal.buffer.normal.baseY - terminal.buffer.normal.cursorY)),
       previous: () => navigate(true),
       next: () => navigate(false),
       selectOutput,

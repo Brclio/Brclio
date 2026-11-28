@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { shellArguments } = require('./shell-startup.cjs');
+const tmux = require('./tmux-launch.cjs');
+const openSSH = require('./remote-launch.cjs');
 
 const MAX_INPUT = 1024 * 1024;
 const HIGH_WATER = 128 * 1024;
@@ -74,22 +76,35 @@ function createPtySessions({ home, send, platform = process.platform, env = proc
     return state;
   }
 
-  function create({ id, profile = 'default', cwd = home, cols = 80, rows = 24, shellIntegration = false } = {}) {
+  function create({ id, profile = 'default', cwd = home, cols = 80, rows = 24, shellIntegration = false, tmuxSession, connection } = {}) {
     if (typeof id !== 'string' || !UUID.test(id) || sessions.has(id)) throw new Error('终端会话标识无效。');
     if (sessions.size >= 32) throw new Error('最多可同时打开 32 个终端会话。');
     dimensions(cols, rows);
     if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || cwd.includes('\0') || !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
       throw new Error('请选择有效的本地工作目录。');
     }
-    const selected = shellProfiles(platform, env).find(item => item.id === profile);
+    const profiles = shellProfiles(platform, env);
+    const control = profile === 'tmux-control';
+    const remote = profile === 'ssh' || profile === 'sftp';
+    let selected = profiles.find(item => item.id === profile);
+    if (control) selected = { file: tmux.program(platform, env) };
+    if (remote) {
+      selected = { file: openSSH.program(profile, platform, env) };
+      if (!selected.file) throw new Error('未找到本机 ' + profile + ' 客户端，请安装 OpenSSH 客户端。');
+    }
+    if (control && !selected.file) throw new Error(platform === 'win32' ? '需要已配置的 WSL 和 tmux。' : '未找到本机 tmux。');
     if (!selected) throw new Error('这台电脑没有可用的所选 Shell。');
 
     const options = {
-      name: 'xterm-256color', cols, rows, cwd, env: shellEnvironment(env, selected.file, platform),
+      name: 'xterm-256color', cols, rows, cwd, env: shellEnvironment(env, control || remote ? profiles[0]?.file : selected.file, platform),
       ...(platform === 'win32' ? { useConptyDll: true } : {}),
     };
-    const args = shellArguments(selected.file, platform, shellIntegration === true, options.env);
-    const pty = load().spawn(selected.file, args, options);
+    let args;
+    if (remote) args = openSSH.argumentsFor(profile, connection);
+    else if (control) args = tmux.argumentsFor(tmuxSession, platform);
+    else args = shellArguments(selected.file, platform, shellIntegration === true, options.env);
+    if (control) options.encoding = 'latin1';
+    const pty = control && platform === 'win32' ? tmux.wslPipe(selected.file, args, options) : load().spawn(selected.file, args, options);
     const state = { pty, outstanding: 0, paused: false, forceKill: null };
     sessions.set(id, state);
     state.data = pty.onData(data => {

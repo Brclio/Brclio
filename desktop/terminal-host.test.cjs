@@ -2,7 +2,9 @@
 
 const assert = require('node:assert/strict');
 const { EventEmitter, once } = require('node:events');
+const fs = require('node:fs/promises');
 const os = require('node:os');
+const path = require('node:path');
 const { test } = require('node:test');
 const { pathToFileURL } = require('node:url');
 const { createTerminalHost } = require('./terminal/host.cjs');
@@ -17,7 +19,7 @@ function fakeChild() {
   });
 }
 
-test('only the live terminal frame owns its IPC across docking, hiding, detaching and closing', async () => {
+test('only the live terminal frame owns its IPC across docking, hiding, detaching and closing', async t => {
   const windows = [];
   const views = [];
   class FakeContents extends EventEmitter {
@@ -56,7 +58,9 @@ test('only the live terminal frame owns its IPC across docking, hiding, detachin
     }
     getContentSize() { return [1000, 600]; }
     setMenu() {}
-    show() {}
+    show() { this.visible = true; }
+    hide() { this.visible = false; }
+    isVisible() { return this.visible === true; }
     focus() {}
     isFocused() { return true; }
     isMinimized() { return false; }
@@ -69,9 +73,15 @@ test('only the live terminal frame owns its IPC across docking, hiding, detachin
     removeHandler: name => handlers.delete(name),
   });
   const app = Object.assign(new EventEmitter(), { getPath: () => os.homedir() });
+  const exports = await fs.mkdtemp(path.join(os.tmpdir(), 'brclio-transcript-'));
+  t.after(() => fs.rm(exports, { recursive: true, force: true }));
+  const targetFile = path.join(exports, 'terminal.txt');
+  let choice = { canceled: true, filePath: targetFile };
+  const dialogs = [];
+  const dialog = { async showSaveDialog(owner, options) { dialogs.push({ owner, options }); return choice; } };
   let main = new FakeWindow();
   const modes = [];
-  const host = createTerminalHost({ app, ipcMain, BrowserWindow: FakeWindow, WebContentsView: FakeView,
+  const host = createTerminalHost({ app, ipcMain, dialog, BrowserWindow: FakeWindow, WebContentsView: FakeView,
     getMainWindow: () => main.isDestroyed() ? null : main, showMainWindow: () => (main = new FakeWindow()),
     onPresentation: mode => modes.push(mode) });
   const profiles = handlers.get('brclio:terminal-window:profiles');
@@ -89,6 +99,22 @@ test('only the live terminal frame owns its IPC across docking, hiding, detachin
   assert.ok(main.attached.has(view));
   assert.deepEqual(view.bounds, { x: 200, y: 50, width: 800, height: 500 });
   const valid = request(view);
+  const save = handlers.get('brclio:terminal-window:save-transcript');
+  assert.throws(() => save(request(main), 'text', 'hello'), /终端窗口/);
+  await assert.rejects(save(valid, targetFile, 'hello'), /格式/);
+  await assert.rejects(save(valid, 'text', '中'.repeat(6 * 1024 * 1024)), /16 MiB/);
+  assert.equal(dialogs.length, 0);
+  assert.deepEqual(await save(valid, 'text', 'canceled'), { saved: false });
+  assert.deepEqual(await fs.readdir(exports), []);
+  choice = { canceled: false, filePath: targetFile };
+  for (const [format, extension] of [['text', 'txt'], ['ansi', 'ansi'], ['html', 'html']]) {
+    const content = 'Brclio 终端 ' + format;
+    assert.deepEqual(await save(valid, format, content), { saved: true });
+    assert.deepEqual(dialogs.at(-1).options.filters[0].extensions, [extension]);
+    assert.equal(dialogs.at(-1).owner, main);
+    assert.equal(await fs.readFile(targetFile, 'utf8'), content);
+  }
+  assert.deepEqual(await fs.readdir(exports), ['terminal.txt']);
   assert.ok((await profiles(valid)).some(profile => profile.id === 'default'));
   assert.throws(() => profiles(request(main)), /终端窗口/);
   assert.throws(() => profiles({ ...valid, senderFrame: { ...valid.senderFrame } }), /终端窗口/);
@@ -103,6 +129,12 @@ test('only the live terminal frame owns its IPC across docking, hiding, detachin
   const detached = windows[1];
   assert.ok(!main.attached.has(view));
   assert.ok(detached.attached.has(view));
+  await host.toggleHotkey('Ctrl+Alt+Y');
+  assert.equal(detached.isVisible(), false);
+  assert.equal(host.getPresentation(), 'window');
+  assert.ok(detached.attached.has(view));
+  await host.toggleHotkey('Ctrl+Alt+Y');
+  assert.equal(detached.isVisible(), true);
   assert.equal(view.visible, true);
   assert.deepEqual(view.bounds, { x: 0, y: 0, width: 1000, height: 600 });
   assert.throws(() => profiles(request(detached)), /终端窗口/);

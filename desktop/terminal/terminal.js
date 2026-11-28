@@ -54,8 +54,15 @@
   }
   const appearance = window.BrclioTerminalProfiles({ theme, activePane, refit: fit, applySession,
     readSession: () => ({ shell: byId('profile').value, cwd: nextDirectory, integration: byId('shell-integration').checked }) });
+  const locations = window.BrclioShellLocations(appearance, panes);
+  const attachTriggers = window.BrclioTriggers({ api, panes, message,
+    activate: pane => { selectTab(pane.tab); selectPane(pane); } });
+  const inspector = window.BrclioPaneInspector({ panes, activePane, dialog: byId('actions-dialog'),
+    activate: pane => { selectTab(pane.tab); selectPane(pane); } });
 
+  const paneTools = window.BrclioPaneTools({ tabs, getTab: () => currentTab, selectPane, sendInput, mac });
   function refreshTools() {
+    paneTools.refresh();
     window.BrclioTerminalHistory.refresh();
     const pane = activePane();
     for (const id of ['split-right', 'split-down', 'close-pane', 'find']) byId(id).disabled = !pane;
@@ -85,7 +92,7 @@
     if (pane === activePane()) {
       message(detail, state === 'error');
       refreshTools();
-    }
+    } else paneTools.refresh();
   }
 
   function fit(pane) {
@@ -110,6 +117,7 @@
 
   function selectTab(tab, focus = true) {
     currentTab = tab;
+    paneTools.refresh();
     for (const other of tabs.values()) {
       const selected = other === tab;
       other.panel.hidden = !selected;
@@ -168,17 +176,23 @@
     panes.set(id, pane);
     tab.panes.add(pane);
     terminal.open(host);
+    window.BrclioSmartSelection.attach(terminal, host);
     pane.appearance = appearance.current;
     node.addEventListener('pointerenter', event => {
       if (pane.appearance.follow && event.pointerType === 'mouse' && !document.querySelector('dialog[open]')) selectPane(pane);
     });
+    window.BrclioTerminalAlerts.attach(terminal);
     window.BrclioTerminalOutput.activate(terminal);
     pane.marks = BrclioCommandMarks.attach(terminal);
+    locations.attach(pane);
+    pane.disposeTriggers = attachTriggers(pane);
+    inspector.attach(pane);
     terminal.textarea?.setAttribute('aria-label', '终端输入');
     setState(pane, 'starting', '正在启动 Shell…');
     fit(pane);
     const initial = { id, cols: terminal.cols, rows: terminal.rows, profile: launch.profile, shellIntegration: launch.shellIntegration };
     if (launch.cwd) initial.cwd = launch.cwd;
+    if (launch.connection) initial.connection = launch.connection;
     pane.observer = new ResizeObserver(() => fit(pane));
     pane.observer.observe(host);
     node.addEventListener('pointerdown', event => {
@@ -189,7 +203,7 @@
     terminal.onResize(({cols, rows}) => {
       if (pane.state === 'running') api.resize(id, cols, rows).catch(error => { if (panes.has(id) && pane.state === 'running') report(error); });
     });
-    terminal.onData(data => sendInput(pane, data));
+    paneTools.attachInput(pane);
     terminal.onBinary(data => sendInput(pane, data, true));
     terminal.onSelectionChange(() => { if (activePane() === pane) refreshTools(); });
     host.addEventListener('pointerup', () => {
@@ -243,6 +257,7 @@
     byId('workspace').append(panel);
     const tab = { number, panel, header, button, name, customName, panes: new Set(), active: null };
     tabs.set(number, tab);
+    paneTools.attachTab(tab);
     button.addEventListener('click', () => selectTab(tab));
     close.addEventListener('click', () => closeTab(tab));
     selectTab(tab);
@@ -258,6 +273,7 @@
 
   function splitPane(direction, pane = activePane(), launch, fraction = .5) {
     if (!pane) return;
+    pane.tab.panel.classList.remove('maximized');
     const split = element('div', 'split');
     split.dataset.direction = direction;
     split.style.flex = pane.node.style.flex;
@@ -303,6 +319,7 @@
     const wasRunning = pane.state === 'running' || pane.state === 'starting';
     pane.state = 'closed';
     pane.marks.dispose();
+    pane.disposeTriggers();
     pane.terminal.dispose();
     if (wasRunning) api.close(pane.id).catch(error => { if (!closing) report(error); });
   }
@@ -400,7 +417,7 @@
     if (pane !== activePane() || pane.state !== 'running') return;
     pane.terminal.focus();
     window.BrclioTerminalHistory.rememberPaste(pane.terminal, data);
-    pane.terminal.paste(data);
+    paneTools.paste(pane, data);
   }
 
   async function chooseDirectory() {
@@ -421,11 +438,14 @@
   }
 
   function shortcuts(event) {
+    if (document.querySelector('dialog[open]')) return;
+    if (byId('tmux-dialog').open) return;
     if (bufferKeyboard(event)) return;
-    if (event.isComposing) return;
+    if (event.isComposing || document.querySelector('dialog[open]')) return;
     const key = event.key.toLowerCase();
     const mod = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && event.shiftKey && !event.metaKey;
     const form = event.target.matches('input, select, textarea:not(.xterm-helper-textarea)');
+    if (!form && paneTools.shortcut(event)) return;
     let action;
     if (event.ctrlKey && !event.metaKey && !event.altKey && key === 'tab') action = () => cycleTab(event.shiftKey ? -1 : 1);
     else if (event.target.closest('[role="tab"]') && ['arrowleft', 'arrowright'].includes(key)) action = () => cycleTab(key === 'arrowleft' ? -1 : 1, true);
@@ -450,7 +470,7 @@
     for (const control of document.querySelectorAll('button, select')) control.disabled = true;
     return;
   }
-  window.BrclioTerminalHistory.bind(activePane);
+  window.BrclioTerminalHistory.bind(activePane, paneTools.pasteOnly);
   const removeData = api.onData(({id, data}) => {
     const pane = panes.get(id);
     if (pane) pane.terminal.write(data, () => { if (panes.has(id)) api.ack(id, data.length); });
@@ -494,7 +514,17 @@
   byId('paste').onclick = () => paste().catch(report);
   byId('directory').onclick = () => chooseDirectory().catch(report);
   const actions = byId('actions-dialog');
-  const bufferKeyboard = window.BrclioBufferTools({ panes, activePane, dialog: actions, copy: api.copy, message,
+  window.BrclioAdvancedPaste({ api, activePane, actions, paste: paneTools.pasteOnly });
+  function filterActions() {
+    const text = byId('actions-filter').value.trim().toLowerCase();
+    for (const group of actions.querySelectorAll('fieldset, details')) {
+      group.hidden = Boolean(text && !group.textContent.toLowerCase().includes(text));
+    }
+  }
+  byId('actions-filter').oninput = filterActions;
+  actions.addEventListener('close', () => { byId('actions-filter').value = ''; filterActions(); });
+  window.BrclioTranscript.bind(activePane, api);
+  const bufferKeyboard = window.BrclioBufferTools({ panes, activePane, dialog: actions, copy: api.copy, paste: paneTools.pasteOnly, message,
     activate: pane => { selectTab(pane.tab); selectPane(pane); } });
   for (const button of actions.querySelectorAll('[data-mark]')) {
     button.onclick = () => {
@@ -504,7 +534,11 @@
       if (!done) message(action === 'selectOutput' ? '尚无带 Shell 集成标记的命令输出。' : '当前缓冲区没有可用标记。');
     };
   }
-  byId('terminal-actions').onclick = () => actions.showModal();
+  byId('terminal-actions').onclick = () => { inspector.refresh(); locations.render(); actions.showModal(); };
+  window.BrclioRemoteConnections.bind(api, (kind, name, connection) => {
+    actions.close();
+    newTab(name, { profile: kind, connection, cwd: nextDirectory, shellIntegration: false });
+  });
   byId('actions-close').onclick = () => actions.close();
   actions.addEventListener('close', () => activePane()?.terminal.focus());
   const displayMode = mode => {

@@ -1,13 +1,15 @@
 'use strict';
 
 const path = require('node:path');
+const fs = require('node:fs/promises');
+const { randomUUID } = require('node:crypto');
 const { isLocalDocument } = require('../trusted-url.cjs');
 const { createPtyService } = require('./service.cjs');
 
 const prefix = 'brclio:terminal-window:';
 const documentPath = path.join(__dirname, 'index.html');
 
-function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, getMainWindow, showMainWindow, onPresentation }) {
+function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, alerts, getMainWindow, showMainWindow, onPresentation }) {
   let view;
   let owner;
   let detached;
@@ -15,6 +17,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   let mode = 'closed';
   let viewport = null;
   let focusOnShow = false;
+  let recording = false;
   const channels = [];
   const sessions = createPtyService({ home: app.getPath('home'), send });
 
@@ -55,6 +58,38 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     clipboard.writeText(text);
   });
   handle('paste', () => clipboard.readText());
+  handle('remote-clients', () => {
+    const { program } = require('./remote-launch.cjs');
+    return { ssh: Boolean(program('ssh')), sftp: Boolean(program('sftp')) };
+  });
+  handle('save-transcript', async (format, text) => {
+    const filter = new Map([
+      ['text', { name: '纯文本', extensions: ['txt'] }],
+      ['ansi', { name: 'ANSI 终端记录', extensions: ['ansi'] }],
+      ['html', { name: 'HTML 文档', extensions: ['html'] }],
+    ]).get(format);
+    if (!filter || typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 16 * 1024 * 1024) {
+      throw new Error('终端记录格式无效或超过 16 MiB。');
+    }
+    const chosen = await dialog.showSaveDialog(owner, {
+      title: '导出终端记录', defaultPath: 'Brclio 终端.' + filter.extensions[0], filters: [filter],
+    });
+    if (chosen.canceled || !chosen.filePath) return { saved: false };
+    const temporary = path.join(path.dirname(chosen.filePath), '.brclio-transcript-' + randomUUID() + '.tmp');
+    try {
+      await fs.writeFile(temporary, text, { flag: 'wx', mode: 0o600 });
+      await fs.rename(temporary, chosen.filePath);
+    } finally { await fs.rm(temporary, { force: true }); }
+    return { saved: true };
+  });
+  handle('alert-settings', async () => { await alerts.initialize(); return alerts.status(); });
+  handle('set-hotkey', key => alerts.setHotkey(key));
+  handle('set-bell', enabled => alerts.setBell(enabled));
+  handle('recording-hotkey', enabled => {
+    if (enabled && !owner?.isFocused()) throw new Error('请先返回终端再录入快捷键。');
+    recording = enabled === true;
+  });
+  handle('bell', () => alerts.bell());
 
   function acknowledge(event, id, count) {
     if (trusted(event)) sessions.ack(id, count);
@@ -83,6 +118,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     view = undefined;
     loading = undefined;
     focusOnShow = false;
+    recording = false;
     sessions.closeAll();
     if (!contents.isDestroyed()) contents.close();
     const shell = detached;
@@ -155,7 +191,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
       const shortcut = process.platform === 'darwin'
         ? input.meta && ['c', 'v', 't', 'w', 'f', 'd', 'k'].includes(input.key.toLowerCase())
         : input.control || input.alt;
-      contents.setIgnoreMenuShortcuts(Boolean(shortcut));
+      contents.setIgnoreMenuShortcuts(recording || Boolean(shortcut));
     });
     contents.on('did-start-navigation', details => {
       if (view === terminal && details.isMainFrame && !details.isSameDocument) sessions.closeAll();
@@ -213,6 +249,18 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     }
   }
 
+  function toggleHotkey(key) {
+    if (recording && owner?.isFocused() && view?.webContents.isFocused()) {
+      send('captured-hotkey', key);
+      return;
+    }
+    if (mode === 'window' && detached?.isVisible() && detached.isFocused()) {
+      detached.hide();
+      return;
+    }
+    return open('window');
+  }
+
   function dispose() {
     app.removeListener('will-quit', dispose);
     for (const channel of channels) ipcMain.removeHandler(channel);
@@ -220,7 +268,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     closeTerminal();
   }
   app.once('will-quit', dispose);
-  return { open, dispose, setViewport, getPresentation: () => mode, hasWindow: () => mode === 'window' };
+  return { open, toggleHotkey, dispose, setViewport, getPresentation: () => mode, hasWindow: () => mode === 'window' };
 }
 
 module.exports = { createTerminalHost };

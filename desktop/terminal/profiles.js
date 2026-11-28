@@ -138,5 +138,12 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
   };
   refreshList(current.name);
   edit(current);
-  return { options, get current() { return current; } };
+  return { options, get current() { return current; },
+    names: () => [...presets.keys()], applyAppearance: apply,
+    applyNamed(pane, name) {
+      const value = presets.get(name);
+      if (value) apply(pane, value);
+      return Boolean(value);
+    },
+  };
 };

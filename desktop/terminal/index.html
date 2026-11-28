@@ -3,22 +3,36 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Brclio 终端</title>
   <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="terminal.css">
   <script defer src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script defer src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script defer src="../../node_modules/@xterm/addon-search/lib/addon-search.js"></script>
+  <script defer src="../../node_modules/@xterm/addon-serialize/lib/addon-serialize.js"></script>
   <script defer src="../../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
   <script defer src="../../node_modules/@xterm/addon-image/lib/addon-image.js"></script>
   <script defer src="output-addons.js"></script>
   <script defer src="session-history.js"></script>
+  <script defer src="pane-tools.js"></script>
   <script defer src="command-marks.js"></script>
   <script defer src="arrangements.js"></script>
   <script defer src="profiles.js"></script>
+  <script defer src="shell-location.js"></script>
+  <script defer src="triggers.js"></script>
+  <script defer src="transcript.js"></script>
   <script defer src="buffer-tools.js"></script>
+  <script defer src="advanced-paste.js"></script>
+  <script defer src="smart-selection.js"></script>
+  <script defer src="pane-inspector.js"></script>
+  <script defer src="alert-controls.js"></script>
+  <script defer src="connection.js"></script>
+  <script defer src="remote-controls.js"></script>
   <script defer src="terminal.js"></script>
+  <link rel="stylesheet" href="tmux.css">
+  <script defer src="tmux-protocol.js"></script>
+  <script defer src="tmux-workspace.js"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -47,6 +61,11 @@
     </div>
   </header>
   <div id="tabs" role="tablist" aria-label="终端标签"></div>
+  <div id="pane-mode-bar" hidden>
+    <button type="button" id="pane-restore" hidden>还原窗格</button>
+    <span id="broadcast-status" role="status" hidden></span>
+    <button type="button" id="broadcast-stop" hidden>停止广播</button>
+  </div>
   <div id="find-bar" role="search" hidden>
     <label for="find-input">查找</label><input id="find-input" type="search" placeholder="在当前窗格中查找" autocomplete="off" spellcheck="false">
     <label><input id="find-case" type="checkbox">区分大小写</label>
@@ -68,11 +87,41 @@
   </footer>
   <dialog id="actions-dialog" aria-labelledby="actions-title">
     <div class="dialog-head"><h2 id="actions-title">终端操作</h2><button id="actions-close">关闭</button></div>
+    <input type="search" id="actions-filter" aria-label="筛选终端操作" placeholder="筛选操作或设置">
+    <fieldset><legend>tmux 控制模式</legend>
+      <label>会话名<input id="tmux-name" value="Brclio" maxlength="64"></label>
+      <button id="tmux-connect">连接或创建</button>
+      <p>需要本机 tmux。Windows 使用默认 WSL 发行版中的 tmux。</p>
+    </fieldset>
+    <fieldset><legend>窗格与标签</legend>
+      <button id="pane-maximize">最大化窗格</button>
+      <button id="tab-move-left">标签左移</button><button id="tab-move-right">标签右移</button>
+      <p id="pane-key-hints"></p>
+      <details id="broadcast-options"><summary>同步输入到多个窗格</summary>
+        <p>勾选同一标签中的窗格后开启。离开标签会停止广播。</p>
+        <div id="broadcast-members" role="group" aria-label="加入广播的窗格"></div>
+        <button id="broadcast-toggle" disabled>开启广播</button>
+      </details>
+    </fieldset>
     <fieldset><legend>搜索与选择</legend>
       <label>搜索所有窗格<input id="buffer-query" type="search" maxlength="240"></label>
       <button id="buffer-search">搜索</button><button id="buffer-complete">从滚动记录补全</button>
       <button id="buffer-copy-mode">键盘选择</button>
+      <p>连续点按四次，或按住 Alt / Option 双击，可选中网址、邮箱、路径或引号内的文字。</p>
       <span id="buffer-status" role="status"></span><div id="buffer-results"></div>
+    </fieldset>
+    <fieldset><legend>导出当前窗格</legend>
+      <select id="transcript-format" aria-label="导出格式"><option value="text">纯文本</option><option value="ansi">ANSI 格式</option><option value="html">HTML 文本</option></select>
+      <button id="transcript-save">另存为文件…</button><span id="transcript-status" role="status"></span>
+    </fieldset>
+    <fieldset><legend>高级粘贴</legend>
+      <button id="paste-read">读取剪贴板</button>
+      <textarea id="paste-preview" aria-label="待粘贴文本" rows="3"></textarea>
+      <label><input id="paste-trim" type="checkbox" checked>移除末尾换行</label>
+      <label>转换<select id="paste-convert"><option value="none">原样</option><option value="spaces">制表符转四个空格</option><option value="base64">UTF-8 转 Base64</option></select></label>
+      <label>每行间隔（毫秒）<input id="paste-delay" type="number" min="0" max="3000" value="0"></label>
+      <button id="paste-send">粘贴到当前窗格</button><button id="paste-cancel" disabled>停止粘贴</button>
+      <span id="paste-progress" role="status"></span>
     </fieldset>
     <fieldset><legend>配置文件</legend>
       <label>搜索配置<input id="preset-filter" type="search" placeholder="名称或标签"></label>
@@ -92,12 +141,47 @@
       <button id="preset-apply">应用到当前窗格</button><button id="preset-save">保存为新会话默认配置</button>
       <span id="preset-status" role="status"></span>
     </fieldset>
+    <fieldset><legend>远程会话</legend>
+      <details id="remote-connections"><summary>SSH / SFTP 连接</summary>
+        <label>已保存的连接<select id="remote-list"><option value="">新连接</option></select></label>
+        <label>名称<input id="remote-name" maxlength="64" placeholder="例如 开发机"></label>
+        <label>主机或 SSH 配置别名<input id="remote-host" maxlength="255" autocapitalize="none" spellcheck="false"></label>
+        <label>用户名<input id="remote-user" maxlength="128" autocapitalize="none" spellcheck="false" placeholder="使用 SSH 配置"></label>
+        <label>端口<input id="remote-port" type="number" min="1" max="65535" placeholder="使用 SSH 配置"></label>
+        <button id="remote-save" type="button">保存或更新连接</button><button id="remote-remove" type="button" disabled>删除所选连接</button>
+        <button id="remote-ssh" type="button" disabled>新建 SSH 标签</button><button id="remote-sftp" type="button" disabled>新建 SFTP 标签</button>
+        <p>使用本机 OpenSSH 配置、密钥和代理。在终端中确认主机指纹并完成登录，SFTP 标签可交互传输文件。</p>
+        <span id="remote-status" role="status"></span>
+      </details>
+    </fieldset>
     <fieldset><legend>窗口布局</legend>
       <label>标签名称<input id="tab-label" maxlength="64"></label><button id="tab-rename">重命名当前标签</button>
       <label>布局名称<input id="arrangement-name" maxlength="64"></label><button id="arrangement-save">保存布局</button>
       <select id="arrangement-list" aria-label="已保存的布局"></select>
       <button id="arrangement-restore">用新会话打开</button><button id="arrangement-delete">删除布局</button>
-      <p>恢复时会新增标签和 Shell 会话，当前会话继续运行。</p><span id="arrangement-status" role="status"></span>
+      <p>恢复时会新增标签和 Shell 会话，当前会话继续运行。SSH / SFTP 窗格恢复为本地 Shell。</p><span id="arrangement-status" role="status"></span>
+    </fieldset>
+    <fieldset><legend>窗格信息与批注</legend>
+      <label>徽章<input id="inspect-badge" maxlength="120" placeholder="{host} · {dir}"></label><button id="inspect-badge-set">更新徽章</button>
+      <label><input type="checkbox" id="inspect-times">记录行时间，指向输出时显示</label>
+      <label>批注<input id="inspect-note" maxlength="512"></label><button id="inspect-add">批注选区或当前行</button>
+      <div id="inspect-notes"></div>
+      <label>快速切换窗格<input id="inspect-filter" type="search" placeholder="名称、主机、目录或徽章"></label>
+      <div id="inspect-panes"></div><span id="inspect-status" role="status"></span>
+    </fieldset>
+    <fieldset><legend>按主机或目录自动切换配色与字体</legend>
+      <label>主机<input id="location-host" maxlength="255" placeholder="例如 localhost"></label>
+      <label>目录前缀<input id="location-path" maxlength="1024" placeholder="例如 /workspace"></label>
+      <label>配置<select id="location-profile"></select></label>
+      <button id="location-add">添加规则</button>
+      <div id="location-rules"></div><span id="location-status" role="status"></span>
+    </fieldset>
+    <fieldset><legend>输出触发器</legend>
+      <label>正则表达式<input id="trigger-pattern" maxlength="240"></label>
+      <select id="trigger-action" aria-label="匹配时执行"><option value="highlight">高亮行</option><option value="mark">添加标记</option><option value="bell">响铃提醒</option><option value="capture">捕获输出</option></select>
+      <button id="trigger-add">添加触发器</button><button id="trigger-enable">重新启用</button>
+      <div id="trigger-rules"></div><span id="trigger-status" role="status"></span>
+      <button id="trigger-captures-show">查看捕获的输出</button><button id="trigger-captures-clear">清空捕获</button><div id="trigger-captures"></div>
     </fieldset>
     <fieldset><legend>标记与命令输出</legend>
       <label><input type="checkbox" id="shell-integration">为新会话启用 Shell 集成</label>
@@ -121,6 +205,12 @@
         <button type="button" id="paste-again">粘贴到当前窗格</button>
       </fieldset>
     </details>
+  </dialog>
+  <dialog id="tmux-dialog" aria-labelledby="tmux-title">
+    <div class="dialog-head"><h2 id="tmux-title">tmux</h2><button id="tmux-detach">分离并返回</button></div>
+    <div id="tmux-toolbar"><button id="tmux-new">新建 tmux 窗口</button><button id="tmux-right">左右分屏</button><button id="tmux-down">上下分屏</button></div>
+    <nav id="tmux-tabs" aria-label="tmux 窗口"></nav>
+    <div id="tmux-panes"></div><span id="tmux-status" role="status"></span>
   </dialog>
 </body>
 </html>

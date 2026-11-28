@@ -32,7 +32,8 @@
       }
       // Record the requested launch settings only. Dynamic OSC titles, output
       // buffers, typed commands and process IDs never enter local storage.
-      return { profile: node.profile, cwd: node.cwd || null, shellIntegration: node.shellIntegration === true };
+      const remote = ['ssh', 'sftp'].includes(node.profile);
+      return { profile: remote ? 'default' : node.profile, cwd: node.cwd || null, shellIntegration: !remote && node.shellIntegration === true };
     }
     const tabs = value.tabs.map(tab => {
       const before = total;

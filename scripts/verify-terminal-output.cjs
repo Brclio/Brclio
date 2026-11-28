@@ -50,4 +50,35 @@ async function verifyTerminalOutput(page) {
   });
 }
 
-module.exports = { verifyTerminalOutput };
+async function verifyShellImages(page, command, windows) {
+  const png = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 12; canvas.height = 12;
+    const brush = canvas.getContext('2d');
+    brush.fillStyle = 'rgb(7, 91, 201)';
+    brush.fillRect(0, 0, 12, 12);
+    return canvas.toDataURL('image/png').split(',')[1];
+  });
+  const data = '\x1b[2J\x1b[H\x1b]1337;File=inline=1;width=12px;height=12px;size=' +
+    Buffer.from(png, 'base64').length + ':' + png + '\x07\r\n' +
+    '\x1bPq"1;1;12;6#1;2;100;0;0#1!12~\x1b\\\r\n';
+  const encoded = Buffer.from(data).toString('base64');
+  await command(windows
+    ? "[Console]::Write([Text.Encoding]::ASCII.GetString([Convert]::FromBase64String('" + encoded + "')))"
+    : "printf '%s' '" + encoded + "' | /usr/bin/base64 -D");
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector('.panel:not([hidden]) .pane.active .xterm-image-layer');
+    if (!canvas) return false;
+    const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    let iip = false, sixel = false;
+    for (let i = 0; i < pixels.length; i += 4) {
+      if (pixels[i + 3] !== 255) continue;
+      if (pixels[i] === 7 && pixels[i + 1] === 91 && pixels[i + 2] === 201) iip = true;
+      if (pixels[i] === 255 && pixels[i + 1] === 0 && pixels[i + 2] === 0) sixel = true;
+      if (iip && sixel) return true;
+    }
+    return false;
+  }, null, { timeout: 12000, polling: 200 });
+}
+
+module.exports = { verifyTerminalOutput, verifyShellImages };

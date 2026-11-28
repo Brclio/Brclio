@@ -1,0 +1,14 @@
+#tmux-dialog { width: min(1100px, 94vw); height: 89vh; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; background: var(--cream); color: var(--ink); padding: 12px; }
+#tmux-dialog[open] { display: flex; flex-direction: column; gap: 6px; }
+#tmux-dialog::backdrop { background: rgb(20 22 28 / .38); }
+#tmux-dialog .dialog-head { margin: 0; }
+#tmux-toolbar, #tmux-tabs { display: flex; align-items: center; gap: 5px; }
+#tmux-tabs { overflow-x: auto; }
+#tmux-dialog button { padding: 4px 8px; flex-shrink: 0; }
+#tmux-tabs .selected { color: var(--blue-dark); border-color: var(--border); }
+#tmux-panes { position: relative; flex: 1; min-height: 0; background: #181b25; overflow: hidden; }
+#tmux-panes .tmux-pane { position: absolute; box-sizing: border-box; overflow: hidden; }
+#tmux-panes .tmux-pane.active { outline: 1px solid #81b5ed; outline-offset: -1px; }
+#tmux-panes .tmux-gauge { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
+#tmux-panes .xterm { height: 100%; }
+#tmux-status { font-size: 12px; }

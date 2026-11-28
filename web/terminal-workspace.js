@@ -12,14 +12,16 @@ window.BrclioTerminalWorkspace = function installTerminalWorkspace(host, navigat
   launcher.dataset.view = 'terminal';
 
   function updateViewport() {
-    const bounds = surface.getBoundingClientRect();
-    const header = document.querySelector('.app-header').getBoundingClientRect();
-    const x = Math.max(0, Math.ceil(bounds.left));
-    const y = Math.max(0, Math.ceil(bounds.top), Math.ceil(header.bottom));
-    const width = Math.min(innerWidth, Math.floor(bounds.right)) - x;
-    const height = Math.min(innerHeight, Math.floor(bounds.bottom)) - y;
-    const visible = !section.hidden && !document.querySelector('dialog[open]') && width > 0 && height > 0;
-    const rect = visible ? { x, y, width, height } : null;
+    let rect = null;
+    if (!section.hidden && !document.querySelector('dialog[open]')) {
+      const bounds = surface.getBoundingClientRect();
+      const header = document.querySelector('.app-header').getBoundingClientRect();
+      const x = Math.max(0, Math.ceil(bounds.left));
+      const y = Math.max(0, Math.ceil(bounds.top), Math.ceil(header.bottom));
+      const width = Math.min(innerWidth, Math.floor(bounds.right)) - x;
+      const height = Math.min(innerHeight, Math.floor(bounds.bottom)) - y;
+      if (width > 0 && height > 0) rect = { x, y, width, height };
+    }
     const key = JSON.stringify(rect);
     if (lastBounds === key) return;
     lastBounds = key;

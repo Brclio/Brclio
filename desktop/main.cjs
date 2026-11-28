@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, WebContentsView, clipboard, dialog, globalShortcut, ipcMain, Menu, net, protocol, session, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, clipboard, dialog, globalShortcut, ipcMain, Menu, net, Notification, protocol, session, shell } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -40,6 +40,7 @@ const updateLaunchArgs = process.argv.filter((value, index, argv) =>
 const gotLock = app.requestSingleInstanceLock({ copyPaths: initialPaths, updateLaunchArgs });
 let mainWindow;
 let terminalHost;
+let terminalAlerts;
 let rendererReady = false;
 let pendingUpdateLaunchArgs = updateLaunchArgs;
 let pendingPaths = [];
@@ -214,21 +215,44 @@ function handle(channel, callback) {
   });
 }
 
+function getTerminalHost() {
+  terminalHost ??= require('./terminal/host.cjs').createTerminalHost({
+    app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, alerts: terminalAlerts,
+    getMainWindow: () => mainWindow, showMainWindow: createWindow,
+    onPresentation: mode => {
+      const contents = mainWindow?.webContents;
+      if (contents && !contents.isDestroyed() && isLocalDocument(contents.getURL(), indexPath)) {
+        contents.send('brclio:terminal:presentation-changed', mode);
+      }
+    },
+  });
+  return terminalHost;
+}
+
+async function initializeTerminalAlerts() {
+  if (!['darwin', 'win32'].includes(process.platform)) return;
+  const { createTerminalAlerts, preferenceFile } = require('./terminal/alerts.cjs');
+  terminalAlerts = createTerminalAlerts({
+    storage: preferenceFile(app.getPath('userData')), globalShortcut, serialize: withPreferences,
+    copyShortcut: () => shortcuts.status().accelerator,
+    onHotkey: key => {
+      keepRunning = true;
+      clearTimeout(idleExit);
+      return getTerminalHost().toggleHotkey(key);
+    },
+    notify() {
+      if (!Notification.isSupported()) return false;
+      const notice = new Notification({ title: 'Brclio 终端', body: '终端会话已响铃。' });
+      notice.once('click', () => { if (terminalHost) void terminalHost.open('window').catch(() => {}); });
+      notice.show();
+      return true;
+    },
+  });
+  await terminalAlerts.initialize();
+}
+
 function registerIPC() {
   if (['darwin', 'win32'].includes(process.platform)) {
-    function getTerminalHost() {
-      terminalHost ??= require('./terminal/host.cjs').createTerminalHost({
-        app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard,
-        getMainWindow: () => mainWindow, showMainWindow: createWindow,
-        onPresentation: mode => {
-          const contents = mainWindow?.webContents;
-          if (contents && !contents.isDestroyed() && isLocalDocument(contents.getURL(), indexPath)) {
-            contents.send('brclio:terminal:presentation-changed', mode);
-          }
-        },
-      });
-      return terminalHost;
-    }
     handle('brclio:terminal:open', mode => getTerminalHost().open(mode));
     handle('brclio:terminal:viewport', rect => (rect === null ? terminalHost : getTerminalHost())?.setViewport(rect));
     handle('brclio:terminal:presentation', () => terminalHost?.getPresentation() || 'closed');
@@ -375,6 +399,7 @@ if (!gotLock) {
       }
     });
     shortcuts.initialize((await settings.read()).copyShortcut);
+    void initializeTerminalAlerts().catch(error => console.warn('终端快捷键恢复失败：', error.message));
     if (process.platform === 'darwin' && !app.isPackaged) {
       app.dock?.setIcon(path.join(__dirname, '../resources/icon.png'));
     }
@@ -412,6 +437,6 @@ if (!gotLock) {
       console.warn('小红书任务关闭失败：', error.message);
     }).then(() => softwareLogs.settle()).finally(() => { xhsQuitReady = true; app.quit(); });
   });
-  app.on('will-quit', () => { account.close(); shortcuts.dispose(); void updateProxy.close(); });
+  app.on('will-quit', () => { account.close(); terminalAlerts?.dispose(); shortcuts.dispose(); void updateProxy.close(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }

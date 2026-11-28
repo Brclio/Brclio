@@ -48,6 +48,14 @@ button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke
 #workspace { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; background: var(--screen); }
 .panel, .split, .pane { min-width: 0; min-height: 0; overflow: hidden; display: flex; flex: 1; }
 .panel { position: absolute; inset: 0; }
+.panel.maximized :is(.pane:not(.active), .splitter, .split:not(:has(.pane.active))) { display: none; }
+.panel.maximized :is(.split, .pane.active) { flex: 1 !important; }
+#pane-mode-bar { display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 0 12px; background: var(--paper); border-bottom: 1px solid var(--border); }
+#pane-mode-bar button { font-size: 12px; text-decoration: underline; }
+#broadcast-status { color: #853b22; font-weight: 600; }
+.pane[data-broadcast] .pane-heading::after { content: "广播"; color: var(--yellow); }
+#pane-key-hints, #broadcast-options p { font-size: 12px; color: var(--muted); }
+#broadcast-options summary { cursor: pointer; }
 .pane { flex-direction: column; background: var(--screen); }
 .pane-heading { display: flex; align-items: center; gap: 7px; padding: 4px 9px; min-height: 18px; font: 11px var(--mono); background: #242733; color: #c2c4cf; user-select: none; }
 .pane-heading::before { content: ""; height: 6px; width: 6px; border: 1px solid #9096a6; border-radius: 50%; flex: none; }
@@ -89,4 +97,8 @@ footer { flex: none; min-height: 32px; gap: 12px; justify-content: space-between
 #actions-dialog input:not([type=checkbox]), #actions-dialog select { max-width: 170px; }
 #actions-dialog input[type=number] { width: 64px; }
 #actions-dialog [role=status] { display: block; color: var(--blue-dark); }
+.pane { position: relative; }
+.session-badge { position: absolute; top: 34px; right: 18px; color: #b3bfd1; opacity: .48; font: 600 16px var(--mono); max-width: 75%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; z-index: 4; }
+.row-clock { color: #aebad3; }
+#paste-preview { width: 100%; box-sizing: border-box; }
 @media (max-width: 660px) { h1 img { display: none; } header { flex-wrap: wrap; gap: 3px; } .actions { flex-wrap: wrap; } }

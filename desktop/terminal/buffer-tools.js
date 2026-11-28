@@ -1,6 +1,6 @@
 'use strict';
 
-window.BrclioBufferTools = function installBufferTools({ panes, activePane, activate, dialog, copy, message }) {
+window.BrclioBufferTools = function installBufferTools({ panes, activePane, activate, dialog, copy, paste, message }) {
   const byId = id => document.getElementById(id);
   const results = byId('buffer-results');
   const status = text => { byId('buffer-status').textContent = text; };
@@ -48,7 +48,7 @@ window.BrclioBufferTools = function installBufferTools({ panes, activePane, acti
                 const live = pane.terminal.buffer.active;
                 const current = live.getLine(live.baseY + live.cursorY)?.translateToString(false, 0, live.cursorX) || '';
                 if (!current.endsWith(prefix)) return message('输入位置已改变，请重新补全。');
-                pane.terminal.paste(word.slice(prefix.length));
+                paste(pane, word.slice(prefix.length));
                 pane.terminal.focus();
               }
             });
