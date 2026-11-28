@@ -101,6 +101,7 @@ async function verifyHostLibrary(terminal) {
   await expect(dialog).toBeHidden();
   await expect(terminal.locator('#tabs [role=tab]')).toHaveCount(count + 1);
   await expect(terminal.locator('#tabs [aria-selected=true]')).toContainText('SSH');
+  await expect(terminal.locator('.pane.active:visible .xterm-helper-textarea')).toBeFocused();
   await terminal.locator('#tabs .tab:has([aria-selected=true]) .tab-close').click();
   await terminal.evaluate(() => window.BrclioRemoteConnections.open('ssh'));
   await expect(rows.filter({ hasText: '127.0.0.1:1' })).toHaveCount(1);
@@ -163,8 +164,16 @@ async function verifyWorkspaceHosts(terminal) {
     await expect(library.locator('#remote-advanced')).toHaveAttribute('open', '');
     await library.locator('#remote-environment').fill('BRCLIO_FIXTURE=test');
     await library.locator('#remote-save').click();
-    await library.locator('#remote-close').click();
+    await expect(library.locator('#remote-status')).toHaveText('已保存 侧栏改名');
+    // A user can focus the sidebar after dismissal, before Chromium delivers the close event.
+    await library.evaluate(dialog => new Promise(resolve => {
+      dialog.addEventListener('close', () => resolve(), { once: true });
+      dialog.querySelector('#remote-close').click();
+      document.querySelector('#workspace-hosts [data-host=search]').focus();
+    }));
+    await expect(search).toBeFocused();
     await search.fill('侧栏改名');
+    await expect(search).toHaveValue('侧栏改名');
     await list.getByRole('button',{name:'编辑主机 侧栏改名'}).click();
     await editor.getByLabel('用户名').fill('other-fixture');
     await editor.getByRole('button',{name:'保存主机'}).click();

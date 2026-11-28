@@ -244,7 +244,10 @@ window.BrclioRemoteConnections = {
         launch(kind, kindLabels[kind] + ' · ' + (value.name || target.host).slice(0, 64), target, value.startupSnippet, reference);
       }
       if (epoch !== accountGeneration) return;
-      if (dialog.open) dialog.close();
+      if (dialog.open) {
+        dialog.close();
+        if (kind !== 'files') activePane()?.terminal?.focus();
+      }
       // A connection can use unsaved edits. Keep that exact destination in its history.
       storage.recordUse(kind, target, matches ? saved.name : '');
       window.dispatchEvent(new Event('brclio-terminal-recents-changed'));
@@ -343,7 +346,11 @@ window.BrclioRemoteConnections = {
     byId('close').onclick = () => dialog.close();
     dialog.addEventListener('close', () => {
       byId('delete-check').hidden = true;
-      if (!document.querySelector('dialog[open]')) activePane()?.terminal?.focus();
+      // The close event is queued. The user may already be typing in the sidebar.
+      const focused = document.activeElement;
+      if ((focused === document.body || dialog.contains(focused)) && !document.querySelector('dialog[open]')) {
+        activePane()?.terminal?.focus();
+      }
     });
     byId('connections').addEventListener('toggle', () => {
       if (byId('connections').open) guarded(clients);
