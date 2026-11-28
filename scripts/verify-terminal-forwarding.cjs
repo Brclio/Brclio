@@ -101,6 +101,9 @@ async function verifyIdentity(terminal, app, directory) {
     await click('close');
     await terminal.evaluate(() => window.BrclioRemoteConnections.open());
     const host = terminal.locator('#remote-library');
+    await host.locator('#remote-view').selectOption('all');
+    await host.locator('#remote-group-filter').selectOption('');
+    await host.locator('#remote-search').fill('');
     await host.locator('#remote-new').click();
     await host.locator('#remote-name').fill('CI 认证主机');
     await host.locator('#remote-host').fill('first.example.invalid');
