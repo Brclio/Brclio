@@ -7,10 +7,13 @@ window.BrclioRemoteConnections = {
     const library = window.BrclioConnection;
     const storage = library.store(localStorage);
     const dialog = byId('library');
-    const fields = ['name', 'host', 'user', 'port', 'group', 'tags', 'jump', 'identityFile'];
+    const fields = ['name', 'host', 'user', 'port', 'group', 'tags', 'jump', 'identityFile', 'certificateFile'];
     const kindLabels = { ssh: 'SSH', sftp: 'SFTP 命令行', files: '文件浏览' };
     let selected = '';
     let original = null;
+    const authFields = ['host', 'user', 'port', 'jump'];
+    const addressDraft = () => JSON.stringify(authFields.map(field => byId(field).value.trim()));
+    let authAddress = addressDraft();
     let activeRecent = null;
     let accountGeneration = 0;
     let available = {};
@@ -18,6 +21,7 @@ window.BrclioRemoteConnections = {
     const form = () => ({
       ...Object.fromEntries(fields.map(field => [field, byId(field).value.trim()])),
       favorite: byId('favorite').checked,
+      agentForwarding: byId('agent-forwarding').checked,
     });
 
     function showItem(item, name = '') {
@@ -28,7 +32,9 @@ window.BrclioRemoteConnections = {
         byId(field).value = Array.isArray(value) ? value.join(', ') : value ?? '';
       }
       byId('favorite').checked = !!item?.favorite;
-      byId('advanced').open = !!(item?.jump || item?.identityFile);
+      byId('agent-forwarding').checked = item?.agentForwarding === true;
+      authAddress = addressDraft();
+      byId('advanced').open = !!(item?.jump || item?.identityFile || item?.certificateFile || item?.agentForwarding);
       byId('editor-title').textContent = selected || '新建主机';
       byId('remove').disabled = byId('duplicate').disabled = !selected;
       byId('delete-check').hidden = true;
@@ -180,6 +186,21 @@ window.BrclioRemoteConnections = {
       return connect(source.profile === 'ssh' ? 'sftp' : 'ssh', source.connection);
     });
 
+    for (const key of authFields) byId(key).addEventListener('input', () => {
+      const changed = authAddress !== addressDraft();
+      authAddress = addressDraft();
+      if (changed && (byId('agent-forwarding').checked || byId('certificateFile').value)) {
+        byId('agent-forwarding').checked = false;
+        byId('certificateFile').value = '';
+        status('SSH 目标已变更，请为新目标重新选择证书和代理转发设置。');
+      }
+    });
+    byId('choose-certificate').onclick = () => guarded(async () => {
+      const generation = accountGeneration;
+      const target = selected;
+      const result = await api.chooseIdentity('certificate');
+      if (result && generation === accountGeneration && target === selected && dialog.open) byId('certificateFile').value = result.path;
+    });
     byId('group-filter').onchange = byId('view').onchange = () => guarded(render);
     byId('search').oninput = () => guarded(render);
     byId('new').onclick = () => guarded(() => {

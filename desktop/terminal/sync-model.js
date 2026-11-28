@@ -5,6 +5,7 @@
   const hosts = node ? require('./connection.js') : window.BrclioConnection;
   const forwards = node ? require('./forward-model.js') : window.BrclioForwardModel;
   const collections = ['hosts', 'forwards'];
+  const localCredentials = ['identityFile', 'certificateFile', 'agentForwarding'];
   const empty = () => ({ hosts: [], forwards: [] });
   const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
   const sort = items => items.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
@@ -18,7 +19,8 @@
         const item = key === 'hosts' ? hosts.named(record) : forwards.rule(record);
         // Reconstruct from each feature's allowlisted schema. Device paths, secrets,
         // recent connections, transcripts and active processes never enter the payload.
-        delete (key === 'hosts' ? item : item.connection).identityFile;
+        const target = key === 'hosts' ? item : item.connection;
+        for (const field of localCredentials) delete target[field];
         if (names.has(item.name)) throw new Error('同步配置包含重复名称。');
         names.add(item.name);
         result[key].push(item);
@@ -72,9 +74,11 @@
             const prior = records.get(record.name);
             const previous = key === 'hosts' ? prior : prior?.connection;
             const target = key === 'hosts' ? record : record.connection;
-            if (previous?.identityFile) {
-              const { identityFile, ...previousAddress } = hosts.endpoint(previous);
-              if (equal(previousAddress, hosts.endpoint(target))) target.identityFile = identityFile;
+            if (!previous) continue;
+            const previousAddress = hosts.endpoint(previous);
+            for (const field of localCredentials) delete previousAddress[field];
+            if (equal(previousAddress, hosts.endpoint(target))) {
+              for (const field of localCredentials) if (previous[field]) target[field] = previous[field];
             }
           }
         }

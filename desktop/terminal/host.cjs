@@ -2,7 +2,7 @@
 
 const path = require('node:path');
 const fs = require('node:fs/promises');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { isLocalDocument } = require('../trusted-url.cjs');
 const { createPtyService } = require('./service.cjs');
 
@@ -11,6 +11,9 @@ const documentPath = path.join(__dirname, 'index.html');
 
 function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, alerts, accountRequest, getMainWindow, showMainWindow, onPresentation }) {
   let view;
+  let viewGeneration = 0;
+  let pendingView;
+  let viewScope;
   let owner;
   let detached;
   let loading;
@@ -57,13 +60,24 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     const cached = await identity.current();
     return (cached.known ? cached : await identity.verify(accountRequest)).user;
   }
+  require('./unbound-transfer.cjs').registerUnboundTransfer({ handle, WebContentsView, dialog, getView: () => view,
+    getOwner: () => owner, localUser, viewUserId: () => viewScope?.userId });
   const logs = require('./local-logs.cjs').registerLogs({ handle, directory: app.getPath('userData'),
-    storage: require('electron').safeStorage, target: sessions.target, owner: async () => (await localUser())?.id });
+    storage: require('electron').safeStorage, target: sessions.target, owner: async () => {
+      const user = await localUser();
+      return !viewScope?.temporary && user?.id === viewScope?.userId ? user?.id : undefined;
+    } });
   handle('sync-config', async (op, payload) => {
     const targetView = view;
+    if (viewScope?.temporary) {
+      if (op === 'local-session') return { known: true, user: null, temporary: true };
+      throw new Error('此窗口仅提供临时 Shell。联网后重新打开终端即可访问账号资料。');
+    }
     const result = op === 'local-session' ? await identity.current() :
       op === 'session' ? await identity.verify(accountRequest) : await syncAccount(accountRequest, op, payload);
     if (view !== targetView) throw new Error('终端已关闭。');
+    const resolved = op === 'local-session' || op === 'session' ? result.user?.id : result.userId;
+    if (resolved !== viewScope?.userId) throw new Error('登录状态已变化，请重新打开终端。');
     return result;
   });
   handle('profiles', sessions.profiles);
@@ -129,6 +143,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     const isActive = () => view === terminal && view?.getVisible() && owner?.isFocused();
     if (!isActive()) throw new Error('请先返回终端窗口。');
     const user = await localUser();
+    if (viewScope?.temporary || user?.id !== viewScope?.userId) throw new Error('请重新打开终端确认登录账号。');
     if (!isActive()) throw new Error('账号或活动窗口已变化。');
     const id = user?.id || '';
     if (vault?.owner !== id) {
@@ -194,6 +209,9 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   }
 
   function closeTerminal() {
+    viewGeneration++;
+    pendingView = undefined;
+    viewScope = undefined;
     vault = undefined;
     logs.reset();
     sftp.close();
@@ -263,9 +281,32 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     }
   }
 
-  function makeView() {
+  async function prepareView() {
+    if (view) return;
+    if (pendingView) return pendingView;
+    const generation = viewGeneration;
+    const creating = (async () => {
+      let scope;
+      try {
+        const user = await localUser();
+        const partition = user ? 'persist:brclio-terminal-' + createHash('sha256').update(user.id).digest('hex') : 'persist:brclio-terminal';
+        scope = { partition, userId: user?.id };
+      } catch {
+        // An unverified login must not expose either another account or the guest library.
+        scope = { partition: 'brclio-terminal-offline-' + randomUUID(), temporary: true };
+      }
+      if (generation !== viewGeneration) throw new Error('账号已变化，请重新打开终端。');
+      viewScope = scope;
+      makeView(scope.partition);
+    })();
+    pendingView = creating;
+    try { await creating; }
+    finally { if (pendingView === creating) pendingView = undefined; }
+  }
+
+  function makeView(partition) {
     const terminal = new WebContentsView({ webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'), partition: 'persist:brclio-terminal',
+      preload: path.join(__dirname, 'preload.cjs'), partition,
       contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true,
     } });
     view = terminal;
@@ -298,7 +339,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     detached = new BrowserWindow({
       title: 'Brclio 终端', width: 1060, height: 720, minWidth: 580, minHeight: 360,
       show: false, backgroundColor: '#181b25', icon: path.join(__dirname, '../../web/assets/icon.png'),
-      webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, partition: 'persist:brclio-terminal' },
+      webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, partition: 'brclio-terminal-window-shell' },
     });
     configureNavigation(detached.webContents);
     if (process.platform !== 'darwin') detached.setMenu(null);
@@ -307,9 +348,9 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
 
   async function open(next = 'inline') {
     if (next !== 'inline' && next !== 'window') throw new Error('未知的终端显示模式。');
+    await prepareView();
     const target = next === 'window' ? windowForTerminal() : (getMainWindow() || showMainWindow());
     if (!target || target.isDestroyed()) throw new Error('无法打开 Brclio 主窗口。');
-    if (!view) makeView();
     const terminal = view;
     if (owner !== target) {
       removeView();

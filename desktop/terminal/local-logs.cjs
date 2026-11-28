@@ -10,7 +10,7 @@ const MAX_LOGS = 16;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const title = (value, limit) => typeof value === 'string' && value.trim() && value.trim().length <= limit &&
   !/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/u.test(value) ? value.trim() : '';
-const plain = raw => stripVTControlCharacters(raw.replace(/\x1b(?:P|_|\^|X)[\s\S]*?(?:\x1b\\|$)/g, ''))
+const plain = raw => stripVTControlCharacters(raw.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\|$)|\x1b[PX^_][\s\S]*?(?:\x1b\\|$)/g, ''))
   .replace(/\r\n/g, '\n').replace(/[\r\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
 
 function registerLogs({ handle, owner, directory, storage, target }) {

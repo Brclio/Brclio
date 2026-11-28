@@ -12,6 +12,7 @@
   const extras = [snippets, arrangements, dynamic, rules];
   const profiles = 'brclio.terminal.profiles.v1';
   const keys = [legacy, hostKey, forwardKey, identityKey, profiles, ...extras];
+  const receipt = 'brclio.terminal.unbound-receipt.v1';
 
   function combined(existing, imported, maximum) {
     const names = new Map(existing.map(item => [item.name, item]));
@@ -98,30 +99,49 @@
         return !!(library.hosts.length || library.recent.length || parse(raw, forwardKey, []).length || parse(raw, identityKey, []).length ||
           parse(raw, profiles, {}).presets?.length || extras.some(key => { const value = raw.getItem(key); return value !== null && value !== '[]'; }));
       },
+      snapshotUnbound() {
+        return Object.fromEntries(keys.map(key => [key, raw.getItem(key)]));
+      },
+      clearUnboundIfMatches(values) {
+        if (!keys.every(key => Object.hasOwn(values, key) && raw.getItem(key) === values[key])) return false;
+        for (const key of keys) raw.removeItem(key);
+        return true;
+      },
       moveUnbound() {
-        if (!ready || !owner) throw new Error('请先确认移入资料的 Brclio 账号。');
-        const source = hosts(raw), destination = hosts(storage);
+        const snapshot = this.snapshotUnbound();
+        this.importUnbound(owner, snapshot);
+        if (!this.clearUnboundIfMatches(snapshot)) throw new Error('本机资料已更改，原资料已保留。');
+      },
+      importUnbound(expectedOwner, snapshot, revision) {
+        if (!ready || !owner || owner !== expectedOwner) throw new Error('请先确认移入资料的 Brclio 账号。');
+        if (revision && (!/^[a-f0-9]{64}$/.test(revision))) throw new Error('迁移版本无效。');
+        if (!snapshot || !keys.every(key => Object.hasOwn(snapshot, key) && (snapshot[key] === null || typeof snapshot[key] === 'string')) ||
+            Object.keys(snapshot).length !== keys.length) throw new Error('本机迁移资料格式无效。');
+        if (revision && storage.getItem(receipt) === JSON.stringify(revision)) return;
+        const input = { getItem: key => snapshot[key] ?? null };
+        const source = hosts(input), destination = hosts(storage);
         const merged = combined(destination.hosts, source.hosts, 2048);
         const recent = [...destination.recent, ...source.recent.map(item =>
           item.name && merged.mapped.has(item.name) ? { ...item, name: merged.mapped.get(item.name) } : item)];
         const values = [
           [hostKey, { hosts: merged.items, recent: [...new Map(recent.map(item => [JSON.stringify(item), item])).values()].slice(0, 24) }],
-          [forwardKey, combined(parse(storage, forwardKey, []), parse(raw, forwardKey, []), 128).items],
-          [identityKey, combined(parse(storage, identityKey, []), parse(raw, identityKey, []), 128).items],
+          [forwardKey, combined(parse(storage, forwardKey, []), parse(input, forwardKey, []), 128).items],
+          [identityKey, combined(parse(storage, identityKey, []), parse(input, identityKey, []), 128).items],
         ];
         let profileNames = new Map();
-        if (raw.getItem(profiles) !== null) {
-          const from = parse(raw, profiles, {}), to = parse(storage, profiles, {});
+        if (input.getItem(profiles) !== null) {
+          const from = parse(input, profiles, {}), to = parse(storage, profiles, {});
           const mergedProfiles = combined(to.presets || [], from.presets || [], 64);
           profileNames = mergedProfiles.mapped;
           values.push([profiles, { presets: mergedProfiles.items, active: to.active || profileNames.get(from.active) || '默认' }]);
         }
         for (const key of extras) {
-          if (raw.getItem(key) === null) continue;
-          let imported = parse(raw, key, []);
+          if (input.getItem(key) === null) continue;
+          let imported = parse(input, key, []);
           if (key === rules) imported = imported.map(rule => ({ ...rule, profile: profileNames.get(rule.profile) || rule.profile }));
           values.push([key, combineExtras(key, parse(storage, key, []), imported)]);
         }
+        if (revision) values.push([receipt, revision]);
         const before = values.map(([key]) => storage.getItem(key));
         try {
           values.forEach(([key, data]) => storage.setItem(key, JSON.stringify(data)));
@@ -132,9 +152,6 @@
           });
           throw error;
         }
-        // Account data never uses raw keys. Only a confirmed move consumes the
-        // unassociated library; logging in or enabling cloud sync cannot do so.
-        for (const key of keys) raw.removeItem(key);
       },
     };
   }

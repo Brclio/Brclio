@@ -267,10 +267,14 @@
                 </div>
                 <datalist id="remote-groups"></datalist>
                 <label class="host-favorite"><input id="remote-favorite" type="checkbox"> 收藏主机</label>
-                <details id="remote-advanced"><summary>跳板和身份文件</summary>
+                <details id="remote-advanced"><summary>跳板、身份和 SSH 认证</summary>
                   <label>跳板链<input id="remote-jump" maxlength="2048" placeholder="user@jump:22，多跳用逗号分隔" spellcheck="false"></label>
                   <label>本机 SSH 身份<select id="remote-identity-preset"><option value="">手动 / 本机密钥</option></select></label>
                   <label>私钥文件路径<input id="remote-identityFile" maxlength="1024" placeholder="例如 ~/.ssh/id_ed25519" spellcheck="false"></label>
+                  <label>SSH 用户证书<input id="remote-certificateFile" maxlength="1024" placeholder="例如 ~/.ssh/id_ed25519-cert.pub" spellcheck="false"></label>
+                  <button id="remote-choose-certificate" type="button">选择证书文件</button>
+                  <label class="host-favorite"><input id="remote-agent-forwarding" type="checkbox"> 向此主机转发 SSH 认证代理</label>
+                  <small>证书路径和代理转发设置仅保存在本机，应用于此主机的 SSH 终端。启用代理转发后，远端可在连接期间请求本机代理签名。</small>
                 </details>
                 <div class="host-row host-launch"><button id="remote-ssh" type="button" disabled>SSH 终端</button><button id="remote-files" type="button">浏览文件</button><button id="remote-sftp" type="button" disabled>SFTP 命令行</button></div>
                 <div class="host-row"><button id="remote-save" type="submit">保存主机</button><button id="remote-duplicate" type="button" disabled>复制为新主机</button><button id="remote-remove" type="button" disabled>删除</button></div>

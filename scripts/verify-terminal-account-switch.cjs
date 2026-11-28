@@ -53,6 +53,7 @@ async function main() {
     await login('fixture-a');
     let terminal = await openTerminal('fixture-a');
     await terminal.evaluate(() => {
+      localStorage.setItem('terminal-isolation-fixture','only-account-a');
       window.BrclioConnection.store(localStorage).save({name:'A private fixture',host:'a.example.test'});
     });
     const previous = terminal.waitForEvent('close');
@@ -61,12 +62,15 @@ async function main() {
     await login('fixture-b');
     terminal = await openTerminal('fixture-b');
     assert.deepEqual(await terminal.evaluate(() => window.BrclioConnection.store(localStorage).all()),[]);
+    assert.equal(await terminal.evaluate(() => localStorage.getItem('terminal-isolation-fixture')), null);
     await terminal.evaluate(() => window.BrclioConnection.store(localStorage).save({name:'B private fixture',host:'b.example.test'}));
     const closed = terminal.waitForEvent('close');
     await login('fixture-a');
     await closed;
     terminal = await openTerminal('fixture-a');
+    assert.equal(await terminal.evaluate(() => localStorage.getItem('terminal-isolation-fixture')), 'only-account-a');
     assert.deepEqual(await terminal.evaluate(() => window.BrclioConnection.store(localStorage).all().map(h => h.name)),['A private fixture']);
+    await require('./verify-terminal-unbound-transfer.cjs').verifyUnboundTransfer(app, terminal);
     console.log('Native account login, logout, PTY teardown, local-only A/B separation and return to A passed.');
   } finally {
     await app?.close();

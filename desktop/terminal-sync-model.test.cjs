@@ -29,21 +29,25 @@ test('three-way sync merges independent edits and deletions, then asks before re
 
 test('cloud snapshot omits secret fields, session history and local identity paths; applying never reassigns an identity to another endpoint', () => {
   const raw = memory(), hosts = store(raw), rules = forwards.store(raw);
-  hosts.save({ ...host('fixture'), jump: 'gate', identityFile: '/fixture/key', key: 'secret', password: 'secret', favorite: true });
+  hosts.save({ ...host('fixture'), jump: 'gate', identityFile: '/fixture/key', certificateFile: '/fixture/test.pub', agentForwarding: true, key: 'secret', password: 'secret', favorite: true });
   hosts.recordUse('ssh', host('history'));
   rules.save({ name: 'proxy', type: 'dynamic', listenHost: '127.0.0.1', listenPort: 8765,
     connection: { host: 'gate', identityFile: '~/.ssh/test', secret: 'hidden' } });
   const lib = models.localLibraries(raw);
   const snapshot = lib.read();
-  assert.doesNotMatch(JSON.stringify(snapshot), /key|~\/|secret|history|hidden/);
+  assert.doesNotMatch(JSON.stringify(snapshot), /key|~\/|secret|history|hidden|certificateFile|agentForwarding/);
   assert.equal(snapshot.hosts[0].jump, 'gate');
   snapshot.hosts[0].group = 'test';
   lib.apply(snapshot);
   assert.equal(hosts.all()[0].identityFile, '/fixture/key');
+  assert.equal(hosts.all()[0].certificateFile, '/fixture/test.pub');
+  assert.equal(hosts.all()[0].agentForwarding, true);
   assert.equal(rules.all()[0].connection.identityFile, '~/.ssh/test');
   snapshot.hosts[0].host = 'other';
   lib.apply(snapshot);
   assert.equal(hosts.all()[0].identityFile, undefined);
+  assert.equal(hosts.all()[0].certificateFile, undefined);
+  assert.equal(hosts.all()[0].agentForwarding, undefined);
   assert.equal(hosts.recents()[0].host, 'history');
 });
 

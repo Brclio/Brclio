@@ -12,7 +12,7 @@ const { once } = require('node:events');
 const { setTimeout: delay } = require('node:timers/promises');
 const { promisify } = require('node:util');
 const model = require('./terminal/forward-model.js');
-const { program } = require('./terminal/remote-launch.cjs');
+const { program, argumentsFor } = require('./terminal/remote-launch.cjs');
 const { createPtySessions } = require('./terminal/pty.cjs');
 const run = promisify(execFile);
 
@@ -110,12 +110,14 @@ test('native PTYs forward real loopback traffic through local, remote and dynami
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const hostKey = path.join(directory, 'host-key');
     const userKey = path.join(directory, 'user-key');
-    for (const key of [hostKey,userKey]) await run('ssh-keygen', ['-q','-t','ed25519','-N','','-f', key]);
+    const ca = path.join(directory, 'temporary-ca');
+    const principalKey = path.join(directory, 'temporary-principal');
+    for (const key of [hostKey,userKey,ca,principalKey]) await run('ssh-keygen', ['-q','-t','ed25519','-N','','-f', key]);
     const port = await freePort();
     const serverConfig = path.join(directory, 'sshd.conf');
     await fs.writeFile(serverConfig, [
       'ListenAddress 127.0.0.1', 'Port ' + port, 'HostKey "' + hostKey + '"', 'AuthorizedKeysFile "' + userKey + '.pub"',
-      'PidFile "' + path.join(directory, 'pid') + '"', 'UsePAM no', 'StrictModes no', 'PasswordAuthentication no', 'AllowTcpForwarding yes', '',
+      'TrustedUserCAKeys "' + ca + '.pub"', 'PidFile "' + path.join(directory, 'pid') + '"', 'UsePAM no', 'StrictModes no', 'PasswordAuthentication no', 'AllowTcpForwarding yes', '',
     ].join('\n'));
     const daemon = spawn('/usr/sbin/sshd', ['-D','-e','-f',serverConfig], { stdio: 'ignore' });
     t.after(() => { daemon.kill(); });
@@ -125,6 +127,28 @@ test('native PTYs forward real loopback traffic through local, remote and dynami
     const config = path.join(directory, 'ssh.conf');
     await fs.writeFile(config, ['Host *', ' BatchMode yes', ' StrictHostKeyChecking yes', ' IdentitiesOnly yes',
       ' GlobalKnownHostsFile none', ' UserKnownHostsFile "' + known + '"', ' IdentityAgent none', ''].join('\n'));
+    await run('ssh-keygen', ['-q','-s',ca,'-I','localhost-only-fixture','-n',os.userInfo().username,principalKey + '.pub']);
+    const certificateFile = path.join(directory, 'selected "user" certificate.pub');
+    await fs.rename(principalKey + '-cert.pub', certificateFile);
+    const { verifyCertificate } = require('./terminal/identity-host.cjs');
+    await verifyCertificate(certificateFile);
+    await assert.rejects(verifyCertificate(principalKey + '.pub'), /用户证书/);
+    const address = { host: '127.0.0.1', user: os.userInfo().username, port, identityFile: principalKey };
+    const agentSocket = path.join(directory, 'agent');
+    const agent = spawn('/usr/bin/ssh-agent', ['-D', '-a',agentSocket], { stdio:'ignore' });
+    t.after(() => { agent.kill(); });
+    const agentReady = Date.now() + 3000;
+    while (!(await fs.stat(agentSocket).catch(() => null))?.isSocket()) {
+      if (Date.now() >= agentReady) assert.fail('Temporary ssh-agent failed to start');
+      await delay(25);
+    }
+    const command = (target, script) => run(program('ssh'), ['-F',config,'-o','IdentityAgent=SSH_AUTH_SOCK', ...argumentsFor('ssh',target),script], {
+      env: { ...process.env, SSH_AUTH_SOCK: agentSocket }, timeout: 5000,
+    });
+    await assert.rejects(command(address, 'true'), /Permission denied/);
+    await command({ ...address, certificateFile }, 'test -z "$SSH_AUTH_SOCK"');
+    await command({ ...address, certificateFile, agentForwarding: true }, 'test -S "$SSH_AUTH_SOCK"');
+
     const echo = net.createServer(socket => { socket.on('error', () => {}); socket.pipe(socket); });
     const echoPort = await listen(echo);
     t.after(() => new Promise(resolve => echo.close(resolve)));

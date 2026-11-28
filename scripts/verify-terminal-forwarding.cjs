@@ -67,6 +67,7 @@ async function verifyIdentity(terminal, app, directory) {
   if (!ssh) return;
   const saved = await app.evaluateHandle(({ dialog }) => dialog.showSaveDialog);
   const savedClipboard = await app.evaluateHandle(({ clipboard }) => clipboard.writeText);
+  const openFile = await app.evaluateHandle(({ dialog }) => dialog.showOpenDialog);
   try {
     await app.evaluate(({ dialog, clipboard }, file) => {
       dialog.showSaveDialog = async () => ({ canceled: false, filePath: file });
@@ -100,10 +101,36 @@ async function verifyIdentity(terminal, app, directory) {
     await click('close');
     await terminal.evaluate(() => window.BrclioRemoteConnections.open());
     const host = terminal.locator('#remote-library');
+    await host.locator('#remote-new').click();
+    await host.locator('#remote-name').fill('CI 认证主机');
+    await host.locator('#remote-host').fill('first.example.invalid');
     await host.locator('#remote-advanced').evaluate(element => { element.open = true; });
     await host.locator('#remote-identity-preset').selectOption('临时 CI 身份');
     await expect(host.locator('#remote-identityFile')).toHaveValue(file);
     await expect(host.locator('#remote-user')).toHaveValue('fixture');
+    const path = require('node:path');
+    const ssh = require('../desktop/terminal/remote-launch.cjs').program('ssh');
+    const keygen = path.join(path.dirname(ssh), process.platform === 'win32' ? 'ssh-keygen.exe' : 'ssh-keygen');
+    const run = require('node:util').promisify(require('node:child_process').execFile);
+    const ca = path.join(directory, 'fixture-ca');
+    await run(keygen, ['-q','-t','ed25519','-N','','-f',ca], {timeout:10000, windowsHide:true});
+    await run(keygen, ['-q','-s',ca,'-I','fixture-only','-n','fixture',file + '.pub'], {timeout:10000, windowsHide:true});
+    await app.evaluate(({ dialog }, fixture) => {
+      dialog.showOpenDialog = async () => ({ canceled:false, filePaths:[fixture] });
+    }, file + '-cert.pub');
+    await host.locator('#remote-choose-certificate').click();
+    await expect(host.locator('#remote-certificateFile')).toHaveValue(file + '-cert.pub');
+    await expect(host.locator('#remote-agent-forwarding')).not.toBeChecked();
+    await host.locator('#remote-agent-forwarding').check();
+    await host.locator('#remote-save').click();
+    await host.locator('#remote-list button').filter({ hasText:'CI 认证主机' }).click();
+    await expect(host.locator('#remote-agent-forwarding')).toBeChecked();
+    await expect(host.locator('#remote-certificateFile')).toHaveValue(file + '-cert.pub');
+    await host.locator('#remote-host').fill('other.example.invalid');
+    await expect(host.locator('#remote-agent-forwarding')).not.toBeChecked();
+    await expect(host.locator('#remote-certificateFile')).toHaveValue('');
+    await host.locator('#remote-remove').click();
+    await host.locator('#remote-delete-confirm').click();
     await host.locator('#remote-close').click();
     await terminal.evaluate(() => window.BrclioIdentityControls.open());
     await click('remove');
@@ -111,6 +138,8 @@ async function verifyIdentity(terminal, app, directory) {
   } finally {
     await app.evaluate(({ dialog }, original) => { dialog.showSaveDialog = original; }, saved);
     await app.evaluate(({ clipboard }, original) => { clipboard.writeText = original; delete globalThis.__brclioPublicKeyCheck; }, savedClipboard);
+    await app.evaluate(({dialog},original) => { dialog.showOpenDialog = original; }, openFile);
+    await openFile.dispose();
     await saved.dispose();
     await savedClipboard.dispose();
   }

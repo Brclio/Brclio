@@ -15,9 +15,9 @@ const openSSH = require('./terminal/remote-launch.cjs');
 const { createPtySessions } = require('./terminal/pty.cjs');
 
 test('SSH uses native argv and both clients inherit unspecified OpenSSH configuration', () => {
-  assert.deepEqual(openSSH.argumentsFor('ssh', { host: 'build-host' }), ['--', 'build-host']);
+  assert.deepEqual(openSSH.argumentsFor('ssh', { host: 'build-host' }), ['-a', '--', 'build-host']);
   const value = { host: '[fe80::1%en0]', user: 'dev@example.org', port: 42817 };
-  assert.deepEqual(openSSH.argumentsFor('ssh', value), ['-p', '42817', '-l', 'dev@example.org', '--', 'fe80::1%en0']);
+  assert.deepEqual(openSSH.argumentsFor('ssh', value), ['-a', '-p', '42817', '-l', 'dev@example.org', '--', 'fe80::1%en0']);
   assert.deepEqual(openSSH.argumentsFor('sftp', value), ['-P', '42817', '-o', 'User=dev@example.org', '--', '[fe80::1%en0]']);
   assert.deepEqual(openSSH.argumentsFor('sftp', { host: 'dev' }), ['--', 'dev']);
   for (const host of ['-o', 'name:/path', 'user@name', 'bad host', 'host/dir', 'label;next', '\n-x', 'abc::::1']) {
@@ -60,7 +60,7 @@ test('a remote tab starts the system client directly with its own local PTY', t 
     assert.equal(info.shell, file);
     const { file: executable, args, options } = calls.at(-1);
     assert.equal(executable, file);
-    assert.deepEqual(args, ['--', 'workstation']);
+    assert.deepEqual(args, kind === 'ssh' ? ['-a', '--', 'workstation'] : ['--', 'workstation']);
     assert.equal(options.cwd, home);
     assert.equal(options.env.TERM_PROGRAM, 'Brclio');
     assert.equal(options.env.SSH_AUTH_SOCK, process.env.SSH_AUTH_SOCK);

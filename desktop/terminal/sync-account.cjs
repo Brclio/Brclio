@@ -1,12 +1,13 @@
 'use strict';
 
 const path = '/api/account/apps/terminal/data';
+const isUserId = value => typeof value === 'string' && /^[a-zA-Z0-9-]{1,128}$/.test(value);
 async function syncAccount(request, operation, payload) {
   if (operation === 'session') {
     const { user } = await request({ path: '/api/account/session' });
     return { user: user ? { id: user.id, email: user.email } : null };
   }
-  if (!payload || typeof payload.expectedUserId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(payload.expectedUserId))
+  if (!payload || !isUserId(payload.expectedUserId))
     throw new Error('请先确认当前登录账号。');
   let record;
   if (operation === 'read') record = await request({ path });
@@ -32,7 +33,7 @@ function localIdentity(directory, sessionStore = require('../account.cjs').creat
     if (!token) return {known:true, user:null};
     try {
       const data = JSON.parse(await fs.readFile(record, 'utf8'));
-      if (data.digest === digest(token) && /^[a-zA-Z0-9-]{1,128}$/.test(data.user?.id))
+      if (data.digest === digest(token) && isUserId(data.user?.id))
         return {known:true, user:{id:data.user.id, email:data.user.email}};
     } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
     return {known:false,user:null};
@@ -45,7 +46,7 @@ function localIdentity(directory, sessionStore = require('../account.cjs').creat
       await fs.rm(record, {force:true});
       return result;
     }
-    if (!token || !/^[a-zA-Z0-9-]{1,128}$/.test(result.user.id)) throw new Error('本机登录信息已失效。');
+    if (!token || !isUserId(result.user.id)) throw new Error('本机登录信息已失效。');
     const temporary = record + '.' + randomUUID() + '.tmp';
     try {
       await fs.writeFile(temporary, JSON.stringify({digest:digest(token),user:result.user}), {flag:'wx', mode:0o600});

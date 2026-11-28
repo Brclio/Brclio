@@ -23,12 +23,20 @@ function program(kind, platform = process.platform, env = process.env) {
   return null;
 }
 
-function argumentsFor(kind, value) {
-  const { host, port, user, jump, identityFile } = endpoint(value);
+function argumentsFor(kind, value, interactive = kind === 'ssh') {
+  const { host, port, user, jump, identityFile, certificateFile, agentForwarding } = endpoint(value);
   const args = [];
   if (jump) args.push('-J', jump);
   if (identityFile) args.push('-i', identityFile);
   if (kind === 'ssh') {
+    // Do not inherit a wildcard ForwardAgent directive for a different host or a background tunnel.
+    args.push(interactive && agentForwarding ? '-A' : '-a');
+    if (interactive && certificateFile) {
+      const file = /^[a-z]:[\\/]/i.test(certificateFile) ? certificateFile.replaceAll('\\', '/') : certificateFile;
+      // -o parses an ssh_config token even when passed directly through native argv.
+      const quoted = file.replaceAll('%', '%%').replace(/["\\]/g, '\\$&');
+      args.push('-o', 'CertificateFile="' + quoted + '"');
+    }
     if (port) args.push('-p', String(port));
     if (user) args.push('-l', user);
     return [...args, '--', host];

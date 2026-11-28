@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
 const { createHash, randomUUID } = require('node:crypto');
 const { program } = require('./remote-launch.cjs');
 
@@ -19,11 +20,15 @@ function newPath(file) {
   return file;
 }
 
-function keygen(value, platform, env) {
+function keygenProgram(platform, env) {
   const ssh = program('ssh', platform, env);
   const file = ssh && path.join(path.dirname(ssh), platform === 'win32' ? 'ssh-keygen.exe' : 'ssh-keygen');
   if (!file || !fs.existsSync(file)) throw new Error('未找到系统 ssh-keygen，请安装 OpenSSH 客户端。');
-  return { file, args: ['-t', 'ed25519', '-a', '64', '-f', newPath(value?.keyPath)] };
+  return file;
+}
+
+function keygen(value, platform, env) {
+  return { file: keygenProgram(platform, env), args: ['-t', 'ed25519', '-a', '64', '-f', newPath(value?.keyPath)] };
 }
 
 async function publicPart(file) {
@@ -47,15 +52,44 @@ async function publicPart(file) {
   } finally { await handle.close(); }
 }
 
+async function verifyCertificate(file) {
+  const opened = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+  let content;
+  try {
+    const info = await opened.stat();
+    if (!info.isFile() || info.size > 256 * 1024) throw new Error('请选择 OpenSSH 用户证书文件。');
+    const prefix = Buffer.alloc(160);
+    const { bytesRead } = await opened.read(prefix, 0, prefix.length, 0);
+    if (!/^[a-z0-9@._-]+-cert-v01@openssh\.com[ \t]/i.test(prefix.toString('ascii', 0, bytesRead))) {
+      throw new Error('请选择已签名的 OpenSSH 用户证书（通常为 -cert.pub）。');
+    }
+    content = await opened.readFile();
+  } finally { await opened.close(); }
+  const program = keygenProgram(process.platform, process.env);
+  await new Promise((resolve, reject) => {
+    const child = execFile(program, ['-L', '-f', '-'], { timeout: 4000, maxBuffer: 512 * 1024, windowsHide: true,
+      env: { ...process.env, LANG: 'C', LC_ALL: 'C' } }, (error, stdout) => {
+      if (error || !/Type:\s+[^\r\n]*\buser certificate\b/i.test(stdout)) reject(new Error('文件不是有效的 OpenSSH 用户证书。'));
+      else resolve();
+    });
+    child.stdin.on('error', error => { if (error.code !== 'EPIPE') reject(error); });
+    child.stdin.end(content);
+  });
+}
+
 function register({ handle, dialog, getOwner, home }) {
   const grants = new Map();
   handle('identity-public', publicPart);
   handle('identity-choose', async mode => {
-    if (mode === 'existing') {
-      const result = await dialog.showOpenDialog(getOwner(), { title: '选择现有的 SSH 私钥', properties: ['openFile', 'showHiddenFiles'] });
+    if (mode === 'existing' || mode === 'certificate') {
+      const result = await dialog.showOpenDialog(getOwner(), {
+        title: mode === 'certificate' ? '选择 OpenSSH 用户证书' : '选择现有的 SSH 私钥',
+        properties: ['openFile', 'showHiddenFiles'],
+      });
       if (result.canceled || !result.filePaths.length) return null;
       const file = target(result.filePaths[0]);
-      if (/\.pub$/i.test(file)) throw new Error('请选择私钥本身。');
+      if (mode === 'certificate') await verifyCertificate(file);
+      if (mode === 'existing' && /\.pub$/i.test(file)) throw new Error('请选择私钥本身。');
       return { path: file };
     }
     if (mode !== 'generate') throw new Error('未知的密钥选择方式。');
@@ -78,4 +112,4 @@ function register({ handle, dialog, getOwner, home }) {
   } };
 }
 
-module.exports = { register, keygen, publicPart };
+module.exports = { register, keygen, publicPart, verifyCertificate };

@@ -67,14 +67,18 @@
       if (hops.length > 8) throw new Error('一条连接最多使用 8 个跳板。');
       result.jump = hops.map(hop => format(parseAddress(hop.trim()))).join(',');
     }
-    if (value.identityFile != null && value.identityFile !== '') {
-      const file = value.identityFile;
+    for (const field of ['identityFile', 'certificateFile']) {
+      const file = value[field];
+      if (file == null || file === '') continue;
       if (typeof file !== 'string' || file.length > 1024 || invisible.test(file) ||
           !/^(?:\/(?!\/)|~\/|[a-z]:[\\/])/i.test(file)) {
-        throw new Error('私钥文件请填写本机绝对路径，或以 ~/ 开头的路径。');
+        throw new Error((field === 'identityFile' ? '私钥' : '证书') + '文件请填写本机绝对路径，或以 ~/ 开头的路径。');
       }
-      result.identityFile = file;
+      if (field === 'certificateFile' && file.includes('${')) throw new Error('证书路径包含 OpenSSH 环境变量占位符，请选择其他文件名。');
+      result[field] = file;
     }
+    if (value.agentForwarding != null && typeof value.agentForwarding !== 'boolean') throw new Error('代理转发开关格式无效。');
+    if (value.agentForwarding === true) result.agentForwarding = true;
     return result;
   }
 
@@ -161,7 +165,7 @@
       recordUse(kind, target, name) {
         const library = read();
         const item = recent({ ...target, kind, name });
-        const signature = value => JSON.stringify([value.kind, value.host, value.user, value.port, value.jump, value.identityFile]);
+        const signature = value => JSON.stringify([value.kind, value.host, value.user, value.port, value.jump, value.identityFile, value.certificateFile, value.agentForwarding]);
         library.recent = [item, ...library.recent.filter(entry => signature(entry) !== signature(item))].slice(0, 24);
         write(library);
       },

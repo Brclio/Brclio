@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('brclioTerminal', Object.freeze({
   chooseDirectory: () => ipcRenderer.invoke(prefix + 'directory'),
   remoteClients: () => ipcRenderer.invoke(prefix + 'remote-clients'),
   onSyncAccountChanged: callback => subscribe('sync-account-changed', callback),
+  unboundTransfer: (op, userId) => ipcRenderer.invoke(prefix + 'unbound-transfer', op, userId),
   syncTerminal: (op, payload) => ipcRenderer.invoke(prefix + 'sync-config', op, payload),
   localLogs: (op, data) => ipcRenderer.invoke(prefix + 'local-logs', op, data),
   serialPorts: () => ipcRenderer.invoke(prefix + 'serial-ports'),

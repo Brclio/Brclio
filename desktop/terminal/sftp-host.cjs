@@ -27,7 +27,7 @@ async function startConnection(value, { configFile, askpass = prepareAskpass } =
   const auth = await askpass();
   try {
     const args = ['-T', '-o', 'StrictHostKeyChecking=ask', '-o', 'ClearAllForwardings=yes', '-o', 'ConnectionAttempts=1',
-      '-o', 'ConnectTimeout=15', '-o', 'NumberOfPasswordPrompts=2', '-s', ...argumentsFor('ssh', target), 'sftp'];
+      '-o', 'ConnectTimeout=15', '-o', 'NumberOfPasswordPrompts=2', '-s', ...argumentsFor('ssh', target, false), 'sftp'];
     if (configFile) args.unshift('-F', configFile);
     const child = spawn(executable, args, { shell: false, windowsHide: true, detached: process.platform !== 'win32',
       env: { ...process.env, SSH_ASKPASS_REQUIRE: 'force', SSH_ASKPASS: auth.file,

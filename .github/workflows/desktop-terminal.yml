@@ -104,6 +104,11 @@ jobs:
         env:
           BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
         run: node scripts/verify-terminal.cjs
+      - name: Verify opt-in account-local logs in the packaged terminal
+        timeout-minutes: 3
+        env:
+          BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
+        run: node scripts/verify-terminal-local-logs.cjs
       - name: Provide tmux inside WSL for Windows control-mode tests
         if: matrix.platform == 'win'
         uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0

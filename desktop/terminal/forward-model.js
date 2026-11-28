@@ -38,7 +38,7 @@
     const args = ['-N', '-T', '-S', 'none', '-o', 'ControlMaster=no',
       '-o', 'IgnoreUnknown=ForkAfterAuthentication', '-o', 'ForkAfterAuthentication=no',
       '-o', 'ExitOnForwardFailure=yes', { local: '-L', remote: '-R', dynamic: '-D' }[item.type], specification];
-    return [...args, ...require('./remote-launch.cjs').argumentsFor('ssh', item.connection)];
+    return [...args, ...require('./remote-launch.cjs').argumentsFor('ssh', item.connection, false)];
   }
 
   function store(storage) {

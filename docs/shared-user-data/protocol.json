@@ -74,7 +74,8 @@
   },
   "applications": {
     "brclio": "apps/brclio.json",
-    "miniapp": "apps/miniapp.json"
+    "miniapp": "apps/miniapp.json",
+    "terminal": "apps/terminal.json"
   },
   "applicationDeploymentEvidence": {
     "miniapp": {"pagesDeployment": "21884f14", "pagesUrl": "https://21884f14.brclio-miniapp-wechat.pages.dev", "productionDomains": ["pocket.bornforthis.cn", "pocket.brclio.com"], "matchedFilePaths": ["/", "/projects/ready-go-duel/", "/projects/ready-go-duel/match/bundle.js"], "nativeAnonymousSessionStatus": 200, "anonymousPrivateDataStatus": 401, "checksPerDomain": 5, "productionChecksPassed": 10, "localTestsPassed": 174, "storageRoundTripFix": "deployed-and-hash-verified", "wechatNativeFreshCompileUploadAndPublication": "not-verified"}

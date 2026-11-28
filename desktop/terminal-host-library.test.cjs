@@ -23,7 +23,7 @@ test('quick connect handles shell aliases, SSH/SFTP URLs, IPv6 zone IDs and expl
 test('multi-hop jump chains and named identities are passed as validated native arguments for both system clients', () => {
   const target = { host: 'prod', jump: 'alice@host:2200, [::1]:2222', identityFile: '/Users/demo/my key' };
   for (const kind of ['ssh', 'sftp']) {
-    assert.deepEqual(argumentsFor(kind, target), ['-J', 'alice@host:2200,[::1]:2222', '-i', '/Users/demo/my key', '--', 'prod']);
+    assert.deepEqual(argumentsFor(kind, target), ['-J', 'alice@host:2200,[::1]:2222', '-i', '/Users/demo/my key', ...(kind === 'ssh' ? ['-a'] : []), '--', 'prod']);
   }
   assert.equal(endpoint({ host: 'alias', identityFile: 'C:\\work\\my key' }).identityFile, 'C:\\work\\my key');
   for (const jump of ['-oProxyCommand=x', 'host,,other', 'host:22;noop', 'a,b,c,d,e,f,g,h,i']) {
@@ -32,6 +32,19 @@ test('multi-hop jump chains and named identities are passed as validated native 
   for (const identityFile of ['-p 2222', 'relative/path', '/file\nother', '\\\\remote\\share\\file']) {
     assert.throws(() => endpoint({ host: 'alias', identityFile }));
   }
+});
+
+test('interactive SSH permits per-host agent forwarding and a separately selected certificate', () => {
+  const value = { host: 'example', certificateFile: 'C:\\user keys\\example-cert.pub', agentForwarding: true };
+  const cert = 'CertificateFile="C:/user keys/example-cert.pub"';
+  assert.deepEqual(argumentsFor('ssh', value), ['-A', '-o', cert, '--', 'example']);
+  assert.deepEqual(argumentsFor('ssh', { ...value, agentForwarding: false }), ['-a', '-o', cert, '--', 'example']);
+  assert.deepEqual(argumentsFor('ssh', value, false), ['-a', '--', 'example']);
+  assert.deepEqual(argumentsFor('sftp', value), ['--', 'example']);
+  for (const certificateFile of ['relative/name', 'C:\\key\nother', '/keys/${HOME}', '-o Option=yes']) {
+    assert.throws(() => endpoint({ ...value, certificateFile }));
+  }
+  assert.throws(() => endpoint({ ...value, agentForwarding: 'yes' }));
 });
 
 test('legacy hosts survive their first edit; rename and removal update related recent records and reject collisions', () => {

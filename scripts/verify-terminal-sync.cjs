@@ -59,6 +59,35 @@ async function main() {
         await page.addScriptTag({ content: await fs.readFile(from(file), 'utf8') });
       }
       await page.evaluate(() => {
+        // CI windows are intentionally hidden. Simulate each device's focus and
+        // advance long foreground polling timers without making the test take minutes.
+        let visible = true, focused = true, clock = 0, next = -1;
+        Object.defineProperty(document, 'visibilityState', { get: () => visible ? 'visible' : 'hidden' });
+        Object.defineProperty(document, 'hasFocus', { value: () => focused });
+        const timers = new Map();
+        const later = window.setTimeout.bind(window), cancel = window.clearTimeout.bind(window);
+        window.setTimeout = (callback, delay, ...args) => {
+          if (delay < 1000 || typeof delay !== 'number') return later(callback, delay, ...args);
+          const id = next--;
+          timers.set(id, { due: clock + delay, run: () => callback(...args) });
+          return id;
+        };
+        window.clearTimeout = id => { if (id < 0) timers.delete(id); else cancel(id); };
+        window.testSchedule = {
+          pending: () => timers.size,
+          advance(ms) {
+            clock += ms;
+            for (const [id, timer] of timers) {
+              if (timer.due <= clock) { timers.delete(id); timer.run(); }
+            }
+          },
+          foreground(shown, active) {
+            visible = shown;
+            focused = active;
+            document.dispatchEvent(new Event('visibilitychange'));
+            window.dispatchEvent(new Event(focused ? 'focus' : 'blur'));
+          },
+        };
         window.hosts = window.BrclioConnection.store(localStorage);
         window.BrclioTerminalSync.bind({
           syncTerminal: window.fixtureSyncRequest,
@@ -93,6 +122,27 @@ async function main() {
     const writes = () => calls.filter(call => call.operation === 'write').length;
     const reads = () => calls.filter(call => call.operation === 'read').length;
     const initialWrites = writes();
+    const sessionRequests = () => calls.filter(call => call.operation === 'session').length;
+    const initialSessions = sessionRequests();
+    let expectedReads = reads();
+    await expect.poll(() => first.evaluate(() => window.testSchedule.pending())).toBe(1);
+    await first.evaluate(() => window.testSchedule.advance(299999));
+    assert.equal(reads(), expectedReads);
+    await first.evaluate(() => window.testSchedule.advance(1));
+    await expect.poll(reads).toBe(++expectedReads);
+    await expect.poll(() => first.evaluate(() => window.testSchedule.pending())).toBe(1);
+    for (const [shown, focused] of [[false, false], [true, false]]) {
+      await first.evaluate(([shown, focused]) => {
+        window.testSchedule.foreground(shown, focused);
+        window.testSchedule.advance(600000);
+        window.dispatchEvent(new Event('online'));
+      }, [shown, focused]);
+      assert.equal(await first.evaluate(() => window.testSchedule.pending()), 0);
+      assert.equal(reads(), expectedReads);
+    }
+    await first.evaluate(() => window.testSchedule.foreground(true, true));
+    await expect.poll(reads).toBe(++expectedReads);
+    assert.equal(sessionRequests(), initialSessions, 'checking a device consumes a data read without an additional account-session request');
     for (const device of [first, second, first]) {
       const count = reads();
       await field(device, 'refresh').click();
@@ -157,7 +207,7 @@ async function main() {
     await expect(field(first, 'disable')).toBeVisible();
     await expect.poll(() => first.evaluate(() => window.hosts.all().map(entry => entry.name))).toContain('only-alice');
     assert.ok(!(await first.evaluate(() => window.hosts.all())).some(entry => entry.name === 'device-only'));
-    console.log('Terminal sync passed: two devices, no-op refreshes, conflicts, payload limits, opt-out during I/O, sign-out, account isolation and delayed responses.');
+    console.log('Terminal sync passed: five-minute foreground polling, zero hidden/background polls, one authenticated read per check, two devices, no-op refreshes, conflicts, payload limits, opt-out during I/O, sign-out, account isolation and delayed responses.');
   } finally {
     await app?.close();
     await fs.rm(temp, { recursive: true, force: true });
