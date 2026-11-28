@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const prefix = 'brclio:terminal-window:';
 
 function subscribe(channel, callback) {
@@ -36,11 +36,19 @@ contextBridge.exposeInMainWorld('brclioTerminal', Object.freeze({
   remoteClients: () => ipcRenderer.invoke(prefix + 'remote-clients'),
   onSyncAccountChanged: callback => subscribe('sync-account-changed', callback),
   unboundTransfer: (op, userId) => ipcRenderer.invoke(prefix + 'unbound-transfer', op, userId),
+  terminalLock: (action, pin, biometric) => ipcRenderer.invoke(prefix + 'lock-settings', action, pin, biometric),
   sharedVault: (op, payload) => ipcRenderer.invoke(prefix + 'shared-vault', op, payload),
   syncTerminal: (op, payload) => ipcRenderer.invoke(prefix + 'sync-config', op, payload),
   localLogs: (op, data) => ipcRenderer.invoke(prefix + 'local-logs', op, data),
   serialPorts: () => ipcRenderer.invoke(prefix + 'serial-ports'),
   sftp: (op, payload) => ipcRenderer.invoke(prefix + 'sftp', op, payload),
+  sftpDrop: (id, side, file) => {
+    const nativePath = webUtils.getPathForFile(file);
+    if (!nativePath) throw new Error('请选择从系统文件管理器拖入的项目。');
+    return ipcRenderer.invoke(prefix + 'sftp-drop', { id, side, nativePath });
+  },
+  inventoryBridge: (op,payload) => ipcRenderer.invoke(prefix + 'inventory-bridge',op,payload),
+  onInventoryRequest: callback => subscribe('inventory-request', callback),
   cloudInventory: provider => ipcRenderer.invoke(prefix + 'cloud-inventory', provider),
   chooseIdentity: mode => ipcRenderer.invoke(prefix + 'identity-choose', mode),
   identityPublic: file => ipcRenderer.invoke(prefix + 'identity-public', file),

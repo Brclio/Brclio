@@ -53,6 +53,7 @@
     "asar": true,
     "asarUnpack": [
       "desktop/terminal/shell-integration/**",
+      "desktop/terminal/ssh-proxy-client.cjs",
       "node_modules/node-pty/**"
     ],
     "directories": {

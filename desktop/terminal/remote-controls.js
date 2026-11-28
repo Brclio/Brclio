@@ -7,11 +7,11 @@ window.BrclioRemoteConnections = {
     const library = window.BrclioConnection;
     const storage = library.store(localStorage);
     const dialog = byId('library');
-    const fields = ['name', 'host', 'user', 'port', 'group', 'tags', 'jump', 'identityFile', 'certificateFile'];
+    const fields = ['name', 'host', 'user', 'port', 'group', 'tags', 'jump', 'proxy', 'proxyUser', 'identityFile', 'certificateFile'];
     const kindLabels = { ssh: 'SSH', sftp: 'SFTP 命令行', files: '文件浏览' };
     let selected = '';
     let original = null;
-    const authFields = ['host', 'user', 'port', 'jump'];
+    const authFields = ['host', 'user', 'port', 'jump', 'proxy', 'proxyUser'];
     const addressDraft = () => {
       const parts = Object.fromEntries(authFields.map(field => [field, byId(field).value.trim()]));
       const group = byId('group').value.trim(), inheritGroup = byId('inherit').checked;
@@ -27,11 +27,23 @@ window.BrclioRemoteConnections = {
       ...Object.fromEntries(fields.map(field => [field, byId(field).value.trim()])),
       inheritGroup: byId('inherit').checked,
       environment: byId('environment').value,
+      startupSnippet: byId('startup-snippet').value,
       favorite: byId('favorite').checked,
       agentForwarding: byId('agent-forwarding').checked,
     });
 
     const envText = items => typeof items === 'string' ? items : (items || []).map(item => item.name + '=' + item.value).join('\n');
+    function snippetChoices(id = byId('startup-snippet').value) {
+      const model = window.BrclioSnippetModel;
+      const select = byId('startup-snippet');
+      select.replaceChildren(new Option('无', ''));
+      try {
+        const items = model.read(window.BrclioTerminalPartitions.storage).filter(item => item.kind === 'snippet');
+        for (const item of items) select.add(new Option(model.label(item), item.id));
+        select.value = items.some(item => item.id === id) ? id : '';
+      } catch { /* The host library remains usable if a local snippet cannot be read. */ }
+    }
+    window.addEventListener('brclio-snippets-changed', () => snippetChoices());
     function inheritedPreview() {
       const group = byId('group').value.trim();
       let text = '';
@@ -64,9 +76,10 @@ window.BrclioRemoteConnections = {
       byId('agent-forwarding').checked = item?.agentForwarding === true;
       byId('environment').value = envText(item?.environment);
       byId('inherit').checked = item ? item.inheritGroup === true : true;
+      snippetChoices(item?.startupSnippet || '');
       authAddress = addressDraft();
       inheritedPreview();
-      byId('advanced').open = !!(item?.jump || item?.identityFile || item?.certificateFile || item?.agentForwarding || item?.environment?.length);
+      byId('advanced').open = !!(item?.jump || item?.proxy || item?.identityFile || item?.certificateFile || item?.agentForwarding || item?.environment?.length);
       byId('editor-title').textContent = selected || '新建主机';
       byId('remove').disabled = byId('duplicate').disabled = !selected;
       byId('delete-check').hidden = true;
@@ -156,7 +169,7 @@ window.BrclioRemoteConnections = {
         if (!window.BrclioSftp?.open) throw new Error('文件浏览器尚未就绪。');
         await window.BrclioSftp.open(target);
       } else {
-        launch(kind, kindLabels[kind] + ' · ' + (value.name || target.host).slice(0, 64), target);
+        launch(kind, kindLabels[kind] + ' · ' + (value.name || target.host).slice(0, 64), target, value.startupSnippet);
       }
       if (epoch !== accountGeneration) return;
       dialog.close();
@@ -171,6 +184,7 @@ window.BrclioRemoteConnections = {
       if (actions.open) actions.close();
       if (!dialog.open) dialog.showModal();
       status('');
+      snippetChoices();
       guarded(render);
       byId('files').classList.toggle('host-files-primary', mode === 'files');
       if (mode === 'files') status('选择或填写主机后，点击「浏览文件」。');
@@ -224,6 +238,7 @@ window.BrclioRemoteConnections = {
     function checkAddress() {
       const changed = authAddress !== addressDraft();
       authAddress = addressDraft();
+      if (changed) byId('startup-snippet').value = '';
       if (changed && (byId('agent-forwarding').checked || byId('certificateFile').value || byId('environment').value || byId('identityFile').value)) {
         byId('agent-forwarding').checked = false;
         for (const field of ['identityFile', 'certificateFile', 'environment']) byId(field).value = '';

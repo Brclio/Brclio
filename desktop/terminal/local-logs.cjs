@@ -51,6 +51,23 @@ function registerLogs({ handle, owner, directory, storage, target }) {
     if (log.id !== id || typeof log.text !== 'string' || !Array.isArray(log.bookmarks)) throw new Error('日志格式无效。');
     return log;
   }
+  const allowedDays = [0, 1, 7, 30, 90, 365];
+  function retention(user) {
+    try {
+      const days = JSON.parse(fs.readFileSync(path.join(root(user),'retention.json'),'utf8')).days;
+      if (!allowedDays.includes(days)) throw new Error('日志保留期限无效。');
+      return days;
+    } catch (error) { if (error.code === 'ENOENT') return 0; throw error; }
+  }
+  function applyRetention(user, days) {
+    if (!days) return;
+    const threshold = Date.now() - days * 86400000;
+    for (const id of ids(user)) {
+      if (id === active?.log.id) continue;
+      const log = read(user,id);
+      if (!log.bookmarks.length && Date.parse(log.updatedAt) < threshold) fs.unlinkSync(path.join(root(user),id));
+    }
+  }
   function flush() {
     if (!active?.dirty) return;
     active.log.text = plain(active.raw);
@@ -108,22 +125,36 @@ function registerLogs({ handle, owner, directory, storage, target }) {
     if (active && active.user !== user) reset();
     const state = () => ({ active: active?.log.id || null, pane: active?.pane || null, error: lastError?.user === user ? lastError.message : '' });
     if (op === 'status') return state();
+    if (op === 'retention') {
+      if (!allowedDays.includes(input.days)) throw new Error('请选择有效的日志保留期限。');
+      const dir = root(user), temporary = path.join(dir,'.retention-' + randomUUID());
+      fs.mkdirSync(dir,{recursive:true,mode:0o700});
+      try {
+        fs.writeFileSync(temporary,JSON.stringify({days:input.days}),{flag:'wx',mode:0o600});
+        fs.renameSync(temporary,path.join(dir,'retention.json'));
+      } finally { fs.rmSync(temporary,{force:true}); }
+      applyRetention(user,input.days);
+      return state();
+    }
     if (op === 'list') {
+      const days = retention(user);
+      applyRetention(user,days);
       const logs = ids(user).map(id => {
         const { text, bookmarks, ...item } = active?.log.id === id ? active.log : read(user, id);
         return { ...item, bookmarks: bookmarks.length };
       }).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-      return { ...state(), logs };
+      return { ...state(), logs, days };
     }
     if (op === 'start') {
       if (active) throw new Error('请先停止当前录制。');
       const pane = target(input.pane);
       if (!pane || ['ssh-keygen', 'tmux-control', 'port-forward'].includes(pane.profile)) throw new Error('当前窗格不适合录制。');
+      applyRetention(user,retention(user));
       if (ids(user).length >= MAX_LOGS) throw new Error('已保存 16 份日志，请先删除旧日志。');
       const name = title(input.name, 80);
       if (!name) throw new Error('请输入 1 到 80 字的日志名称。');
       const date = new Date().toISOString();
-      const log = { id: randomUUID(), name, startedAt: date, updatedAt: date, bookmarks: [], text: '', full: false };
+      const log = { id: randomUUID(), name, ...(pane.host ? {host:pane.host} : {}), startedAt: date, updatedAt: date, bookmarks: [], text: '', full: false };
       write(user, log);
       active = { user, pane: input.pane, log, raw: '', bytes: 0, dirty: false };
       lastError = null;

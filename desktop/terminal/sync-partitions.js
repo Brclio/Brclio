@@ -64,7 +64,7 @@
     return { hosts: source.hosts.map(remap), groupConfigs: [...configs.values()] };
   }
 
-  function combineExtras(key, existing, imported) {
+  function combineExtras(key, existing, imported, snippetIds) {
     if (!Array.isArray(existing) || !Array.isArray(imported)) throw new Error('本机终端资料格式无效。');
     if (key === arrangements) return combined(existing, imported, Infinity).items;
     const merged = [...existing];
@@ -79,13 +79,17 @@
         let name = item.name;
         let duplicate = false;
         for (let n = 1; ; n++) {
-          const match = merged.find(entry => entry.kind === item.kind && entry.name === name);
+          const match = merged.find(entry => entry.kind === item.kind && entry.name === name && (entry.package || '') === (item.package || ''));
           if (!match) break;
-          if (match.text === item.text) { duplicate = true; break; }
+          if (match.text === item.text && !!match.template === !!item.template) {
+            snippetIds?.set(item.id, match.id);
+            duplicate = true; break;
+          }
           name = item.name.slice(0, 64) + ' (本机 ' + n + ')';
         }
         if (duplicate) continue;
         const id = merged.some(entry => entry.id === item.id) ? crypto.randomUUID() : item.id;
+        snippetIds?.set(item.id, id);
         merged.push({ ...item, name, id });
       }
     }
@@ -155,7 +159,16 @@
         const input = { getItem: key => snapshot[key] ?? null };
         const source = hosts(input), destination = hosts(storage);
         const { hosts: importedHosts, groupConfigs } = mergeHostGroups(destination, source);
-        const merged = combined(destination.hosts, importedHosts, 2048);
+        const snippetIds = new Map();
+        const importedSnippets = input.getItem(snippets) === null ? null :
+          combineExtras(snippets, parse(storage, snippets, []), parse(input, snippets, []), snippetIds);
+        const adjusted = importedHosts.map(host => {
+          if (!host.startupSnippet) return host;
+          const { startupSnippet, ...rest } = host;
+          const id = snippetIds.get(startupSnippet);
+          return id ? { ...rest, startupSnippet: id } : rest;
+        });
+        const merged = combined(destination.hosts, adjusted, 2048);
         const recent = [...destination.recent, ...source.recent.map(item =>
           item.name && merged.mapped.has(item.name) ? { ...item, name: merged.mapped.get(item.name) } : item)];
         const values = [
@@ -173,6 +186,7 @@
         }
         for (const key of extras) {
           if (input.getItem(key) === null) continue;
+          if (key === snippets) { values.push([key, importedSnippets]); continue; }
           let imported = parse(input, key, []);
           if (key === rules) imported = imported.map(rule => ({ ...rule, profile: profileNames.get(rule.profile) || rule.profile }));
           values.push([key, combineExtras(key, parse(storage, key, []), imported)]);

@@ -93,6 +93,7 @@
     pane.state = state;
     pane.detail = detail;
     pane.node.dataset.state = state;
+    inspector.changed();
     pane.stateLabel.textContent = state === 'running' ? '' : detail;
     pane.stateLabel.title = detail;
     pane.terminal.options.disableStdin = state === 'exited' || state === 'error';
@@ -495,7 +496,6 @@
     for (const control of document.querySelectorAll('button, select')) control.disabled = true;
     return;
   }
-  window.BrclioCommandLibrary.bind(activePane, paneTools.pasteOnly);
   window.BrclioTerminalHistory.bind(activePane, paneTools.pasteOnly);
   const removeData = api.onData(({id, data}) => {
     const pane = panes.get(id);
@@ -557,7 +557,8 @@
     nextMark: ['下一个标记', () => activePane()?.marks.next()], prevMark: ['上一个标记', () => activePane()?.marks.previous()],
   });
   window.BrclioAdvancedPaste({ api, activePane, actions, paste: paneTools.pasteOnly });
-  window.BrclioSnippets({ activePane, actions, paste: paneTools.pasteOnly });
+  const snippets = window.BrclioSnippets({ activePane, actions, paste: paneTools.pasteOnly });
+  window.BrclioCommandLibrary.bind(activePane, paneTools.pasteOnly, snippets.draft);
   const filter = byId('actions-filter');
   const actionList = byId('actions-list');
   const actionGroups = [...actionList.querySelectorAll('fieldset, details')];
@@ -609,9 +610,10 @@
     };
   }
   byId('terminal-actions').onclick = () => { inspector.refresh(); locations.render(); tabGroups.render(); actions.showModal(); };
-  window.BrclioRemoteConnections.bind(api, activePane, (kind, name, connection) => {
+  window.BrclioRemoteConnections.bind(api, activePane, (kind, name, connection, startupSnippet) => {
     actions.close();
-    newTab(name, { profile: kind, connection, cwd: nextDirectory, shellIntegration: false });
+    const pane = newTab(name, { profile: kind, connection, cwd: nextDirectory, shellIntegration: false });
+    if (kind === 'ssh') snippets.startup(startupSnippet, pane);
   });
   const activateConnection = pane => { selectTab(pane.tab); selectPane(pane); };
   window.BrclioForwardControls.bind({ newTab, activate: activateConnection, stop(pane) { activateConnection(pane); closeActive(); } });

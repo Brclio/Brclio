@@ -41,6 +41,9 @@ window.BrclioLocalLogs = (() => {
     const status = el('p', '');
     status.setAttribute('role', 'status');
     const list = el('select', '', { size: 6, ariaLabel: '日志列表' });
+    const hostFilter = el('select', '', {ariaLabel:'按主机筛选日志'});
+    const retention = el('select', '', {ariaLabel:'本机日志保留期限'});
+    retention.replaceChildren(...[0,1,7,30,90,365].map(days => new Option(days ? days + ' 天' : '手动清理',String(days))));
     const name = el('input', '', { placeholder: '日志名称', ariaLabel: '日志名称', maxLength: 80 });
     const activePane = () => document.querySelector('#workspace .panel:not([hidden]) .pane.active')?.dataset.id;
     const pane = activePane();
@@ -82,6 +85,12 @@ window.BrclioLocalLogs = (() => {
     };
     const remove = button('删除所选日志', () => ask('delete', { id: chosen }, '永久删除所选日志？'));
     const clear = button('清空本账号日志', () => ask('clear', {}, '永久删除此账号在本机的全部日志？'));
+    const saveRetention = button('应用保留期限', () => {
+      const days = Number(retention.value);
+      if (days === state.days) return;
+      ask('retention', {days}, days ? '应用 ' + days + ' 天期限并清理本机已过期的无书签日志？含书签的日志会保留。' : '改为手动清理本机日志？');
+    });
+    hostFilter.onchange = () => act(() => refresh());
     function controls() {
       start.disabled = busy || !pane || !!state.active || !state.logs;
       stop.disabled = busy || !state.active;
@@ -101,9 +110,17 @@ window.BrclioLocalLogs = (() => {
       const next = await api.localLogs('list');
       if (dialog !== view) return;
       state = next;
-      const previous = prefer || chosen || next.active;
-      chosen = next.logs.some(log => log.id === previous) ? previous : next.logs[0]?.id || null;
-      list.replaceChildren(...next.logs.map(log => new Option((log.id === next.active ? '● ' : '') + log.name, log.id)));
+      retention.value = String(next.days || 0);
+      const filter = hostFilter.value;
+      const hosts = [...new Set(next.logs.map(log => log.host).filter(Boolean))].sort();
+      hostFilter.replaceChildren(new Option('全部主机',''),...hosts.map(host => new Option(host,host)),
+        new Option('本地或未记录主机','@local'));
+      hostFilter.value = filter === '@local' || hosts.includes(filter) ? filter : '';
+      const matching = next.logs.filter(log => !hostFilter.value ||
+        (hostFilter.value === '@local' ? !log.host : log.host === hostFilter.value));
+      const previous = typeof prefer === 'string' ? prefer : chosen || next.active;
+      chosen = matching.some(log => log.id === previous) ? previous : matching[0]?.id || null;
+      list.replaceChildren(...matching.map(log => new Option((log.id === next.active ? '● ' : '') + log.name, log.id)));
       list.value = chosen || '';
       showRecording(next.active);
       display(chosen ? await api.localLogs('read', { id: chosen }) : null);
@@ -132,7 +149,7 @@ window.BrclioLocalLogs = (() => {
       output.scrollTop = line * parseFloat(getComputedStyle(output).lineHeight);
     };
     const row = (...nodes) => { const r = el('div', '', { className: 'log-row' }); r.append(...nodes); return r; };
-    side.append(name, row(start, stop), list, row(reload, remove, clear));
+    side.append(name, row(start, stop), hostFilter, list, row(reload, remove, clear), row(retention, saveRetention));
     content.append(output, row(mark, add, bookmarks));
     view.append(heading, note, grid, confirmation, status);
     view.addEventListener('close', () => { if (dialog === view) dialog = null; view.remove(); }, { once: true });

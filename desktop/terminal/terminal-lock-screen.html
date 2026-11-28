@@ -1,0 +1,8 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Brclio 终端锁</title><link rel="stylesheet" href="terminal-lock-screen.css"><script defer src="terminal-lock-screen.js"></script></head>
+<body><main><h1>终端已锁定</h1><form><label for="lock-pin">本机终端 PIN</label>
+<input id="lock-pin" autofocus type="password" inputmode="numeric" autocomplete="off" minlength="6" maxlength="12" pattern="[0-9]{6,12}" required>
+<button type="submit">解锁</button></form><button id="touch-id" type="button" hidden>使用 Touch ID 解锁</button>
+<p role="status" aria-live="polite"></p></main></body></html>

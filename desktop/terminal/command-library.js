@@ -1,11 +1,11 @@
 'use strict';
 
 window.BrclioCommandLibrary = (() => {
-  const key = 'brclio.terminal.command-history.v1', snippets = 'brclio.terminal.snippets.v1';
+  const key = 'brclio.terminal.command-history.v1';
   const storage = () => window.BrclioTerminalPartitions.storage;
   const read = () => JSON.parse(storage().getItem(key) || '{"enabled":false,"entries":[]}');
   const write = data => storage().setItem(key,JSON.stringify(data));
-  let dialog, active, paste;
+  let dialog, active, paste, draft;
   const field = name => dialog.querySelector('#command-library-' + name);
   const eligible = launch => !launch?.profile || ['default','zsh','bash','powershell','pwsh','ssh'].includes(launch.profile);
   const builtin = ['pwd','cd','ls','dir','Get-Location','Get-ChildItem','git status','git diff','git log','whoami'];
@@ -32,19 +32,24 @@ window.BrclioCommandLibrary = (() => {
   function render() {
     const state = read(), query = field('query').value.trim().toLowerCase();
     field('enable').checked = state.enabled;
-    const saved = JSON.parse(storage().getItem(snippets) || '[]');
+    const model = window.BrclioSnippetModel;
+    const saved = model.search(model.read(storage()).filter(s => s.kind === 'snippet'), query, null);
     const items = new Map();
     for (const [label, text] of [
       ...state.entries.map(s => ['历史',s]),
-      ...saved.filter(s => s.kind === 'snippet').map(s => ['剪藏 · ' + s.name,s.text]),
       ...builtin.map(s => ['命令',s]),
     ]) {
       if (safeLine(text) && !items.has(text) && (label + ' ' + text).toLowerCase().includes(query)) items.set(text,label);
     }
     const list = field('list');
-    list.replaceChildren(...[...items].map(([s,label]) => new Option(label + ' · ' + s, s)));
-    if (items.size) list.selectedIndex = 0;
-    field('insert').disabled = !items.size || active()?.state !== 'running';
+    const options = saved.map(item => {
+      const option = new Option('剪藏 · ' + model.label(item) + ' · ' + item.text.replace(/\s+/g, ' ').slice(0, 100), item.id);
+      option.dataset.snippet = item.id;
+      return option;
+    });
+    list.replaceChildren(...options, ...[...items].map(([s,label]) => new Option(label + ' · ' + s, s)));
+    if (list.length) list.selectedIndex = 0;
+    field('insert').disabled = !list.length || active()?.state !== 'running';
     field('clear').disabled = !state.entries.length;
   }
   function init() {
@@ -64,6 +69,15 @@ window.BrclioCommandLibrary = (() => {
     field('clear').onclick = () => { write({enabled:read().enabled,entries:[]}); render(); };
     field('insert').onclick = () => {
       const pane = active(), value = field('list').value;
+      const id = field('list').selectedOptions[0]?.dataset.snippet;
+      if (id && pane?.state === 'running') {
+        const item = window.BrclioSnippetModel.read(storage()).find(entry => entry.id === id && entry.kind === 'snippet');
+        if (!item) { render(); return; }
+        dialog.close();
+        if (item.template || !safeLine(item.text)) draft(item, pane);
+        else { paste(pane, item.text); pane.terminal.focus(); }
+        return;
+      }
       if (pane?.state === 'running' && safeLine(value)) { dialog.close(); paste(pane,value); pane.terminal.focus(); }
     };
     field('list').ondblclick = () => field('insert').click();
@@ -74,5 +88,5 @@ window.BrclioCommandLibrary = (() => {
     if (!dialog) init();
     field('query').value = ''; render(); dialog.showModal(); field('query').focus();
   }
-  return { recorder, open, bind(activePane,pasteOnly) { active = activePane; paste = pasteOnly; } };
+  return { recorder, open, bind(activePane, pasteOnly, openDraft) { active = activePane; paste = pasteOnly; draft = openDraft; } };
 })();

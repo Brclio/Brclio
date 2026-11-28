@@ -109,9 +109,30 @@ test('real SSH exchanges prompted private key passphrase and host fingerprint, r
   finally { protocol.stop(); }
   const output = await fs.readFile(prompts, 'utf8');
   assert.match(output, /host/); assert.match(output, /key/);
+  const proxySockets = new Set();
+  const proxy = net.createServer(socket => {
+    proxySockets.add(socket);
+    socket.on('error', () => {});
+    socket.on('close', () => proxySockets.delete(socket));
+    socket.once('data', headers => {
+      assert.match(headers.toString(), new RegExp('^CONNECT 127\\.0\\.0\\.1:' + port + ' HTTP/1.1'));
+      const upstream = net.connect(port, '127.0.0.1', () => {
+        socket.write('HTTP/1.1 200 OK\r\n\r\n');
+        socket.pipe(upstream).pipe(socket);
+      });
+      upstream.on('error', () => socket.destroy());
+      socket.on('close', () => upstream.destroy());
+    });
+  });
+  proxy.listen(0, '127.0.0.1'); await once(proxy, 'listening');
+  t.after(() => { for (const socket of proxySockets) socket.destroy(); proxy.close(); });
+  const proxiedTarget = { host: 'fixture', proxy: 'http://127.0.0.1:' + proxy.address().port };
+  const viaProxy = await startConnection(proxiedTarget, options);
+  try { await viaProxy.ready; assert.ok((await viaProxy.list('.')).some(entry => entry.name === 'ssh_config')); }
+  finally { viaProxy.stop(); }
   const fake = (await fs.readFile(key + '.pub', 'utf8')).trim().split(' ').slice(0, 2).join(' ');
   await fs.writeFile(known, '[127.0.0.1]:' + port + ' ' + fake + '\n');
-  const rejected = await startConnection({ host: 'fixture' }, options);
+  const rejected = await startConnection(proxiedTarget, options);
   try { await assert.rejects(rejected.ready, /CHANGED|verification failed/i); } finally { rejected.stop(); }
 });
 

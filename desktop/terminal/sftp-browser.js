@@ -30,7 +30,8 @@ window.BrclioSftp = (() => {
     const close = button('关闭', () => dialog.close());
     head.append(title, node('span', (target.user ? target.user + '@' : '') + target.host + (target.port ? ':' + target.port : '')), close);
     const controls = node('div', '', { className: 'sftp-bottom' });
-    const cancel = button('取消传输', () => { void call('cancel').catch(() => {}); });
+    let canceled = false;
+    const cancel = button('取消传输', () => { canceled = true; void call('cancel').catch(() => {}); });
     cancel.hidden = true;
     controls.append(status, cancel);
     dialog.append(head, main, controls);
@@ -95,10 +96,10 @@ window.BrclioSftp = (() => {
       label.append(input);
       form.append(label);
       let saved = [];
-      let hosts;
+      let hosts, bank;
       const dismiss = () => { form.remove(); editing = null; pane.switch.focus(); };
       if (remote) {
-        try { saved = library.store(bookmarkStorage()).all(); }
+        try { bank = library.store(bookmarkStorage()); saved = bank.all(); }
         catch (e) { status.textContent = e.message; }
         hosts = node('select', '', { ariaLabel: '已保存的主机' });
         hosts.append(new Option('手动输入地址', ''));
@@ -116,7 +117,7 @@ window.BrclioSftp = (() => {
         dismiss();
         void run(async () => {
           if (!remote) return paint(side, await call('goto', { side, path: input.value }));
-          const dest = library.endpoint(hosts.value !== '' ? saved[Number(hosts.value)] : library.quick(input.value));
+          const dest = hosts.value !== '' ? bank.resolve(saved[Number(hosts.value)]) : library.endpoint(library.quick(input.value));
           const data = await call('connect', { side, target: dest });
           pane.target = dest;
           pane.scope = JSON.stringify(['sftp', dest]);
@@ -250,11 +251,33 @@ window.BrclioSftp = (() => {
             if (!notified && await call('edit-status')) {
               notified = true;
               message.textContent = '检测到本地编辑副本已保存：' + name;
+              back.textContent = '放弃本地修改';
             }
           } catch { /* An editor may replace its local file while saving. */ }
           finally { checking = false; }
         }, 1000);
         return '编辑器保存后，可上传修改或结束编辑。';
+      });
+    }
+    function transfer(label, operation) {
+      return run(async () => {
+        transferInProgress = true;
+        canceled = false;
+        cancel.hidden = false;
+        refreshControls();
+        let checking = false;
+        progressTimer = setInterval(async () => {
+          if (checking) return;
+          checking = true;
+          try {
+            const state = await call('progress');
+            if (state && transferInProgress) status.textContent = '正在' + label + '　' + size(state.bytes) +
+              (state.size == null ? '' : ' / ' + size(state.size)) + (state.current ? '　' + state.current : '');
+          } catch { /* The pending transfer reports the connection error. */ }
+          finally { checking = false; }
+        }, 300);
+        try { await operation(); return label + '完成。'; }
+        finally { transferInProgress = false; clearInterval(progressTimer); cancel.hidden = true; }
       });
     }
     function makePane(side) {
@@ -297,26 +320,10 @@ window.BrclioSftp = (() => {
         if (e.key === 'Enter' && !pane.enter.disabled) { e.preventDefault(); pane.enter.click(); }
       };
       const actions = node('div', '', { className: 'sftp-tools' });
-      pane.transfer = button(local ? '上传到远端 →' : '← 下载到本机', () => run(async () => {
-        transferInProgress = true;
-        cancel.hidden = false;
-        refreshControls();
+      pane.transfer = button(local ? '上传到远端 →' : '← 下载到本机', () => {
         const label = !pane.target && panes[sideOf(side)].target ? '上传' : pane.target && !panes[sideOf(side)].target ? '下载' : '复制';
-        let checking = false;
-        progressTimer = setInterval(async () => {
-          if (checking) return;
-          checking = true;
-          try {
-            const state = await call('progress');
-            if (state && transferInProgress) status.textContent = '正在' + label + '　' + size(state.bytes) + (state.size == null ? '' : ' / ' + size(state.size)) + (state.current ? '　' + state.current : '');
-          } catch { /* The pending transfer reports the connection error. */ }
-          finally { checking = false; }
-        }, 300);
-        try {
-          paint(local ? 'remote' : 'local', await call('transfer', { side, name: pane.selected }));
-          return label + '完成。';
-        } finally { transferInProgress = false; clearInterval(progressTimer); cancel.hidden = true; }
-      }));
+        return transfer(label, async () => paint(sideOf(side), await call('transfer', { side, name: pane.selected })));
+      });
       pane.editFile = button('编辑文件', () => editFile(side, false));
       pane.editWith = button('选择编辑器…', () => editFile(side, true));
       actions.append(pane.transfer, pane.editFile, pane.editWith);
@@ -330,12 +337,42 @@ window.BrclioSftp = (() => {
         source.ondragend = () => { dragFrom = null; };
       }
       box.ondragover = event => {
-        if (dragFrom === sideOf(side) && pane.data && !busy) event.preventDefault();
+        if (!busy && pane.data && (dragFrom === sideOf(side) || (api.sftpDrop && event.dataTransfer.types.includes('Files')))) {
+          event.preventDefault(); event.dataTransfer.dropEffect = 'copy';
+        }
       };
       box.ondrop = event => {
-        if (dragFrom !== sideOf(side) || !pane.data || busy) return;
-        event.preventDefault(); dragFrom = null;
-        panes[sideOf(side)].transfer.click();
+        event.preventDefault();
+        if (!pane.data || busy || editing) return;
+        if (dragFrom === sideOf(side)) {
+          dragFrom = null; panes[sideOf(side)].transfer.click(); return;
+        }
+        const files = Array.from(event.dataTransfer.files);
+        if (!api.sftpDrop || !files.length) return;
+        void transfer(pane.target ? '上传' : '复制', async () => {
+          for (const file of files) {
+            if (canceled) throw new Error('已取消剩余项目。');
+            paint(side, await api.sftpDrop(id, side, file));
+          }
+        });
+      };
+      select.oncontextmenu = event => {
+        event.preventDefault();
+        if (busy || editing) return;
+        if (event.target.tagName === 'OPTION') { select.value = event.target.value; pane.selected = select.value; refreshControls(); }
+        if (!pane.selected) return;
+        const menu = node('div', '', { className: 'sftp-tools', role: 'menu' });
+        const dismiss = () => menu.remove();
+        for (const [label, control] of [['复制到目标目录', pane.transfer], ['打开目录', pane.enter], ['编辑文件', pane.editFile],
+          ['选择编辑器…', pane.editWith], ['重命名', pane.rename], ['删除', pane.remove]]) {
+          if (!control || control.disabled || control.hidden) continue;
+          const cmd = button(label, () => { dismiss(); control.click(); });
+          cmd.setAttribute('role', 'menuitem'); menu.append(cmd);
+        }
+        if (!menu.childElementCount) return;
+        menu.onkeydown = key => { if (key.key === 'Escape') { key.preventDefault(); dismiss(); select.focus(); } };
+        menu.onfocusout = change => { if (!menu.contains(change.relatedTarget)) dismiss(); };
+        select.after(menu); menu.firstChild.focus();
       };
       {
         for (const [op, label] of [['mkdir', '新建目录'], ['rename', '重命名'], ['remove', '删除']]) {

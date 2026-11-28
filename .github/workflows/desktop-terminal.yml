@@ -69,6 +69,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci
+      - run: npm ci --prefix cloudflare --omit=dev
       - name: Provide tmux for native control-mode tests
         if: matrix.platform == 'mac'
         env:
@@ -92,6 +93,7 @@ jobs:
           node scripts/verify-terminal-sync.cjs
           node scripts/verify-terminal-account-switch.cjs
           node scripts/verify-terminal-shared-vaults.cjs
+          node scripts/verify-terminal-lock.cjs
           node scripts/verify-terminal-local-logs.cjs
       - name: Exercise the graphical file browser with the local SFTP subsystem
         run: node scripts/verify-terminal-sftp.cjs

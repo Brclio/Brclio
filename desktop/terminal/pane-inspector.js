@@ -3,6 +3,9 @@
 window.BrclioPaneInspector = function installInspector({ panes, activePane, activate, dialog }) {
   const $ = key => document.getElementById('inspect-' + key);
   const records = new WeakMap();
+  const rows = new Map();
+  let timer;
+  const states = { starting: '连接中', running: '运行中', exited: '已结束', error: '连接失败' };
   function badge(pane) {
     const state = records.get(pane);
     if (!state) return '';
@@ -17,12 +20,32 @@ window.BrclioPaneInspector = function installInspector({ panes, activePane, acti
   }
   function paneList() {
     const filter = $('filter').value.toLowerCase();
-    $('panes').replaceChildren();
+    const list = $('panes');
+    list.dataset.layout = $('layout').value;
+    for (const [id, row] of rows) if (!panes.has(id)) { row.remove(); rows.delete(id); }
     for (const pane of panes.values()) {
-      const label = [pane.tab.name.textContent, pane.caption.textContent, pane.location?.hostname,
+      const label = [pane.tab.name.textContent, pane.caption.textContent, pane.location?.hostname || pane.launch.connection?.host,
         pane.location?.directory, badge(pane)].filter(Boolean).join(' · ');
-      if (label.toLowerCase().includes(filter)) button($('panes'), label, () => { dialog.close(); activate(pane); });
+      let row = rows.get(pane.id);
+      if (!row) {
+        row = document.createElement('button'); row.type = 'button'; row.dataset.paneId = pane.id;
+        row.append(document.createElement('span'), document.createElement('small'));
+        row.onclick = () => { dialog.close(); activate(pane); };
+        rows.set(pane.id, row); list.append(row);
+      }
+      const activity = records.get(pane)?.lastOutput;
+      const status = [pane === activePane() && '当前', states[pane.state] || pane.state,
+        activity && '最近输出 ' + new Date(activity).toLocaleTimeString()].filter(Boolean).join(' · ');
+      row.firstElementChild.textContent = label;
+      row.lastElementChild.textContent = status;
+      row.title = label + ' · ' + status;
+      row.setAttribute('aria-pressed', String(pane === activePane()));
+      row.hidden = !row.title.toLowerCase().includes(filter);
     }
+  }
+  function changed() {
+    if (!dialog.open || timer) return;
+    timer = setTimeout(() => { timer = null; if (dialog.open) paneList(); }, 500);
   }
   function refresh() {
     paneList();
@@ -39,7 +62,9 @@ window.BrclioPaneInspector = function installInspector({ panes, activePane, acti
     }
   }
   $('filter').oninput = paneList;
+  $('layout').onchange = paneList;
   dialog.addEventListener('close', () => {
+    clearTimeout(timer); timer = null; rows.clear();
     $('panes').replaceChildren();
     $('notes').replaceChildren();
   });
@@ -95,6 +120,7 @@ window.BrclioPaneInspector = function installInspector({ panes, activePane, acti
     }
     term.onLineFeed(() => { if (state.times) stamp(term.buffer.active.baseY + term.buffer.active.cursorY - 1); });
     term.onWriteParsed(() => {
+      state.lastOutput = Date.now(); changed();
       if (state.times) stamp(term.buffer.active.baseY + term.buffer.active.cursorY);
       if (state.template) badge(pane);
     });
@@ -108,5 +134,5 @@ window.BrclioPaneInspector = function installInspector({ panes, activePane, acti
     });
     screen.addEventListener('pointerleave', () => { state.clock.textContent = ''; });
   }
-  return { attach, refresh };
+  return { attach, refresh, changed };
 };

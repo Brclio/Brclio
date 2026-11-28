@@ -58,6 +58,18 @@ async function verifyWorkspaceTools(page, command, windows) {
   await expect(active.locator('.xterm-rows')).toContainText(Buffer.from('terminal✓').toString('base64'));
   await active.locator('textarea.xterm-helper-textarea').focus();
   await page.keyboard.press('Control+c');
+  await require('./verify-terminal-snippets.cjs').verifySnippetTemplates(page);
+  await page.locator('#connection-center').click();
+  await page.locator('[data-center=sessions]').click();
+  const sessions = page.locator('#inspect-panes');
+  for (const layout of ['grid', 'compact', 'list']) {
+    await page.locator('#inspect-layout').selectOption(layout);
+    await expect(sessions).toHaveAttribute('data-layout', layout);
+    await expect(sessions.locator('[aria-pressed=true]')).toContainText('运行中');
+  }
+  await expect(sessions.locator('[aria-pressed=true]')).toContainText('最近输出');
+  await sessions.locator('[data-pane-id="' + id + '"]').click();
+  await expect(active).toHaveAttribute('data-id', id);
 }
 
 module.exports = { verifyWorkspaceTools };

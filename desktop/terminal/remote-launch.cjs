@@ -58,8 +58,9 @@ function setEnvOption(items, session) {
 }
 
 function argumentsFor(kind, value, interactive = kind === 'ssh', session) {
-  const { host, port, user, jump, identityFile, certificateFile, agentForwarding, environment } = endpoint(value);
-  const args = [];
+  const target = endpoint(value);
+  const { host, port, user, jump, identityFile, certificateFile, agentForwarding, environment } = target;
+  const args = target.proxy ? require('./ssh-proxy-launch.cjs').options(target, session, kind === 'ssh' ? session?.file : program('ssh')) : [];
   if (jump) args.push('-J', jump);
   if (identityFile) args.push('-i', identityFile);
   if (kind === 'ssh') {

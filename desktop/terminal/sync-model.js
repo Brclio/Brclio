@@ -5,7 +5,7 @@
   const hosts = node ? require('./connection.js') : window.BrclioConnection;
   const forwards = node ? require('./forward-model.js') : window.BrclioForwardModel;
   const collections = ['hosts', 'forwards'];
-  const localCredentials = ['identityFile', 'certificateFile', 'agentForwarding', 'environment', 'inheritGroup'];
+  const localCredentials = ['proxy', 'proxyUser', 'identityFile', 'certificateFile', 'agentForwarding', 'environment', 'inheritGroup', 'startupSnippet'];
   const empty = () => ({ hosts: [], forwards: [] });
   const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
   const sort = items => items.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);

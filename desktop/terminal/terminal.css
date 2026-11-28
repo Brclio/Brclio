@@ -62,6 +62,18 @@ button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke
 .pane.active .pane-heading::before { background: #78b6f4; border-color: #78b6f4; }
 .pane[data-state="exited"] .pane-heading::before, .pane[data-state="error"] .pane-heading::before { background: var(--yellow); border-color: var(--yellow); }
 .pane-message { margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pane-heading .startup-snippet { flex: none; color: #d4e8ff; background: transparent; border: 1px solid #627084; padding: 1px 6px; font: inherit; }
+.pane:not([data-state="running"]) .startup-snippet { display: none; }
+#snippet-draft textarea { box-sizing: border-box; width: 100%; resize: vertical; color: var(--ink); background: var(--cream); }
+#inspect-panes { display: grid; gap: 4px; width: 100%; }
+#inspect-panes[data-layout="grid"] { grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); }
+#inspect-panes button { display: grid; gap: 2px; text-align: start; padding: 5px 8px; min-width: 0; }
+#inspect-panes button[hidden] { display: none; }
+#inspect-panes button[aria-pressed="true"] { border-color: var(--blue); }
+#inspect-panes button span, #inspect-panes button small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#inspect-panes button small { color: var(--muted); }
+#inspect-panes[data-layout="compact"] button { display: flex; justify-content: space-between; padding-block: 2px; }
+#inspect-panes[data-layout="compact"] button[hidden] { display: none; }
 .term-host { position: relative; flex: 1; min-height: 0; margin: 6px 3px 3px 9px; }
 .term-host > .xterm { height: 100%; }
 .split[data-direction="down"] { flex-direction: column; }

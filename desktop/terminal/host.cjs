@@ -22,6 +22,15 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   let focusOnShow = false;
   let recording = false;
 
+  const lockPage = path.join(__dirname,'terminal-lock-screen.html');
+  const electron = require('electron');
+  const lock = require('./terminal-lock.cjs').terminalLock({directory:app.getPath('userData'),
+    secureStorage:() => electron.safeStorage, biometrics:() => ({
+      available:() => process.platform === 'darwin' && electron.systemPreferences.canPromptTouchID(),
+      authenticate:() => electron.systemPreferences.promptTouchID('解锁 Brclio 终端'),
+    })});
+  let parked, screen, idleCheck;
+  const heldEvents = new Map(), pendingAcks = new Map();
   let vault;
   const channels = [];
   const sessions = createPtyService({ home: app.getPath('home'), send });
@@ -29,6 +38,17 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
 
   function send(channel, payload) {
     logs.observe(channel, payload);
+    if (lock.locked) {
+      // The PTY service pauses at its existing per-pane high-water mark while
+      // locked, so withheld output remains bounded and can replay in order.
+      if (parked && (channel === 'data' || channel === 'exit')) {
+        const held = heldEvents.get(payload.id) || {data:''};
+        if (channel === 'data') held.data += payload.data;
+        else held.exit = payload;
+        heldEvents.set(payload.id,held);
+      }
+      return;
+    }
     const contents = view?.webContents;
     if (contents && !contents.isDestroyed() && isLocalDocument(contents.getURL(), documentPath)) {
       contents.send(prefix + channel, payload);
@@ -44,8 +64,14 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   function handle(channel, fn) {
     channels.push(prefix + channel);
     ipcMain.handle(prefix + channel, (event, ...args) => {
+      if (lock.locked) throw new Error('终端已锁定。');
       if (!trusted(event)) throw new Error('此操作只能由 Brclio 终端窗口发起。');
-      return fn(...args);
+      const generation = lock.generation, result = fn(...args);
+      if (channel === 'lock-settings' || !result?.then) return result;
+      return result.then(value => {
+        if (lock.locked || generation !== lock.generation) throw new Error('终端已锁定或窗口已关闭。');
+        return value;
+      });
     });
   }
 
@@ -53,6 +79,8 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   require('./known-hosts.cjs').register({ handle, home: app.getPath('home'), confirm: async (message, detail) =>
     (await dialog.showMessageBox(owner, { type: 'question', message, detail, buttons: ['取消', '移除此记录'],
       defaultId: 0, cancelId: 0, noLink: true })).response === 1 });
+  const inventoryBridge = require('./inventory-bridge.cjs').register({handle,send,
+    available:() => Boolean(view && !view.webContents.isDestroyed() && !lock.locked && !viewScope?.temporary)});
   handle('cloud-inventory', async provider => {
     const target = view;
     if (!['aws','digitalocean','azure'].includes(provider)) throw new Error('未知的云服务。');
@@ -198,7 +226,11 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   });
 
   function acknowledge(event, id, count) {
-    if (trusted(event)) sessions.ack(id, count);
+    if (!lock.locked && trusted(event)) sessions.ack(id, count);
+    else if (parked && event.sender === parked.webContents && event.senderFrame === parked.webContents.mainFrame &&
+        sessions.target(id) && Number.isSafeInteger(count) && count > 0) {
+      pendingAcks.set(id, Math.min(1024 * 1024, (pendingAcks.get(id) || 0) + count));
+    }
   }
   ipcMain.on(prefix + 'ack', acknowledge);
 
@@ -214,11 +246,19 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     if (!owner) return;
     owner.removeListener('resize', layout);
     owner.removeListener('closed', ownerClosed);
+    owner.removeListener('hide', lockTerminal);
+    owner.removeListener('minimize', lockTerminal);
     if (!owner.isDestroyed()) owner.contentView.removeChildView(view);
     owner = undefined;
   }
 
   function closeTerminal() {
+    inventoryBridge.stop();
+    lock.lock();
+    clearInterval(idleCheck); idleCheck = undefined;
+    heldEvents.clear(); pendingAcks.clear();
+    if (parked && !parked.webContents.isDestroyed()) parked.webContents.close();
+    parked = undefined; screen = undefined;
     viewGeneration++;
     pendingView = undefined;
     viewScope = undefined;
@@ -269,7 +309,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     }
     view.setBounds(bounds);
     view.setVisible(true);
-    if (touchBar && view.webContents.isFocused()) touchBar.attach(owner);
+    if (!screen && touchBar && view.webContents.isFocused()) touchBar.attach(owner);
     if (focusOnShow && owner.isFocused()) {
       view.webContents.focus();
       focusOnShow = false;
@@ -280,6 +320,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     if (rect !== null && (!rect || !['x', 'y', 'width', 'height'].every(key => Number.isFinite(rect[key])) || rect.width < 0 || rect.height < 0)) {
       throw new Error('终端显示区域无效。');
     }
+    if (rect === null && viewport && mode === 'inline') lockTerminal();
     viewport = rect;
     if (mode === 'inline') layout();
   }
@@ -296,6 +337,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     if (pendingView) return pendingView;
     const generation = viewGeneration;
     const creating = (async () => {
+      await lock.initialize();
       let scope;
       try {
         const user = await localUser();
@@ -307,7 +349,9 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
       }
       if (generation !== viewGeneration) throw new Error('账号已变化，请重新打开终端。');
       viewScope = scope;
-      makeView(scope.partition);
+      if (lock.locked) makeLockScreen();
+      else makeView(scope.partition);
+      watchIdle();
     })();
     pendingView = creating;
     try { await creating; }
@@ -331,18 +375,106 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     contents.session.setPermissionRequestHandler((_contents, _permission, respond) => respond(false));
     contents.session.setPermissionCheckHandler(() => false);
     contents.on('before-input-event', (_event, input) => {
+      if (lock.locked || view !== terminal) { _event.preventDefault(); return; }
       const shortcut = process.platform === 'darwin'
         ? input.meta && ['c', 'v', 't', 'w', 'f', 'd', 'k'].includes(input.key.toLowerCase())
         : input.control || input.alt;
       contents.setIgnoreMenuShortcuts(recording || Boolean(shortcut));
     });
     contents.on('did-start-navigation', details => {
-      if (view === terminal && details.isMainFrame && !details.isSameDocument) { logs.reset(); sftp.close(); dynamic.stop(); sessions.closeAll(); }
+      if (view === terminal && details.isMainFrame && !details.isSameDocument) { inventoryBridge.stop(); logs.reset(); sftp.close(); dynamic.stop(); sessions.closeAll(); }
     });
-    contents.on('render-process-gone', () => { if (view === terminal) closeTerminal(); });
-    contents.once('destroyed', () => { if (view === terminal) closeTerminal(); });
+    function retireTerminal() {
+      if (view === terminal) closeTerminal();
+      else if (parked === terminal) {
+        parked = undefined; heldEvents.clear(); pendingAcks.clear();
+        inventoryBridge.stop(); logs.reset(); sftp.close(); dynamic.stop(); sessions.closeAll();
+      }
+    }
+    contents.on('render-process-gone', retireTerminal);
+    contents.once('destroyed', retireTerminal);
     loading = contents.loadFile(documentPath);
   }
+
+  function makeLockScreen() {
+    const gate = new WebContentsView({webPreferences:{preload:path.join(__dirname,'terminal-lock-preload.cjs'),
+      partition:'brclio-terminal-lock-' + randomUUID(), sandbox:true, webSecurity:true, nodeIntegration:false, contextIsolation:true, devTools:false}});
+    screen = view = gate;
+    gate.setVisible(false);
+    configureNavigation(gate.webContents);
+    gate.webContents.session.setPermissionRequestHandler((_wc,_permission,respond) => respond(false));
+    gate.webContents.session.setPermissionCheckHandler(() => false);
+    gate.webContents.on('render-process-gone', () => {if (view === gate) closeTerminal();});
+    loading = gate.webContents.loadFile(lockPage);
+    loading.catch(() => {if (view === gate) closeTerminal();});
+  }
+
+  function lockTerminal() {
+    inventoryBridge.stop();
+    if (!view || !lock.enabled) return;
+    lock.lock();
+    if (screen) return;
+    parked = view;
+    parked.setVisible(false);
+    if (touchBar) touchBar.detach();
+    if (owner && !owner.isDestroyed()) owner.contentView.removeChildView(parked);
+    makeLockScreen();
+    if (owner && !owner.isDestroyed()) owner.contentView.addChildView(screen);
+    focusOnShow = true;
+    layout();
+  }
+  function watchIdle() {
+    clearInterval(idleCheck); idleCheck = undefined;
+    if (view && lock.enabled && electron.powerMonitor) {
+      idleCheck = setInterval(() => {if (!screen && electron.powerMonitor.getSystemIdleTime() >= 300) lockTerminal();},15000);
+      idleCheck.unref();
+    }
+  }
+  for (const event of ['suspend','lock-screen']) electron.powerMonitor?.on(event,lockTerminal);
+  handle('lock-settings', async (action, pin, biometric) => {
+    const original = view;
+    const active = () => view === original && !lock.locked && !screen;
+    if (action === 'status') return lock.status();
+    if (action === 'lock') {lockTerminal(); return;}
+    const result = action === 'enable' ? await lock.enable(pin,biometric,active) :
+      action === 'disable' ? await lock.disable(pin,active) : null;
+    if (!result) throw new Error('终端锁操作无效。');
+    watchIdle();
+    return result;
+  });
+  function gateHandler(channel, fn) {
+    channels.push(prefix + channel);
+    ipcMain.handle(prefix + channel,(event,...args) => {
+      const gate = screen;
+      if (!gate || view !== gate || !lock.locked || event.sender !== gate.webContents ||
+          event.senderFrame !== gate.webContents.mainFrame || !isLocalDocument(event.senderFrame.url,lockPage)) throw new Error('请使用当前终端锁屏。');
+      return fn(gate,...args);
+    });
+  }
+  gateHandler('locked-biometric', () => lock.offeredBiometric());
+  gateHandler('locked-unlock', async (gate, method, pin) => {
+    const active = () => view === gate && screen === gate && Boolean(owner && !owner.isDestroyed() && gate.getVisible() && owner.isFocused());
+    if (!active()) throw new Error('请先返回终端锁屏。');
+    await lock.unlock(method,pin,active);
+    if (!active()) {lock.lock(); throw new Error('终端窗口已变化。');}
+    gate.setVisible(false);
+    owner.contentView.removeChildView(gate);
+    screen = undefined;
+    if (parked) {
+      view = parked; parked = undefined;
+      for (const [id,count] of pendingAcks) sessions.ack(id,count);
+      pendingAcks.clear();
+      for (const [id,held] of heldEvents) {
+        if (held.data) view.webContents.send(prefix + 'data',{id,data:held.data});
+        if (held.exit) view.webContents.send(prefix + 'exit',held.exit);
+      }
+      heldEvents.clear();
+      loading = Promise.resolve();
+    } else makeView(viewScope.partition);
+    owner.contentView.addChildView(view);
+    focusOnShow = true; layout();
+    gate.webContents.close();
+  });
 
   function windowForTerminal() {
     if (detached && !detached.isDestroyed()) return detached;
@@ -368,6 +500,8 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
       owner = target;
       owner.on('resize', layout);
       owner.once('closed', ownerClosed);
+      owner.on('hide', lockTerminal);
+      owner.on('minimize', lockTerminal);
     }
     if (target.isMinimized()) target.restore();
     target.show();
@@ -406,6 +540,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
 
   function dispose() {
     app.removeListener('will-quit', dispose);
+    for (const event of ['suspend','lock-screen']) electron.powerMonitor?.removeListener(event,lockTerminal);
     for (const channel of channels) ipcMain.removeHandler(channel);
     ipcMain.removeListener(prefix + 'ack', acknowledge);
     closeTerminal();

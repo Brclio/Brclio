@@ -25,10 +25,31 @@ async function verifySftpHelper(app) {
     } finally { await helper.cleanup(); }
   });
   assert.deepEqual(checked, { status: 1, shipped: true });
+  await require('./verify-terminal-proxy.cjs').verifyProxyHelper(app);
 }
 
 async function verifySftpEntry(terminal) {
   // A refused loopback connection exercises the normal host library → trusted IPC path.
+  const picker = terminal.locator('#native-sftp-drop-fixture');
+  await terminal.evaluate(() => {
+    const input = document.createElement('input');
+    input.type = 'file'; input.id = 'native-sftp-drop-fixture'; input.hidden = true;
+    document.body.append(input);
+  });
+  try {
+    await picker.setInputFiles(__filename);
+    const checks = await terminal.evaluate(async () => {
+      const api = window.brclioTerminal;
+      const file = document.querySelector('#native-sftp-drop-fixture').files[0];
+      const error = async fn => { try { await fn(); return ''; } catch(e) { return String(e.message); } };
+      return await Promise.all([error(() => api.sftpDrop('bad-id','remote',file)),
+        error(() => api.sftpDrop('bad-id','remote',new File(['x'],'synthetic.txt'))),
+        error(() => api.sftp('native-drop', {id:'bad-id',nativePath:file.name}))]);
+    });
+    assert.match(checks[0], /会话编号无效/); // The native OS file reached the dedicated main-process handler.
+    assert.match(checks[1], /系统文件管理器/);
+    assert.match(checks[2], /系统文件管理器/);
+  } finally { await picker.evaluate(el => el.remove()); }
   await terminal.evaluate(() => window.BrclioRemoteConnections.open());
   const library = terminal.locator('#remote-library');
   await library.locator('#remote-new').click();
@@ -55,6 +76,7 @@ async function verifyTransferControls() {
     await fs.mkdir(path.join(remote, '目录', 'empty'), { recursive: true });
     await fs.writeFile(path.join(remote, '目录', '.hidden'), 'dot');
     await fs.writeFile(path.join(local, '上传测试.txt'), 'Brclio SFTP 浏览器');
+    await fs.writeFile(path.join(root, '桌面拖入.txt'), 'dropped');
     chrome = await chromium.launch(chromeOptions);
     const page = await chrome.newPage();
     const errors = [];
@@ -65,10 +87,14 @@ async function verifyTransferControls() {
       start: target => connectProtocol(spawn(binary, [], { cwd: target.host === 'second' ? second : remote, windowsHide: true })),
     });
     await page.exposeFunction('sftpFixture', service.action);
+    await page.exposeFunction('nativeDropFixture', (id, side, name) => {
+      assert.equal(name, '桌面拖入.txt');
+      return service.action('native-drop', { id, side, nativePath:path.join(root, name) });
+    });
     await page.goto(require('node:url').pathToFileURL(__filename).href);
     await page.evaluate(() => {
       document.body.replaceChildren();
-      window.brclioTerminal = { sftp: window.sftpFixture };
+      window.brclioTerminal = { sftp: window.sftpFixture, sftpDrop: (id,side,file) => window.nativeDropFixture(id,side,file.name) };
     });
     for (const file of ['connection.js', 'sync-partitions.js', 'sftp-browser.js']) {
       await page.addScriptTag({ path: path.join(__dirname, '../desktop/terminal', file) });
@@ -107,6 +133,22 @@ async function verifyTransferControls() {
     await dialog.getByRole('textbox', { name: 'SFTP 地址' }).fill('second');
     await dialog.getByRole('button', { name: '连接', exact: true }).click();
     await expect(left.getByRole('heading')).toHaveText('second');
+    await page.evaluate(() => {
+      const input = document.createElement('input'); input.type = 'file'; input.id = 'os-drop-fixture'; document.body.append(input);
+    });
+    await page.locator('#os-drop-fixture').setInputFiles(path.join(root, '桌面拖入.txt'));
+    await right.evaluate(pane => {
+      const event = new DataTransfer();
+      event.items.add(document.querySelector('#os-drop-fixture').files[0]);
+      pane.dispatchEvent(new DragEvent('drop', {dataTransfer: event, bubbles: true, cancelable: true}));
+    });
+    await expect(dialog.getByRole('status')).toContainText('上传完成');
+    assert.equal(await fs.readFile(path.join(remote,'桌面拖入.txt'),'utf8'), 'dropped');
+    await remoteList.selectOption('桌面拖入.txt');
+    await remoteList.dispatchEvent('contextmenu');
+    await right.getByRole('menuitem', {name:'复制到目标目录'}).click();
+    await expect(dialog.getByRole('status')).toContainText('复制完成');
+    assert.equal(await fs.readFile(path.join(second,'桌面拖入.txt'),'utf8'), 'dropped');
     await remoteList.selectOption('目录');
     await right.getByRole('button', { name: '复制到左侧' }).dragTo(left.getByRole('heading'));
     await expect(dialog.getByRole('status')).toContainText('复制完成');

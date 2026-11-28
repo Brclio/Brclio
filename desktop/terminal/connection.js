@@ -61,6 +61,20 @@
 
   function endpoint(value) {
     const result = address(value);
+    if (value.proxy != null && value.proxy !== '') {
+      if (typeof value.proxy !== 'string' || !/^(http|socks5):\/\/[a-z0-9_.:[\]-]+$/i.test(value.proxy) || value.proxy.length > 320) {
+        throw new Error('上游代理地址应为 http://主机:端口 或 socks5://主机:端口。');
+      }
+      let url;
+      try { url = new URL(value.proxy); } catch { throw new Error('上游代理地址无效。'); }
+      const proxy = address({ host: url.hostname, port: url.port || (url.protocol === 'http:' ? 80 : 1080) });
+      result.proxy = url.protocol + '//' + format(proxy);
+      if (value.proxyUser) {
+        if (typeof value.proxyUser !== 'string' || invisible.test(value.proxyUser) || value.proxyUser.includes(':') ||
+            new TextEncoder().encode(value.proxyUser).length > 255) throw new Error('代理用户名无效。');
+        result.proxyUser = value.proxyUser;
+      }
+    }
     const vars = environment(value.environment);
     if (vars.length) result.environment = vars;
     if (value.jump != null && value.jump !== '') {
@@ -147,7 +161,7 @@
     return host;
   }
 
-  const routing = host => JSON.stringify([host.host, host.user, host.port, host.jump]);
+  const routing = host => JSON.stringify([host.host, host.user, host.port, host.jump, host.proxy, host.proxyUser]);
 
   function named(record) {
     const name = label(record?.name, 64, '请输入 1 到 64 字的主机名称。');
@@ -163,6 +177,7 @@
       if (cleaned.length) result.tags = cleaned;
     }
     if (record.favorite === true) result.favorite = true;
+    if (record.startupSnippet) result.startupSnippet = label(record.startupSnippet, 256, '启动剪藏标识无效。');
     return result;
   }
 
@@ -195,7 +210,7 @@
       const changed = new Set();
       for (const host of data.hosts) {
         if (routing(resolve(host, data.groupConfigs)) === routing(resolve(host, next))) continue;
-        for (const field of ['identityFile', 'certificateFile', 'agentForwarding', 'environment']) delete host[field];
+        for (const field of ['identityFile', 'certificateFile', 'agentForwarding', 'environment', 'startupSnippet']) delete host[field];
         changed.add(host.name);
       }
       data.groupConfigs = next;
@@ -251,7 +266,7 @@
       recordUse(kind, target, name) {
         const library = read();
         const item = recent({ ...target, kind, name });
-        const signature = value => JSON.stringify([value.kind, value.host, value.user, value.port, value.jump, value.identityFile, value.certificateFile, value.agentForwarding]);
+        const signature = value => JSON.stringify([value.kind, value.host, value.user, value.port, value.jump, value.proxy, value.proxyUser, value.identityFile, value.certificateFile, value.agentForwarding]);
         library.recent = [item, ...library.recent.filter(entry => signature(entry) !== signature(item))].slice(0, 24);
         write(library);
       },

@@ -73,6 +73,7 @@ test('native OpenSSH parses literal SSH variables and keeps the local process en
   const file = ssh.program('ssh');
   if (!file) return t.skip('No system OpenSSH');
   const env = { ...process.env };
+  const before = { ...env };
   const literal = 'with spaces, 中文, "quotes", slash \\ # $HOME ${HOME} %h; $(echo TEXT)';
   const target = { host: 'fixture.invalid', environment: [{ name: 'BRCLIO_FIXTURE', value: literal }, { name: 'PATH', value: 'only remote' }] };
   const args = ssh.argumentsFor('ssh', target, true, { file, env });
@@ -80,7 +81,10 @@ test('native OpenSSH parses literal SSH variables and keeps the local process en
   assert.equal(check.status, 0, check.stderr);
   assert.ok(check.stdout.includes('BRCLIO_FIXTURE=' + literal), check.stdout.split('\n').filter(line => line.includes('BRCLIO_FIXTURE')).join('\n'));
   assert.ok(check.stdout.includes('PATH=only remote'));
-  assert.equal(env.PATH, process.env.PATH);
+  // Unlike process.env on Windows, the plain object passed to the child keeps
+  // the original key casing (commonly "Path"). Check every original key.
+  for (const [name, value] of Object.entries(before)) assert.equal(env[name], value, name);
+  assert.deepEqual(Object.keys(env).filter(name => !Object.hasOwn(before, name) && name !== 'BRCLIO_SSH_LITERAL_DOLLAR'), []);
   assert.equal(ssh.argumentsFor('ssh', target, false).includes('-o'), false);
   assert.equal(ssh.argumentsFor('sftp', target).includes('-o'), false);
   for (const invalid of ['EMPTY', '=one', 'A=1\nA=2', 'X=y\rBad', 'X-Y=z', 'A=\0x']) assert.throws(() => connections.environment(invalid));

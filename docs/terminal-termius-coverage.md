@@ -1,0 +1,73 @@
+# Brclio 测试版与 Termius 桌面功能对照
+
+核对日期为 2026-11-28。目标平台为 macOS（Apple 芯片、Intel）和 Windows x64。下表以用户能从界面完成的操作为准。「部分」列出缺少的行为，「待实测」表示代码路径已存在，尚缺对应的外部环境。每次打包结果可在测试分支的 [Desktop terminal 验证记录](https://github.com/Brclio/Brclio/actions/workflows/desktop-terminal.yml?query=branch%3Acodex%2Ftermius-desktop) 核实。功能范围来自 [Termius 官方功能表](https://www.termius.com/pricing) 和 [桌面文档](https://docs.termius.com/)。
+
+## 连接、传输与认证
+
+| 功能 | Brclio 测试版与验收边界 |
+| --- | --- |
+| 本地终端 | 主窗口内打开 Shell，弹出及收回保留原 PTY；覆盖 macOS 登录 Shell 和 Windows ConPTY。 |
+| SSH、交互式 SFTP | 从主机库选择地址、端口、用户和身份，通过系统 OpenSSH 连接。图形文件浏览可独立打开。 |
+| Telnet | 手动连接指定地址，可设置端口。 |
+| Mosh | 使用本机安装的 mosh；Windows 需要默认 WSL 发行版，远端需要 mosh-server。未覆盖公网漫游及断网恢复的全流程。 |
+| 串口 | 可列出设备、设置波特率、数据位、校验、停止位及流控；硬件通信仍需指定串口设备实测。 |
+| 本地、远程和动态端口转发 | 有单独入口、模板及连接生命周期；回环测试验证真实端口流量。 |
+| SSH 代理转发和跳板链 | 按主机显式启用代理转发，跳板按次序交给 OpenSSH。 |
+| 上游 HTTP CONNECT、SOCKS5 | SSH 及图形/命令行 SFTP 可选代理。支持代理密码提示，沿用 OpenSSH 的目标指纹校验。 |
+| SFTP 两个端点 | 可选本地或远端、双远端直传、文件和目录递归复制、拖放、取消、路径栏、目录收藏、显示点文件、重命名、创建目录和删除。 |
+| 外部编辑远程文件 | 在本地编辑器打开，确认后回传；上传前核对远端是否已更新。 |
+| SSH 密钥、身份和证书 | 选择本地私钥、生成 Ed25519 / RSA / ECDSA、查看公钥指纹、绑定 OpenSSH 用户证书；可管理已知主机。签发证书需用户自己的 CA。 |
+| FIDO2 | 可选择 ECDSA-SK 或 Ed25519-SK，由系统 ssh-keygen 生成并绑定本机身份。系统 OpenSSH、安全密钥和算法均须匹配；实体密钥注册、触摸签名待实测。 |
+| PIN 与生物识别 | PIN 锁由主进程执行，支持主机休眠/闲置后上锁、重启解锁和会话恢复。macOS 接入 Touch ID；Windows 的 PIN 可用，原生 Windows Hello 和 SSH 生物识别签名尚缺。 |
+| SSH ID、设备绑定的 SSH passkey | 外接 FIDO2 与平台生物识别解锁各有独立路径。设备密钥托管、SSH ID 公钥分发及生命周期尚缺。 |
+| 后量子密钥交换 | SSH 协商由两端 OpenSSH 版本决定。尚未验证每种系统版本及目标服务器的协商结果。 |
+
+验证入口包括 [协议、转发及证书](../desktop/terminal-forward.test.cjs)、[SFTP 协议](../desktop/terminal-sftp.test.cjs)、[文件浏览器](../scripts/verify-terminal-sftp.cjs)、[上游代理](../desktop/terminal-proxy.test.cjs)、[身份](../desktop/terminal-identity.test.cjs) 和 [终端锁](../scripts/verify-terminal-lock.cjs)。官方参考包括 [SFTP](https://docs.termius.com/organize-and-connect-to-hosts/managing-files-with-sftp)、[密钥与证书](https://docs.termius.com/keychain/ssh-keys-and-certificates) 和 [SSH ID](https://docs.termius.com/ssh-id-passkeys-for-ssh/what-is-ssh-id)。
+
+## 主机组织与工作区
+
+| 功能 | Brclio 测试版与验收边界 |
+| --- | --- |
+| 主机、分组、标签 | 支持增删改、复制、收藏、分组过滤、搜索和最近连接。 |
+| 分组配置与环境变量 | 可按层级继承 SSH 用户名、端口、跳板和变量；主机可覆盖。组配置与环境变量仅在当前设备的账号内使用。组级凭据及其同步尚缺。服务端须允许接收相应环境变量。 |
+| Shell 历史 | 设备内按账号主动开启，可按命令内容搜索或清理。只采集带集成标记的已回显单行命令。远端 Bash 的既有历史文件和跨设备历史尚未接入。 |
+| 命令补全 | 搜索当前账号的命令历史、剪藏和常用命令，选择后填入当前窗格；普通 Shell 的 Tab 仍可用。尚缺基于远端文件与参数的行内建议。 |
+| 工作区 | 多标签、分屏、命名、保存/恢复布局及工作区模板。选择器支持查看运行状态和最近活动；恢复远端连接需用户选择。 |
+| 剪藏 | 可分包、搜索、填写变量、预览、填入当前窗格。旧的剪藏和笔记可继续使用。 |
+| 启动剪藏 | 每台已保存的主机可指定启动剪藏；建立会话后由用户确认，填入当前窗格。 |
+| 多窗格输入与片段多目标执行 | 已打开窗格支持手动广播。未提供自动登录一组主机并运行片段的功能。 |
+| OpenSSH config 导入 | 选择文件后预览具体主机，支持 User、Port、IdentityFile、CertificateFile、ProxyJump、部分 Host 通配规则和首值优先。Include、Match 条件段及 ProxyCommand 不执行。私钥文件及 known_hosts 不批量导入。 |
+| CSV 和 PuTTY 导入 | CSV 支持名称、地址、端口、用户、组和标签；PuTTY 支持 UTF-8/UTF-16 注册表导出的 SSH 会话。PuTTY 自动注册表发现、PPK 转换、隧道与密码迁移尚缺。 |
+| MobaXterm 与 SecureCRT 导入 | 尚缺完整的会话、隧道、加密导出及凭据迁移。 |
+
+测试入口包括 [分组与 SSH 变量](../desktop/terminal-groups.test.cjs)、[命令边界](../desktop/terminal-marks.test.cjs)、[剪藏](../scripts/verify-terminal-snippets.cjs) 和 [导入](../desktop/terminal-host-import.test.cjs)。官方参考包括 [现有主机导入](https://docs.termius.com/getting-started/import-existing-hosts)、[工作区](https://docs.termius.com/terminal/workspaces)、[剪藏](https://docs.termius.com/terminal/snippets) 和 [Shell 集成](https://docs.termius.com/terminal/autocomplete-and-shell-integration)。
+
+## 账号、共享与日志
+
+| 功能 | Brclio 测试版与验收边界 |
+| --- | --- |
+| 本地与个人库 | 支持仅本机使用；登录后可选择同步主机及转发模板，按账号分区、检查版本并处理冲突。 |
+| 跨设备 | 桌面个人主机及转发模板可同步。私钥文件、密码、日志、剪藏、终端历史和布局均不在现有个人同步接口内。手机配对按用户先前指定的范围暂缓。 |
+| 团队及多个库 | 测试接口可创建多个共享主机库，逐人邀请、接受、授予读/编辑权限、撤销、退出。成员必须由有效账号授权，私人主机不会因加入团队自动共享。 |
+| 安全数据共享 | 仅分享明确选中的主机名称、地址、SSH 用户名和端口。资料存储在用户指定的私有 GitHub 仓库。端到端加密的全量团队保险库与密钥共享尚缺。 |
+| 实时协作、多人终端 | 共享主机库提供版本冲突检查。多人共同控制实时 Shell 尚缺。 |
+| 本地会话记录 | 登录后在选定窗格手动开启，支持查看、按主机筛选、删除、设置时间保留策略。已有旧日志可在“本地或未记录主机”中查到。 |
+| 书签 | 支持给日志选区或末尾添加书签、跳转；按时间清理时保留带书签的日志。 |
+| 跨设备 / 团队日志 | 尚缺按主机、成员跨设备访问日志、团队保留策略与审计。 |
+
+参见 [存储与账号边界](terminal-account-sync.md)、[两账号共享验证](../scripts/verify-terminal-shared-vaults.cjs) 和 [会话日志验证](../desktop/terminal-local-logs.test.cjs)。官方参考包括 [团队库](https://docs.termius.com/team-collaboration/team-vaults)、[团队日志](https://docs.termius.com/team-collaboration/team-session-logs) 和 [密钥与密码同步](https://docs.termius.com/keychain/sync-of-keys-and-passwords)。
+
+## 集成与企业功能
+
+| 功能 | Brclio 测试版与验收边界 |
+| --- | --- |
+| AWS EC2、Azure VM、DigitalOcean Droplets | 使用当前设备已登录的官方 CLI，经用户确认读取清单，再选择要导入的主机。覆盖样例响应和映射；真实租户与持续自动更新待验。 |
+| API Bridge | 可手动启用带一次性会话令牌的回环 HTTP 服务，支持创建分组、创建和删除主机、读取个人库的连接清单；关闭视图、上锁、超时将停止。尚缺 Termius API 的完整请求模型与多库接口兼容性。 |
+| Ansible | 可导出 Ansible 静态 inventory，也可从本机 API 读取。尚缺官方团队角色或集合的完整兼容性。 |
+| Vanta | 尚缺组织授权和合规数据连接，需 Vanta 测试租户。 |
+| 2FA、SAML SSO、企业域名 | 应用使用现有 Brclio 登录机制。终端 PIN 与账号 2FA 独立。企业 SAML、强制二步认证和域名准入尚缺。 |
+| 团队管理台 | 共享主机库提供逐库成员权限，尚缺组织级策略、域名管理和审计控制台。 |
+| 审计报告、支持、合同和账单 | SOC 2 Type II 报告、专属客户经理、SLA、合并账单、支票/转账、采购订单及定制条款属于服务商资质或商业服务。 |
+| AI、移动配对 | 沿用此前明确的范围，暂缓。 |
+
+实现参考 [云资产映射](../desktop/terminal/cloud-inventory.cjs) 和 [本机 API 测试](../desktop/terminal-inventory-bridge.test.cjs)。官方参考包括 [Termius API Bridge](https://termius.com/api-docs/)、[AWS](https://docs.termius.com/integrations/aws)、[Azure](https://docs.termius.com/integrations/microsoft-azure)、[DigitalOcean](https://docs.termius.com/integrations/digitalocean) 和 [企业 SAML](https://docs.termius.com/administration/saml-sso)。

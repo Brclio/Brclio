@@ -1,0 +1,8 @@
+:root { color-scheme: light; font: 15px system-ui, sans-serif; color: #25283e; background: #fbf8f1; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; }
+main { width: min(280px, 80vw); }
+h1 { font-size: 24px; }
+label { display: block; margin-bottom: 8px; }
+input, button { box-sizing: border-box; width: 100%; border: 1px solid #c8c6c0; border-radius: 5px; font: inherit; padding: 8px; }
+button { margin-top: 8px; cursor: pointer; color: #235a86; background: #f2f6fa; }
+p { color: #8b3936; min-height: 1.4em; }

@@ -26,6 +26,7 @@
   <script defer src="transcript.js"></script>
   <script defer src="buffer-tools.js"></script>
   <script defer src="advanced-paste.js"></script>
+  <script defer src="snippet-model.js"></script>
   <script defer src="snippets.js"></script>
   <script defer src="status-bar.js"></script>
   <script defer src="smart-selection.js"></script>
@@ -52,7 +53,9 @@
   <script defer src="sync-model.js"></script>
   <script defer src="sync-controls.js"></script>
   <link rel="stylesheet" href="shared-vaults.css">
+  <script defer src="terminal-lock-ui.js"></script>
   <script defer src="shared-vaults.js"></script>
+  <script defer src="inventory-ui.js"></script>
   <script defer src="host-import.js"></script>
   <script defer src="command-library.js"></script>
   <script defer src="host-import-ui.js"></script>
@@ -125,9 +128,11 @@
     </div></section>
     <section aria-label="连接设置"><h3>连接设置</h3><div class="connection-links">
       <button data-center="commands">命令历史与补全</button>
+      <button data-center="sessions">工作区会话</button>
+      <button data-center="inventory">本机 API 与 Ansible</button>
       <button data-center="importHosts">导入主机</button>
       <button data-center="identities">SSH 身份</button><button data-center="trust">主机指纹</button>
-      <button data-center="logs">会话日志与书签</button><button data-center="passwords">本机密码库</button><button data-center="sharing">共享主机库</button><button data-center="sync">账号同步</button>
+      <button data-center="logs">会话日志与书签</button><button data-center="passwords">本机密码库</button><button data-center="terminalLock">终端锁</button><button data-center="sharing">共享主机库</button><button data-center="sync">账号同步</button>
     </div></section>
   </dialog>
   <dialog id="device-dialog" class="connection-sheet" aria-labelledby="device-title">
@@ -284,8 +289,11 @@
                 <datalist id="remote-groups"></datalist>
                 <label class="host-favorite"><input id="remote-inherit" type="checkbox" checked> 使用本机分组默认设置</label>
                 <small id="remote-inherited"></small>
+                <label>SSH 启动剪藏<select id="remote-startup-snippet"><option value="">无</option></select></label>
                 <label class="host-favorite"><input id="remote-favorite" type="checkbox"> 收藏主机</label>
                 <details id="remote-advanced"><summary>跳板、身份和 SSH 认证</summary>
+                  <label>上游代理<input id="remote-proxy" maxlength="320" placeholder="socks5://主机:1080 或 http://主机:8080" spellcheck="false" autocomplete="off"></label>
+                  <label>代理用户名<input id="remote-proxyUser" maxlength="255" placeholder="可留空。连接时输入代理密码" spellcheck="false" autocomplete="off"></label>
                   <label>跳板链<input id="remote-jump" maxlength="2048" placeholder="user@jump:22，多跳用逗号分隔" spellcheck="false"></label>
                   <label>本机 SSH 身份<select id="remote-identity-preset"><option value="">手动 / 本机密钥</option></select></label>
                   <label>私钥文件路径<input id="remote-identityFile" maxlength="1024" placeholder="例如 ~/.ssh/id_ed25519" spellcheck="false"></label>
@@ -319,6 +327,7 @@
       <label>批注<input id="inspect-note" maxlength="512"></label><button id="inspect-add">批注选区或当前行</button>
       <div id="inspect-notes"></div>
       <label>快速切换窗格<input id="inspect-filter" type="search" placeholder="名称、主机、目录或徽章"></label>
+      <label>工作区会话视图<select id="inspect-layout"><option value="list">列表</option><option value="compact">紧凑列表</option><option value="grid">网格</option></select></label>
       <div id="inspect-panes"></div><span id="inspect-status" role="status"></span>
     </fieldset>
     <fieldset><legend>按主机或目录自动切换配色与字体</legend>
@@ -353,10 +362,15 @@
     </fieldset>
     <fieldset><legend>剪藏与笔记</legend>
       <details id="snippets-details"><summary>管理命名剪藏与笔记</summary>
+        <label>搜索<input id="snippets-query" type="search" placeholder="按包名、条目名称或内容查找"></label>
+        <label>筛选剪藏包<select id="snippets-package-filter"><option value="">全部包</option></select></label>
         <label>条目<select id="snippets-list"><option value="">新建条目</option></select></label>
         <label>类型<select id="snippets-kind"><option value="snippet">剪藏</option><option value="note">笔记</option></select></label>
         <label>名称<input id="snippets-name" maxlength="80"></label>
+        <label>剪藏包<input id="snippets-package" list="snippets-packages" maxlength="64" placeholder="选择或新建包"></label>
+        <datalist id="snippets-packages"></datalist>
         <label for="snippets-text">内容</label><textarea id="snippets-text" rows="4" maxlength="32768"></textarea>
+        <label><input id="snippets-template" type="checkbox"> 填写模板变量，如 {{目录}}</label>
         <button type="button" id="snippets-save" disabled>保存条目</button><button type="button" id="snippets-remove" disabled>删除条目</button>
         <button type="button" id="snippets-paste" disabled>粘贴到当前窗格</button>
         <span id="snippets-status" role="status"></span>

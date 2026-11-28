@@ -17,10 +17,26 @@ async function verifyConnectionCenter(page) {
   await page.locator('#connection-center').click();
   await center.locator('[data-center=hosts]').click();
   await page.locator('#remote-view').selectOption('all');
+  await page.locator('#remote-group-filter').selectOption('');
   await page.locator('#remote-search').fill('Import UI Fixture');
   await expect(page.locator('#remote-list button')).toContainText('import.example.test');
   await page.locator('#remote-search').fill('');
   await page.locator('#remote-close').click();
+  await page.locator('#connection-center').click();
+  await center.locator('[data-center=inventory]').click();
+  await page.locator('#inventory-enable').click();
+  await expect(page.locator('#inventory-token')).not.toHaveValue('');
+  const bridgeUrl = await page.locator('#inventory-status').textContent();
+  const headers = {authorization:'Bearer ' + await page.locator('#inventory-token').inputValue()};
+  const inventory = await fetch(bridgeUrl + '/v1/inventory',{headers});
+  expect(inventory.status).toBe(200);
+  expect((await inventory.json()).all.hosts.Import_UI_Fixture.ansible_port).toBe(2200);
+  const created = await fetch(bridgeUrl + '/v1/host/BridgeFixture',{method:'POST',headers:{...headers,'content-type':'application/json'},
+    body:JSON.stringify({address:'bridge.example.test',ssh:{credentials:{username:'tester'}}})});
+  expect(created.status).toBe(201);
+  const removed = await fetch(bridgeUrl + '/v1/host/BridgeFixture',{method:'DELETE',headers});
+  expect(removed.status).toBe(200);
+  await page.locator('#inventory-close').click();
   await page.locator('#connection-center').click();
   await center.locator('[data-center=commands]').click();
   await expect(page.locator('#command-library-enable')).not.toBeChecked();

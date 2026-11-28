@@ -16,12 +16,13 @@ async function startConnection(value, { configFile, askpass = prepareAskpass } =
   if (!executable) throw new Error('请安装系统 OpenSSH 客户端。');
   const auth = await askpass();
   try {
+    const env = { ...process.env, SSH_ASKPASS_REQUIRE: 'force', SSH_ASKPASS: auth.file,
+      DISPLAY: process.env.DISPLAY || 'brclio', BRCLIO_SFTP_TARGET: target.host };
     const args = ['-T', '-o', 'StrictHostKeyChecking=ask', '-o', 'ClearAllForwardings=yes', '-o', 'ConnectionAttempts=1',
-      '-o', 'ConnectTimeout=15', '-o', 'NumberOfPasswordPrompts=2', '-s', ...argumentsFor('ssh', target, false), 'sftp'];
+      '-o', 'ConnectTimeout=15', '-o', 'NumberOfPasswordPrompts=2', '-s', ...argumentsFor('ssh', target, false, {file: executable, env, configFile}), 'sftp'];
     if (configFile) args.unshift('-F', configFile);
     const child = spawn(executable, args, { shell: false, windowsHide: true, detached: process.platform !== 'win32',
-      env: { ...process.env, SSH_ASKPASS_REQUIRE: 'force', SSH_ASKPASS: auth.file,
-        DISPLAY: process.env.DISPLAY || 'brclio', BRCLIO_SFTP_TARGET: target.host }, stdio: ['pipe', 'pipe', 'pipe'] });
+      env, stdio: ['pipe', 'pipe', 'pipe'] });
     child.once('close', auth.cleanup);
     return connectProtocol(child, () => {
       if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
@@ -135,6 +136,28 @@ function createBrowser({ start = startConnection, chooseLocal, launchEditor = ed
         if (typeof p.path !== 'string' || !paths.isAbsolute(p.path) || p.path.includes('\0') || p.path.length > 4096) throw new Error('请输入完整的目录路径。');
         return await list(s, pane, p.path);
       }
+      if (op === 'transfer' || op === 'native-drop') {
+        let source = pane, destination = s.panes[side === 'local' ? 'remote' : 'local'], name = p.name;
+        if (op === 'native-drop') {
+          if (typeof p.nativePath !== 'string' || !path.isAbsolute(p.nativePath)) throw new Error('未读取到拖入的项目。');
+          name = path.basename(p.nativePath);
+          const dir = await fs.realpath(path.dirname(p.nativePath));
+          const info = await fs.lstat(path.join(dir, name));
+          const kind = info.isFile() ? 'file' : info.isDirectory() ? 'directory' : 'other';
+          source = { dir, entries: [{ name, kind }] };
+          destination = pane;
+        }
+        if (!destination) throw new Error('请先选择目标目录。');
+        validateName(name, !source.net || !destination.net);
+        const state = { bytes: 0, files: 0, size: null, current: '', canceled: false };
+        s.transfer = state;
+        try {
+          await transferTree(source, destination, name, state, () => {
+            if (active !== s || state.canceled) throw new Error('已取消传输。');
+          });
+          return await list(s, destination, destination.dir);
+        } finally { s.transfer = null; }
+      }
       const name = validateName(p.name, !pane.net);
       if (op === 'edit-file') {
         const ext = path.posix.extname(name).toLowerCase();
@@ -156,18 +179,6 @@ function createBrowser({ start = startConnection, chooseLocal, launchEditor = ed
       if (op === 'enter') {
         if (!pane.entries.some(item => item.name === name && ['directory', 'link'].includes(item.kind))) throw new Error('请选择目录。');
         return await list(s, pane, paths.join(pane.dir, name));
-      }
-      if (op === 'transfer') {
-        const other = s.panes[side === 'local' ? 'remote' : 'local'];
-        if (!other) throw new Error('请先选择目标目录。');
-        const state = { bytes: 0, files: 0, size: null, current: '', canceled: false };
-        s.transfer = state;
-        try {
-          await transferTree(pane, other, name, state, () => {
-            if (active !== s || state.canceled) throw new Error('已取消传输。');
-          });
-          return await list(s, other, other.dir);
-        } finally { s.transfer = null; }
       }
       if (pane.net) {
         const file = paths.join(pane.dir, name);
@@ -200,7 +211,11 @@ function registerSftp({ handle, dialog, getOwner }) {
     const result = await dialog.showOpenDialog(getOwner(), { title: '选择 SFTP 本地目录', properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0];
   } });
-  handle('sftp', browser.action);
+  handle('sftp', (op, payload) => {
+    if (op === 'native-drop') throw new Error('请从系统文件管理器拖入项目。');
+    return browser.action(op, payload);
+  });
+  handle('sftp-drop', payload => browser.action('native-drop', payload));
   return browser;
 }
 module.exports = { createBrowser, registerSftp, validateName, startConnection };

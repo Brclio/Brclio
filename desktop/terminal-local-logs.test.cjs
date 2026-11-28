@@ -90,3 +90,30 @@ test('limits disk use, refuses unencrypted logs and invalidates stale account op
   await f.run('clear');
   assert.deepEqual((await f.run('list')).logs, []);
 });
+
+test('the owner can expire unbookmarked local logs and keep bookmarked logs across restarts', async t => {
+  const f = await fixture(t);
+  const ids = [];
+  for (const name of ['keep','expire']) {
+    const {active} = await f.run('start',{pane:'present',name});
+    await f.run('stop');
+    ids.push(active);
+  }
+  await f.run('bookmark',{id:ids[0],label:'keep',offset:0});
+  const directory = path.join(f.directory,'terminal-logs',crypto.createHash('sha256').update('alice').digest('hex'));
+  for (const id of ids) {
+    const file = path.join(directory,id);
+    const record = JSON.parse(f.storage.decryptString(await fs.readFile(file)));
+    record.updatedAt = '2020-01-01T00:00:00.000Z';
+    await fs.writeFile(file,f.storage.encryptString(JSON.stringify(record)));
+  }
+  assert.equal((await f.run('list')).logs.length,2);
+  await f.run('retention',{days:7});
+  f.restart();
+  const state = await f.run('list');
+  assert.equal(state.days,7);
+  assert.deepEqual(state.logs.map(log => log.id),[ids[0]]);
+  f.switch('bob');
+  assert.equal((await f.run('list')).days,0);
+  await assert.rejects(f.run('retention',{days:-1}));
+});

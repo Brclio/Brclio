@@ -13,9 +13,16 @@ window.BrclioConnectionCenter = { bind({ api, newTab }) {
     logs: () => window.BrclioLocalLogs.open(),
     trust: () => window.BrclioKnownHosts.open(),
     commands: () => window.BrclioCommandLibrary.open(),
+    sessions: () => {
+      $('terminal-actions').click();
+      const filter = $('actions-filter'); filter.value = '工作区会话'; filter.dispatchEvent(new Event('input'));
+      $('inspect-filter').focus();
+    },
+    inventory: () => window.BrclioInventoryBridge.open(),
     importHosts: () => window.BrclioHostImportDialog.open(),
     identities: () => window.BrclioIdentityControls.open(),
     sync: () => window.BrclioTerminalSync.open(),
+    terminalLock: () => window.BrclioTerminalLock.open(),
     sharing: () => window.BrclioSharedVaults.open(),
     devices: () => { devices.showModal(); showProtocol(); },
     passwords: () => {

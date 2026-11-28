@@ -7,13 +7,18 @@ async function verifyHostLibrary(terminal) {
   // The caller uses an isolated Brclio data directory. Only synthetic hosts are registered.
   const count = await terminal.locator('#tabs [role=tab]').count();
   await terminal.evaluate(() => {
-    localStorage.setItem('brclio.terminal.connections.v1', JSON.stringify([{ name: '旧版主机', host: 'old-test.invalid', user: 'fixture' }]));
+    // Build a real pre-v2 fixture even if an earlier test already used the new host editor.
+    window.BrclioTerminalPartitions.storage.removeItem('brclio.terminal.host-library.v2');
+    window.BrclioTerminalPartitions.storage.setItem('brclio.terminal.connections.v1', JSON.stringify([{ name: '旧版主机', host: 'old-test.invalid', user: 'fixture' }]));
   });
   await terminal.locator('#terminal-actions').click();
   await terminal.locator('#remote-connections summary').click();
   await terminal.locator('#remote-open').click();
   const dialog = terminal.locator('#remote-library');
   await expect(dialog).toBeVisible();
+  await dialog.locator('#remote-view').selectOption('all');
+  await dialog.locator('#remote-group-filter').selectOption('');
+  await dialog.locator('#remote-search').fill('');
   const rows = dialog.locator('#remote-list button');
   await rows.filter({ hasText: '旧版主机' }).click();
   await expect(dialog.locator('#remote-host')).toHaveValue('old-test.invalid');
@@ -30,6 +35,7 @@ async function verifyHostLibrary(terminal) {
   await dialog.locator('#remote-inherit').check();
   await expect(dialog.locator('#remote-inherited')).toContainText('2222');
   await dialog.locator('#remote-advanced summary').click();
+  await dialog.locator('#remote-proxy').fill('socks5://127.0.0.1:1080');
   await dialog.locator('#remote-environment').fill('COLOR=host');
   await dialog.locator('#remote-save').click();
   const resolved = await terminal.evaluate(() => {
@@ -37,6 +43,7 @@ async function verifyHostLibrary(terminal) {
     return bank.resolve(bank.all().find(item => item.name === '开发主机'));
   });
   assert.equal(resolved.port, 2222);
+  assert.equal(resolved.proxy, 'socks5://127.0.0.1:1080');
   assert.deepEqual(resolved.environment, [{ name: 'COLOR', value: 'host' }]);
   await dialog.locator('#remote-group-editor summary').click();
   await dialog.locator('#remote-view').selectOption('favorite');
