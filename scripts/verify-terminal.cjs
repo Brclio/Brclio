@@ -167,6 +167,12 @@ async function main() {
     await require('./verify-terminal-vault.cjs').verifyTerminalVault(app, terminal, command, windows);
     await require('./verify-terminal-profile.cjs').verifyProfileAndSearch(terminal);
     await require('./verify-terminal-workspace-tools.cjs').verifyWorkspaceTools(terminal, command, windows);
+    await require('./verify-terminal-center.cjs').verifyConnectionCenter(terminal);
+    await require('./verify-terminal-host-library.cjs').verifyHostLibrary(terminal);
+    await require('./verify-terminal-forwarding.cjs').verifyForwarding(terminal);
+    await require('./verify-terminal-forwarding.cjs').verifyIdentity(terminal, app, temporary);
+    await require('./verify-terminal-sftp.cjs').verifySftpHelper(app);
+    await require('./verify-terminal-sftp.cjs').verifySftpEntry(terminal);
     await terminal.locator('#terminal-actions').click();
     await terminal.locator('#trigger-pattern').fill('^BRCLIO-TRIGGER-OK');
     await terminal.locator('#trigger-add').click();

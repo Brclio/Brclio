@@ -9,7 +9,7 @@ const { createPtyService } = require('./service.cjs');
 const prefix = 'brclio:terminal-window:';
 const documentPath = path.join(__dirname, 'index.html');
 
-function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, alerts, getMainWindow, showMainWindow, onPresentation }) {
+function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, alerts, accountRequest, getMainWindow, showMainWindow, onPresentation }) {
   let view;
   let owner;
   let detached;
@@ -18,6 +18,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   let viewport = null;
   let focusOnShow = false;
   let recording = false;
+
   let vault;
   const channels = [];
   const sessions = createPtyService({ home: app.getPath('home'), send });
@@ -44,15 +45,31 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     });
   }
 
+  const sftp = require('./sftp-host.cjs').registerSftp({ handle, dialog, getOwner: () => owner });
+  require('./known-hosts.cjs').register({ handle, home: app.getPath('home'), confirm: async (message, detail) =>
+    (await dialog.showMessageBox(owner, { type: 'question', message, detail, buttons: ['取消', '移除此记录'],
+      defaultId: 0, cancelId: 0, noLink: true })).response === 1 });
+  handle('serial-ports', () => require('./device-session.cjs').serialPorts());
+  const { syncAccount, localIdentity } = require('./sync-account.cjs');
+  const identity = localIdentity(app.getPath('userData'));
+  handle('sync-config', async (op, payload) => {
+    const targetView = view;
+    const result = op === 'local-session' ? await identity.current() :
+      op === 'session' ? await identity.verify(accountRequest) : await syncAccount(accountRequest, op, payload);
+    if (view !== targetView) throw new Error('终端已关闭。');
+    return result;
+  });
   handle('profiles', sessions.profiles);
   const dynamic = require('./dynamic-profiles.cjs').dynamicSource(value => send('dynamic-changed', value));
+  handle('dynamic-reset', dynamic.stop);
   handle('dynamic-choose', follow => dynamic.choose(async () => {
     const result = await dialog.showOpenDialog(owner, { title: '导入终端动态配置', properties: ['openFile'],
       filters: [{ name: '动态配置 JSON', extensions: ['json'] }] });
     return result.canceled ? null : result.filePaths[0];
   }, follow));
   handle('dynamic-track', dynamic.track);
-  handle('create', sessions.create);
+  const identities = require('./identity-host.cjs').register({ handle, dialog, getOwner: () => owner, home: app.getPath('home') });
+  handle('create', options => sessions.create(identities.prepare(options)));
   handle('write', sessions.write);
   handle('resize', sessions.resize);
   handle('close', sessions.close);
@@ -100,17 +117,24 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   });
   handle('bell', () => alerts.bell());
 
-  function passwordVault() {
-    if (!owner?.isFocused() || !view?.getVisible()) throw new Error('请先返回终端窗口。');
-    vault ??= require('./vault.cjs').createTerminalVault({
-      directory: app.getPath('userData'), storage: require('electron').safeStorage,
-    });
-    return vault;
+  async function passwordVault() {
+    const terminal = view;
+    const isActive = () => view === terminal && view?.getVisible() && owner?.isFocused();
+    if (!isActive()) throw new Error('请先返回终端窗口。');
+    const cached = await identity.current();
+    const { user } = cached.known ? cached : await identity.verify(accountRequest);
+    if (!isActive()) throw new Error('账号或活动窗口已变化。');
+    const id = user?.id || '';
+    if (vault?.owner !== id) {
+      const directory = id ? path.join(app.getPath('userData'), 'terminal-accounts', id) : app.getPath('userData');
+      vault = { owner: id, service: require('./vault.cjs').createTerminalVault({ directory, storage: require('electron').safeStorage }) };
+    }
+    return vault.service;
   }
-  handle('vault-list', () => passwordVault().list());
-  handle('vault-add', (name, password) => passwordVault().add(name, password));
-  handle('vault-update', (id, name, password) => passwordVault().update(id, name, password));
-  handle('vault-remove', id => passwordVault().remove(id));
+  handle('vault-list', async () => (await passwordVault()).list());
+  handle('vault-add', async (name, password) => (await passwordVault()).add(name, password));
+  handle('vault-update', async (id, name, password) => (await passwordVault()).update(id, name, password));
+  handle('vault-remove', async id => (await passwordVault()).remove(id));
   handle('vault-fill', async (id, paneId) => {
     const terminal = view;
     const window = owner;
@@ -124,7 +148,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
         throw new Error('活动窗格已更改或会话已结束，请重新选择。');
       }
     }
-    return passwordVault().fill(id, async name => {
+    return (await passwordVault()).fill(id, async name => {
       await checkPane();
       const program = path.basename(target.shell).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/gu, '');
       const host = ['ssh', 'sftp'].includes(target.profile) ? ' · ' + target.host : '';
@@ -164,6 +188,8 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   }
 
   function closeTerminal() {
+    vault = undefined;
+    sftp.close();
     dynamic.stop();
     if (!view) return;
     const contents = view.webContents;
@@ -253,7 +279,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
       contents.setIgnoreMenuShortcuts(recording || Boolean(shortcut));
     });
     contents.on('did-start-navigation', details => {
-      if (view === terminal && details.isMainFrame && !details.isSameDocument) { dynamic.stop(); sessions.closeAll(); }
+      if (view === terminal && details.isMainFrame && !details.isSameDocument) { sftp.close(); dynamic.stop(); sessions.closeAll(); }
     });
     contents.on('render-process-gone', () => { if (view === terminal) closeTerminal(); });
     contents.once('destroyed', () => { if (view === terminal) closeTerminal(); });
@@ -327,7 +353,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     closeTerminal();
   }
   app.once('will-quit', dispose);
-  return { open, toggleHotkey, dispose, setViewport, getPresentation: () => mode, hasWindow: () => mode === 'window' };
+  return { open, toggleHotkey, dispose, setViewport, accountChanged: closeTerminal, getPresentation: () => mode, hasWindow: () => mode === 'window' };
 }
 
 module.exports = { createTerminalHost };

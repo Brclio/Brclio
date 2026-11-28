@@ -1,6 +1,7 @@
 'use strict';
 
 window.BrclioSnippets = function installSnippets({ activePane, actions, paste }) {
+  const storage = window.BrclioTerminalPartitions?.storage || localStorage;
   const key = 'brclio.terminal.snippets.v1';
   const $ = id => document.getElementById('snippets-' + id);
   const list = $('list'), details = $('details');
@@ -9,7 +10,7 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
   let loaded = false;
 
   function read() {
-    const stored = localStorage.getItem(key);
+    const stored = storage.getItem(key);
     const items = stored === null ? [] : JSON.parse(stored);
     const ids = new Set();
     if (!Array.isArray(items) || items.length > 200 || !items.every(item => {
@@ -54,8 +55,8 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
     if (items.length > 200 || items.reduce((count, item) => count + item.text.length, 0) > 512 * 1024) {
       throw new Error('已达到剪藏与笔记的容量上限，请先缩短内容或删除条目。');
     }
-    if (items.length) localStorage.setItem(key, JSON.stringify(items));
-    else localStorage.removeItem(key);
+    if (items.length) storage.setItem(key, JSON.stringify(items));
+    else storage.removeItem(key);
     display(items, id);
     $('status').textContent = message;
   }
@@ -65,6 +66,8 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
     try { const items = read(); loaded = true; display(items, ''); }
     catch (error) { closeEditor(); $('status').textContent = error.message; }
   }
+  window.addEventListener('brclio-terminal-account-changed', () => { details.open = false; closeEditor(); });
+  window.addEventListener('brclio-terminal-library-moved', () => { closeEditor(); syncEditor(); });
   details.addEventListener('toggle', syncEditor);
   details.addEventListener('focusin', syncEditor);
   actions.addEventListener('close', () => { if (!actions.open) { details.open = false; closeEditor(); } });

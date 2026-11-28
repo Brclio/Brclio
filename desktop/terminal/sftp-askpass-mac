@@ -1,0 +1,17 @@
+#!/bin/sh
+[ "$#" -eq 1 ] || exit 1
+exec /usr/bin/osascript - "$1" "${BRCLIO_SFTP_TARGET}" "${SSH_ASKPASS_PROMPT}" <<'APPLESCRIPT'
+on run argv
+  set promptText to item 1 of argv
+  set titleText to "Brclio SFTP · " & item 2 of argv
+  set hint to item 3 of argv
+  if hint is "confirm" or promptText contains "yes/no" then
+    display dialog promptText with title titleText buttons {"取消", "确认"} default button "取消" cancel button "取消" with icon caution giving up after 120
+    if gave up of result then error number -128
+    return "yes"
+  end if
+  set answer to display dialog promptText with title titleText default answer "" with hidden answer buttons {"取消", "继续"} default button "继续" cancel button "取消" giving up after 120
+  if gave up of answer then error number -128
+  return text returned of answer
+end run
+APPLESCRIPT

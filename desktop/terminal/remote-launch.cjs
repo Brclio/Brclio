@@ -24,8 +24,10 @@ function program(kind, platform = process.platform, env = process.env) {
 }
 
 function argumentsFor(kind, value) {
-  const { host, port, user } = endpoint(value);
+  const { host, port, user, jump, identityFile } = endpoint(value);
   const args = [];
+  if (jump) args.push('-J', jump);
+  if (identityFile) args.push('-i', identityFile);
   if (kind === 'ssh') {
     if (port) args.push('-p', String(port));
     if (user) args.push('-l', user);

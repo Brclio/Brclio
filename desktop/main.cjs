@@ -74,6 +74,7 @@ function getXhsService() {
 }
 const settings = createSettingsStore(app.getPath('userData'));
 const account = createAccountClient({ directory: app.getPath('userData'),
+  onSessionChange: () => terminalHost?.accountChanged(),
   fetch: (url, options) => net.fetch(url, options), openExternal: url => shell.openExternal(url) });
 const copySelection = createSelectionCopier({
   copyPaths: paths => copyFromMenu(paths, { exitWhenIdle: false }),
@@ -229,7 +230,7 @@ function handle(channel, callback) {
 
 function getTerminalHost() {
   terminalHost ??= require('./terminal/host.cjs').createTerminalHost({
-    app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, alerts: terminalAlerts,
+    app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, alerts: terminalAlerts, accountRequest: input => account.requestTerminal(input),
     getMainWindow: () => mainWindow, showMainWindow: createWindow,
     onPresentation: mode => {
       const contents = mainWindow?.webContents;

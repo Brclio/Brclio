@@ -2,7 +2,7 @@
 
 const path = require('node:path');
 const { existsSync } = require('node:fs');
-const { access, cp } = require('node:fs/promises');
+const { access, cp, mkdir } = require('node:fs/promises');
 const { build } = require('./windows-build-shell.cjs');
 
 module.exports = async function afterPack(context) {
@@ -35,5 +35,9 @@ module.exports = async function afterPack(context) {
   }
   const result = build({ arch, version: context.packager.appInfo.version,
     output: path.join(context.appOutDir, 'resources', 'windows-shell') });
+  const terminalAuth = path.join(context.appOutDir, 'resources', 'terminal-auth');
+  await mkdir(terminalAuth, { recursive: true });
+  await require('../desktop/terminal/sftp-askpass.cjs').compileWindows(
+    path.join(__dirname, '../desktop/terminal/sftp-askpass-win.cs'), path.join(terminalAuth, 'askpass.exe'));
   console.log(JSON.stringify(result));
 };

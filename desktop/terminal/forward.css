@@ -1,0 +1,34 @@
+.terminal-network-dialog {
+  box-sizing: border-box;
+  width: min(540px, 92vw);
+  max-height: 86vh;
+  overflow: auto;
+  margin: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px;
+  background: var(--cream);
+  color: var(--ink);
+}
+.terminal-network-dialog::backdrop { background: rgb(20 22 28 / .32); }
+.terminal-network-dialog .forward-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 12px; }
+.terminal-network-dialog .forward-wide { grid-column: 1 / -1; }
+.terminal-network-dialog label { display: grid; gap: 4px; font-size: 12px; }
+.terminal-network-dialog [hidden] { display: none; }
+.terminal-network-dialog input, .terminal-network-dialog select {
+  color: inherit;
+  background: var(--cream);
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.terminal-network-dialog .network-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.terminal-network-dialog button { padding: 5px 9px; border: 1px solid var(--border); }
+.terminal-network-dialog .primary { color: white; background: var(--blue); }
+.terminal-network-dialog p { margin: 10px 0 0; overflow-wrap: anywhere; }
+.terminal-network-dialog .forward-hint { margin: 12px 0; }
+.terminal-network-dialog [role=status] { color: var(--blue-dark); }
+.terminal-network-dialog .known-record { border-top: 1px solid var(--border); padding-block: 10px; display: grid; gap: 5px; }
+.terminal-network-dialog .known-record code { overflow-wrap: anywhere; }
+.terminal-network-dialog .known-record button { justify-self: start; }

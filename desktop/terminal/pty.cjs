@@ -85,26 +85,40 @@ function createPtySessions({ home, send, platform = process.platform, env = proc
     }
     const profiles = shellProfiles(platform, env);
     const control = profile === 'tmux-control';
-    const remote = profile === 'ssh' || profile === 'sftp';
+    const keygen = profile === 'ssh-keygen' && require('./identity-host.cjs').keygen(connection, platform, env);
+    const forwarding = profile === 'ssh-forward';
+    const remote = forwarding || profile === 'ssh' || profile === 'sftp';
+    const stream = profile === 'telnet' || profile === 'serial';
+    const mosh = profile === 'mosh' && require('./device-session.cjs').mosh(connection, platform, env);
     let selected = profiles.find(item => item.id === profile);
+    if (stream) selected = { file: profile === 'serial' ? 'Serial' : 'Telnet' };
+    if (mosh) selected = mosh;
+    if (keygen) selected = keygen;
     if (control) selected = { file: tmux.program(platform, env) };
     if (remote) {
-      selected = { file: openSSH.program(profile, platform, env) };
+      selected = { file: openSSH.program(forwarding ? 'ssh' : profile, platform, env) };
       if (!selected.file) throw new Error('未找到本机 ' + profile + ' 客户端，请安装 OpenSSH 客户端。');
     }
     if (control && !selected.file) throw new Error(platform === 'win32' ? '需要已配置的 WSL 和 tmux。' : '未找到本机 tmux。');
     if (!selected) throw new Error('这台电脑没有可用的所选 Shell。');
 
     const options = {
-      name: 'xterm-256color', cols, rows, cwd, env: shellEnvironment(env, control || remote ? profiles[0]?.file : selected.file, platform),
+      name: 'xterm-256color', cols, rows, cwd, env: shellEnvironment(env, control || remote || stream || mosh || keygen ? profiles[0]?.file : selected.file, platform),
       ...(platform === 'win32' ? { useConptyDll: true } : {}),
     };
     let args;
-    if (remote) args = openSSH.argumentsFor(profile, connection);
+    if (stream) args = [];
+    else if (mosh) args = mosh.args;
+    else if (keygen) args = keygen.args;
+    else if (forwarding) args = require('./forward-model.js').argumentsFor(connection);
+    else if (remote) args = openSSH.argumentsFor(profile, connection);
     else if (control) args = tmux.argumentsFor(tmuxSession, platform);
     else args = shellArguments(selected.file, platform, shellIntegration === true, options.env);
     if (control) options.encoding = 'latin1';
-    const pty = control && platform === 'win32' ? tmux.wslPipe(selected.file, args, options) : load().spawn(selected.file, args, options);
+    let pty;
+    if (stream) pty = require('./device-session.cjs').streamSession(profile, connection, { cols, rows }, platform);
+    else if (control && platform === 'win32') pty = tmux.wslPipe(selected.file, args, options);
+    else pty = load().spawn(selected.file, args, options);
     const state = { pty, outstanding: 0, paused: false, forceKill: null };
     sessions.set(id, state);
     state.data = pty.onData(data => {

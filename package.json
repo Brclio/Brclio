@@ -132,6 +132,8 @@
     "afterPack": "scripts/desktop-after-pack.cjs"
   },
   "dependencies": {
+    "@serialport/bindings-cpp": "13.0.1",
+    "@serialport/stream": "13.0.0",
     "@xterm/addon-fit": "0.10.0",
     "@xterm/addon-image": "0.8.0",
     "@xterm/addon-search": "0.15.0",

@@ -1,0 +1,13 @@
+#terminal-sync { width: min(550px, 88vw); max-height: 80vh; overflow: auto; color: var(--ink); background: var(--cream); border: 1px solid var(--border); border-radius: 9px; padding: 16px; }
+#terminal-sync::backdrop { background: rgb(20 22 28 / .35); }
+#terminal-sync .sync-heading, #terminal-sync .sync-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#terminal-sync .sync-heading { justify-content: space-between; }
+#terminal-sync h2 { margin: 0; font-size: 18px; }
+#terminal-sync h3 { margin: 12px 0 4px; font-size: 15px; }
+#terminal-sync p { line-height: 1.5; }
+#terminal-sync button, #terminal-sync select { display: inline-flex; min-height: 30px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 4px; color: var(--ink); background: var(--paper); }
+#terminal-sync :is(button,select):focus-visible { outline: 2px solid var(--blue); }
+#terminal-sync fieldset { margin: 8px 0; border: 1px solid var(--border); min-width: 0; }
+#terminal-sync summary { cursor: pointer; }
+#terminal-sync pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+#terminal-sync [role=status] { color: var(--blue-dark); margin-bottom: 0; }

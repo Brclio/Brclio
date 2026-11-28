@@ -1,0 +1,46 @@
+#remote-library {
+  box-sizing: border-box; width: min(840px, 94vw); max-height: 90vh; padding: 0;
+  border: 1px solid var(--border); border-radius: 10px; color: var(--ink);
+  background: var(--cream); box-shadow: 0 16px 60px rgb(0 0 0 / .18);
+}
+#remote-library::backdrop { background: rgb(20 22 28 / .35); }
+#remote-library[open] { display: flex; flex-direction: column; }
+#remote-library .host-head, #remote-library .host-quick, #remote-library .host-row { display: flex; align-items: center; gap: 8px; }
+#remote-library .host-head { justify-content: space-between; padding: 12px 16px; }
+#remote-library h2, #remote-library h3 { margin: 0; }
+#remote-library h2 { font-size: 18px; }
+#remote-library h3 { font-size: 14px; }
+#remote-library button { padding: 5px 9px; min-height: 30px; border-color: var(--border); background: var(--cream); }
+#remote-library :is(button, select, input):focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+#remote-library :is(input:not([type=checkbox]), select) {
+  min-width: 0; box-sizing: border-box; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--cream); padding: 5px 6px; min-height: 30px;
+}
+#remote-library .host-quick { padding: 8px 16px; background: var(--paper); border-block: 1px solid var(--border); flex-wrap: wrap; }
+#remote-library .host-quick input { flex: 1; }
+#remote-library .host-layout { display: grid; grid-template-columns: minmax(180px, .85fr) minmax(275px, 1.15fr); min-height: 0; overflow: auto; }
+#remote-library .host-index, #remote-library .host-editor { display: flex; flex-direction: column; gap: 9px; padding: 12px 16px; min-width: 0; }
+#remote-library .host-index { border-inline-end: 1px solid var(--border); }
+#remote-library .host-filters, #remote-library .host-pair { display: grid; gap: 7px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+#remote-library .host-filters input { grid-column: 1 / -1; }
+#remote-library .host-results { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; min-height: 48px; max-height: 300px; }
+#remote-library .host-results button { display: grid; text-align: start; justify-content: stretch; gap: 2px; width: 100%; padding: 7px 8px; }
+#remote-library .host-results button[aria-pressed=true] { color: var(--blue-dark); background: #ebf2f7; border-color: #b7d1e7; }
+#remote-library .host-results span, #remote-library .host-results small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#remote-library .host-results small, #remote-library .host-results p { color: var(--muted); }
+#remote-library .host-editor label { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+#remote-library .host-editor label.host-favorite { flex-direction: row; align-items: center; }
+#remote-library .host-editor details summary { cursor: pointer; }
+#remote-library .host-editor details label { margin-top: 6px; }
+#remote-library .host-row { flex-wrap: wrap; }
+#remote-library .host-launch { padding-top: 8px; border-top: 1px solid var(--border); }
+#remote-library #remote-ssh, #remote-library #remote-quick-connect { color: var(--blue-dark); background: #ebf2f7; border-color: #c6d9ea; }
+#remote-library #remote-status { padding: 4px 16px 8px; font-size: 12px; color: var(--blue-dark); }
+#remote-library #remote-status:empty { padding: 0; }
+@media (max-width: 570px) {
+  #remote-library .host-layout { display: block; }
+  #remote-library .host-index { border-inline-end: 0; border-bottom: 1px solid var(--border); }
+  #remote-library .host-results { max-height: 125px; }
+}
+
+#remote-library .host-files-primary { font-weight: 600; color: var(--blue-dark); border-color: var(--blue); }

@@ -32,7 +32,7 @@
       }
       // Record the requested launch settings only. Dynamic OSC titles, output
       // buffers, typed commands and process IDs never enter local storage.
-      const remote = ['ssh', 'sftp'].includes(node.profile);
+      const remote = ['ssh', 'sftp', 'ssh-forward', 'ssh-keygen', 'telnet', 'serial', 'mosh'].includes(node.profile);
       return { profile: remote ? 'default' : node.profile, cwd: node.cwd || null, shellIntegration: !remote && node.shellIntegration === true };
     }
     const tabs = value.tabs.map(tab => {
@@ -45,6 +45,7 @@
   }
 
   function store(storage) {
+    if (typeof window === 'object' && storage === window.localStorage) storage = window.BrclioTerminalPartitions?.storage || storage;
     function entries() {
       const data = storage.getItem(key);
       if (!data) return [];
@@ -152,7 +153,16 @@
       rename(name);
       return name ? '当前标签已命名为「' + name + '」。' : '当前标签已恢复自动标题。';
     });
-    try { refresh(); } catch (error) { status.textContent = error.message; }
+    function reset() {
+      list.replaceChildren();
+      byId('arrangement-name').value = '';
+      byId('tab-label').value = '';
+      status.textContent = '';
+      try { refresh(); } catch (error) { status.textContent = error.message; }
+    }
+    window.addEventListener('brclio-terminal-account-changed', reset);
+    window.addEventListener('brclio-terminal-library-moved', reset);
+    reset();
   }
 
   const api = { store, capture, restore, bind };

@@ -32,9 +32,24 @@
   <script defer src="keymap.js"></script>
   <script defer src="pane-inspector.js"></script>
   <script defer src="alert-controls.js"></script>
+  <script defer src="sync-partitions.js"></script>
   <script defer src="connection.js"></script>
   <script defer src="remote-controls.js"></script>
   <script defer src="vault-controls.js"></script>
+  <link rel="stylesheet" href="host-library.css">
+  <link rel="stylesheet" href="forward.css">
+  <link rel="stylesheet" href="sftp-browser.css">
+  <link rel="stylesheet" href="sync-controls.css">
+  <link rel="stylesheet" href="connection-center.css">
+  <script defer src="forward-model.js"></script>
+  <script defer src="forward-controls.js"></script>
+  <script defer src="known-hosts-controls.js"></script>
+  <script defer src="identity-model.js"></script>
+  <script defer src="identity-controls.js"></script>
+  <script defer src="sftp-browser.js"></script>
+  <script defer src="sync-model.js"></script>
+  <script defer src="sync-controls.js"></script>
+  <script defer src="connection-center.js"></script>
   <script defer src="terminal.js"></script>
   <link rel="stylesheet" href="tmux.css">
   <script defer src="tmux-protocol.js"></script>
@@ -54,6 +69,7 @@
   <header>
     <h1><img src="../../web/assets/icon.png" alt="">Brclio <span>终端</span></h1>
     <div class="actions" role="group" aria-label="会话操作">
+      <button id="connection-center" aria-haspopup="dialog">连接中心</button>
       <button id="new-tab" class="primary"><svg aria-hidden="true"><use href="#plus"/></svg>新建标签</button>
       <button id="split-right" aria-label="左右分屏"><svg aria-hidden="true"><use href="#columns"/></svg></button>
       <button id="split-down" aria-label="上下分屏"><svg aria-hidden="true"><use href="#rows"/></svg></button>
@@ -92,6 +108,40 @@
       <button id="directory" title="选择新会话的起始目录"><svg aria-hidden="true"><use href="#folder"/></svg><span id="directory-label">主目录</span></button>
     </div>
   </footer>
+  <dialog id="connection-dialog" class="connection-sheet" aria-labelledby="connection-title">
+    <div class="dialog-head"><h2 id="connection-title">连接中心</h2><button id="connection-close" type="button">返回终端</button></div>
+    <section aria-label="连接与文件"><h3>远程工作</h3><div class="connection-grid">
+      <button data-center="hosts"><strong>主机</strong><small>SSH 连接、分组与收藏</small></button>
+      <button data-center="files"><strong>SFTP 文件</strong><small>浏览、上传和下载</small></button>
+      <button data-center="forward"><strong>端口转发</strong><small>本地、远程和动态转发</small></button>
+      <button data-center="devices"><strong>其他协议</strong><small>Telnet、Mosh 和串口</small></button>
+    </div></section>
+    <section aria-label="连接设置"><h3>连接设置</h3><div class="connection-links">
+      <button data-center="identities">SSH 身份</button><button data-center="trust">主机指纹</button>
+      <button data-center="passwords">本机密码库</button><button data-center="sync">账号同步</button>
+    </div></section>
+  </dialog>
+  <dialog id="device-dialog" class="connection-sheet" aria-labelledby="device-title">
+    <div class="dialog-head"><h2 id="device-title">其他协议</h2><button id="device-close" type="button">关闭</button></div>
+    <form id="device-form">
+      <label>连接方式<select id="device-kind"><option value="telnet">Telnet</option><option value="mosh">Mosh</option><option value="serial">串口</option></select></label>
+      <div id="network-fields">
+        <label>主机<input id="device-host" autocomplete="off" spellcheck="false" maxlength="255" required></label>
+        <label id="device-user-row" hidden>SSH 用户名<input id="device-user" maxlength="128" autocomplete="off"></label>
+        <label>端口<input id="device-port" type="number" min="1" max="65535" placeholder="23"></label>
+      </div>
+      <fieldset id="serial-fields" hidden disabled><legend>串口设置</legend>
+        <label>设备<select id="serial-device"></select></label><button id="serial-refresh" type="button">刷新设备</button>
+        <label>波特率<input id="serial-baud" type="number" min="50" max="4000000" value="115200" required></label>
+        <label>数据位<select id="serial-bits"><option>8</option><option>7</option><option>6</option><option>5</option></select></label>
+        <label>停止位<select id="serial-stop"><option>1</option><option>2</option></select></label>
+        <label>校验<select id="serial-parity"><option value="none">无</option><option value="even">偶</option><option value="odd">奇</option></select></label>
+        <label><input id="serial-flow" type="checkbox"> RTS/CTS 硬件流控</label>
+      </fieldset>
+      <p id="device-help"></p><p id="device-feedback" role="status"></p>
+      <button type="submit" id="device-connect">打开连接</button>
+    </form>
+  </dialog>
   <dialog id="actions-dialog" aria-labelledby="actions-title">
     <div class="dialog-head"><h2 id="actions-title">终端操作</h2><button id="actions-close">关闭</button></div>
     <input type="search" id="actions-filter" aria-label="筛选终端操作" aria-controls="actions-list" placeholder="筛选操作或设置">
@@ -181,16 +231,53 @@
     </fieldset>
     <fieldset><legend>远程会话</legend>
       <details id="remote-connections"><summary>SSH / SFTP 连接</summary>
-        <label>已保存的连接<select id="remote-list"><option value="">新连接</option></select></label>
-        <label>名称<input id="remote-name" maxlength="64" placeholder="例如 开发机"></label>
-        <label>主机或 SSH 配置别名<input id="remote-host" maxlength="255" autocapitalize="none" spellcheck="false"></label>
-        <label>用户名<input id="remote-user" maxlength="128" autocapitalize="none" spellcheck="false" placeholder="使用 SSH 配置"></label>
-        <label>端口<input id="remote-port" type="number" min="1" max="65535" placeholder="使用 SSH 配置"></label>
-        <button id="remote-save" type="button">保存或更新连接</button><button id="remote-remove" type="button" disabled>删除所选连接</button>
-        <button id="remote-ssh" type="button" disabled>新建 SSH 标签</button><button id="remote-sftp" type="button" disabled>新建 SFTP 标签</button>
-        <button id="remote-companion" type="button" hidden>连接当前窗格的主机</button>
-        <p>使用本机 OpenSSH 配置、密钥和代理。在终端中确认主机指纹并完成登录，SFTP 标签可交互传输文件。</p>
-        <span id="remote-status" role="status"></span>
+        <button id="remote-open" type="button">打开主机库</button>
+        <button id="remote-companion" type="button" hidden>为当前主机打开另一种连接</button>
+        <template id="remote-library-template">
+          <dialog id="remote-library" aria-labelledby="remote-title">
+            <div class="host-head"><h2 id="remote-title">主机库</h2><button type="button" id="remote-close">关闭</button></div>
+            <form id="remote-quick-form" class="host-quick">
+              <label for="remote-quick">快速连接</label>
+              <input id="remote-quick" placeholder="user@host:port 或 ssh://…" maxlength="512" autocomplete="off" autocapitalize="none" spellcheck="false">
+              <button type="submit" id="remote-quick-connect">连接</button>
+            </form>
+            <div class="host-layout">
+              <section class="host-index" aria-label="主机列表">
+                <div class="host-filters">
+                  <input id="remote-search" type="search" aria-label="搜索主机" placeholder="搜索名称、地址或标签">
+                  <select id="remote-view" aria-label="显示的主机"><option value="all">全部主机</option><option value="favorite">收藏</option><option value="recent">最近打开</option></select>
+                  <select id="remote-group-filter" aria-label="筛选分组"><option value="">全部分组</option></select>
+                </div>
+                <div class="host-results" id="remote-list" aria-label="匹配的主机"></div>
+                <div class="host-row"><button id="remote-new" type="button">＋ 新建主机</button><button id="remote-clear-recent" type="button" hidden>清空最近记录</button></div>
+              </section>
+              <form class="host-editor" id="remote-form" autocomplete="off">
+                <h3 id="remote-editor-title">新建主机</h3>
+                <label>名称<input id="remote-name" maxlength="64" placeholder="例如 开发机"></label>
+                <label>主机或 SSH 配置别名<input id="remote-host" maxlength="255" autocapitalize="none" spellcheck="false"></label>
+                <div class="host-pair">
+                  <label>用户名<input id="remote-user" maxlength="128" autocapitalize="none" spellcheck="false" placeholder="使用 SSH 配置"></label>
+                  <label>端口<input id="remote-port" type="number" min="1" max="65535" placeholder="默认"></label>
+                </div>
+                <div class="host-pair host-metadata">
+                  <label>分组<input id="remote-group" maxlength="120" list="remote-groups" placeholder="例如 工作/测试"></label>
+                  <label>标签<input id="remote-tags" maxlength="655" placeholder="用逗号分隔"></label>
+                </div>
+                <datalist id="remote-groups"></datalist>
+                <label class="host-favorite"><input id="remote-favorite" type="checkbox"> 收藏主机</label>
+                <details id="remote-advanced"><summary>跳板和身份文件</summary>
+                  <label>跳板链<input id="remote-jump" maxlength="2048" placeholder="user@jump:22，多跳用逗号分隔" spellcheck="false"></label>
+                  <label>本机 SSH 身份<select id="remote-identity-preset"><option value="">手动 / 本机密钥</option></select></label>
+                  <label>私钥文件路径<input id="remote-identityFile" maxlength="1024" placeholder="例如 ~/.ssh/id_ed25519" spellcheck="false"></label>
+                </details>
+                <div class="host-row host-launch"><button id="remote-ssh" type="button" disabled>SSH 终端</button><button id="remote-files" type="button">浏览文件</button><button id="remote-sftp" type="button" disabled>SFTP 命令行</button></div>
+                <div class="host-row"><button id="remote-save" type="submit">保存主机</button><button id="remote-duplicate" type="button" disabled>复制为新主机</button><button id="remote-remove" type="button" disabled>删除</button></div>
+                <div id="remote-delete-check" class="host-row" hidden><span id="remote-delete-label"></span><button id="remote-delete-confirm" type="button">确认删除</button><button id="remote-delete-cancel" type="button">取消</button></div>
+              </form>
+            </div>
+            <div id="remote-status" role="status" aria-live="polite"></div>
+          </dialog>
+        </template>
       </details>
     </fieldset>
     <fieldset><legend>窗口布局</legend>

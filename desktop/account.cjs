@@ -57,7 +57,7 @@ function createAccountStore(directory) {
 }
 
 function abortError() { return new Error('浏览器登录已取消，请重新登录。'); }
-function createAccountClient({ directory, fetch = globalThis.fetch, openExternal, store = createAccountStore(directory),
+function createAccountClient({ directory, onSessionChange = () => {}, fetch = globalThis.fetch, openExternal, store = createAccountStore(directory),
   randomBytes = crypto.randomBytes, now = Date.now, delay = (ms, signal) => new Promise((resolve, reject) => {
     const finish = () => { signal?.removeEventListener('abort', abort); resolve(); };
     const timer = setTimeout(finish, ms);
@@ -108,7 +108,7 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
   }
   async function accept(value, version) {
     if (version !== authVersion) throw new Error('账号状态已变化，请重新登录。');
-    if (Object.hasOwn(value, 'token')) { await store.write(value.token); delete value.token; }
+    if (Object.hasOwn(value, 'token')) { await store.write(value.token); delete value.token; onSessionChange(); }
     if (typeof value.csrf === 'string') csrf = value.csrf;
     return value;
   }
@@ -123,7 +123,7 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
       const value = await requestRaw(next.path, next.method, next.body);
       return await accept(value, version);
     } finally {
-      if (next.path === '/api/account/logout' && version === authVersion) { await store.write(null); csrf = ''; }
+      if (next.path === '/api/account/logout' && version === authVersion) { await store.write(null); csrf = ''; onSessionChange(); }
     }
   }
   async function oauth(provider, expectedUserId) {
@@ -185,7 +185,18 @@ function createAccountClient({ directory, fetch = globalThis.fetch, openExternal
       return { ok: true, user: result.user };
     } finally { if (pendingLogin === controller) pendingLogin = null; }
   }
-  return { request, oauth: provider => oauth(provider), linkOAuth: (provider, expectedUserId) => oauth(provider, expectedUserId ?? ''), confirmLinkOAuth,
+  // This scoped entry point is only wired to the isolated terminal view.
+  async function requestTerminal(input) {
+    if (input.path === '/api/account/session') return request(input);
+    if (input.path !== '/api/account/apps/terminal/data') throw new Error('终端同步路径无效。');
+    const version = authVersion;
+    const body = input.method === 'PUT' ? JSON.stringify(input.body) : undefined;
+    if (body && Buffer.byteLength(body) > MAX_BYTES) throw new Error('终端配置超过同步容量。');
+    const value = await requestRaw(input.path, input.method || 'GET', body);
+    if (version !== authVersion) throw new Error('账号状态已变化。');
+    return value;
+  }
+  return { request, requestTerminal, oauth: provider => oauth(provider), linkOAuth: (provider, expectedUserId) => oauth(provider, expectedUserId ?? ''), confirmLinkOAuth,
     cancelOAuth, google: () => oauth('google'), cancelGoogle: cancelOAuth,
     close() { cancelOAuth(); for (const controller of controllers) controller.abort(); } };
 }

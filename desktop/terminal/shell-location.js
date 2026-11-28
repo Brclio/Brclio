@@ -1,6 +1,7 @@
 'use strict';
 
 window.BrclioShellLocations = function shellLocations(profiles, panes, locationChanged) {
+  const storage = window.BrclioTerminalPartitions?.storage || localStorage;
   const key = 'brclio.terminal.profile-rules.v1';
   const $ = id => document.getElementById('location-' + id);
   let rules = [];
@@ -9,10 +10,14 @@ window.BrclioShellLocations = function shellLocations(profiles, panes, locationC
       typeof value.path === 'string' && value.path.length <= 1024 && (value.host || value.path) &&
       typeof value.profile === 'string' && value.profile.length > 0 && value.profile.length <= 64;
   }
-  try {
-    const saved = JSON.parse(localStorage.getItem(key));
-    if (Array.isArray(saved)) rules = saved.filter(valid).slice(0, 32);
-  } catch {}
+  function load() {
+    rules = [];
+    try {
+      const saved = JSON.parse(storage.getItem(key));
+      if (Array.isArray(saved)) rules = saved.filter(valid).slice(0, 32);
+    } catch {}
+  }
+  load();
   function apply(pane) {
     const { hostname, directory } = pane.location;
     const rule = rules.find(rule => (!rule.host || rule.host.toLowerCase() === hostname.toLowerCase()) &&
@@ -48,7 +53,7 @@ window.BrclioShellLocations = function shellLocations(profiles, panes, locationC
   }
   function save() {
     try {
-      localStorage.setItem(key, JSON.stringify(rules));
+      storage.setItem(key, JSON.stringify(rules));
       $('status').textContent = '已保存，使用第一个匹配的规则。';
     } catch (error) { $('status').textContent = error.message; }
     render();
@@ -62,6 +67,14 @@ window.BrclioShellLocations = function shellLocations(profiles, panes, locationC
     if (rules.length >= 32) { $('status').textContent = '最多可添加 32 个规则。'; return; }
     rules.push(rule); save();
   };
+  function reset() {
+    load();
+    $('host').value = $('path').value = $('status').textContent = '';
+    for (const pane of panes.values()) if (pane.location) apply(pane);
+    render();
+  }
+  window.addEventListener('brclio-terminal-account-changed', reset);
+  window.addEventListener('brclio-terminal-library-moved', reset);
   return { render, attach(pane) {
     pane.location = { hostname: '', directory: '' };
     function update(host, directory) {

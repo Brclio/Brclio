@@ -2,8 +2,9 @@
 
 window.BrclioDynamicControls = function dynamicControls({ api, activePane, panes, appearance }) {
   const $ = key => document.getElementById('dynamic-' + key);
+  const storage = window.BrclioTerminalPartitions?.storage || localStorage;
   const storageKey = 'brclio.terminal.dynamic-import.v1';
-  const applied = new WeakMap();
+  let applied = new WeakMap(), generation = 0;
   let imported = new Map(), serial = 0, selectedFile = false, watching = false;
   function populate(profiles) {
     const previous = $('list').value;
@@ -34,29 +35,44 @@ window.BrclioDynamicControls = function dynamicControls({ api, activePane, panes
       else apply(pane, imported.get(bound.guid));
     }
     $('status').textContent = data.source + ' · ' + imported.size + ' 个配置' + (watching ? ' · 正在跟踪' : '');
-    try { localStorage.setItem(storageKey, JSON.stringify(data.profiles)); }
+    try { storage.setItem(storageKey, JSON.stringify(data.profiles)); }
     catch { $('status').textContent += ' · 本次导入仅在当前窗口可用'; }
   }
-  try {
-    const saved = JSON.parse(localStorage.getItem(storageKey)) || [];
-    populate(Array.isArray(saved) ? saved.slice(0, 64).filter(v => v && typeof v.guid === 'string' && typeof v.name === 'string') : []);
-  } catch { populate([]); }
+  function reload() {
+    try {
+      const saved = JSON.parse(storage.getItem(storageKey)) || [];
+      populate(Array.isArray(saved) ? saved.slice(0, 64).filter(v => v && typeof v.guid === 'string' && typeof v.name === 'string') : []);
+    } catch { populate([]); }
+  }
+  reload();
+  window.addEventListener('brclio-terminal-account-changed', () => {
+    generation++;
+    selectedFile = watching = false;
+    applied = new WeakMap();
+    $('watch').disabled = $('import').disabled = $('watch').checked = false;
+    $('status').textContent = '';
+    if (api.resetDynamic) api.resetDynamic().catch(() => {});
+    reload();
+  });
+  window.addEventListener('brclio-terminal-library-moved', reload);
   $('import').onclick = async () => {
     $('import').disabled = true;
-    try { received(await api.chooseDynamic($('watch').checked)); }
-    catch (error) { $('status').textContent = error.message; }
-    finally { $('import').disabled = false; }
+    const ticket = generation;
+    try { const data = await api.chooseDynamic($('watch').checked); if (ticket === generation) received(data); }
+    catch (error) { if (ticket === generation) $('status').textContent = error.message; }
+    finally { if (ticket === generation) $('import').disabled = false; }
   };
   $('watch').onchange = async () => {
     if (!selectedFile) { $('status').textContent = $('watch').checked ? '选择文件后开始跟踪。' : ''; return; }
     $('watch').disabled = true;
-    try { received(await api.trackDynamic($('watch').checked)); }
-    catch (error) { $('watch').checked = watching; $('status').textContent = error.message; }
-    finally { $('watch').disabled = false; }
+    const ticket = generation;
+    try { const data = await api.trackDynamic($('watch').checked); if (ticket === generation) received(data); }
+    catch (error) { if (ticket === generation) { $('watch').checked = watching; $('status').textContent = error.message; } }
+    finally { if (ticket === generation) $('watch').disabled = false; }
   };
   $('apply').onclick = () => {
     const pane = activePane(), profile = imported.get($('list').value);
     if (pane && profile) { apply(pane, profile); $('status').textContent = '已应用 ' + profile.name; }
   };
-  api.onDynamicChanged(received);
+  api.onDynamicChanged(data => { if (selectedFile) received(data); });
 };

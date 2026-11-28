@@ -1,0 +1,17 @@
+/* Brclio Design System · app. © Brclio · CC BY-NC-SA 4.0 */
+#connection-center { white-space: nowrap; color: var(--blue-dark); }
+.connection-sheet { width: min(480px, 84vw); max-height: 80vh; border: 1px solid var(--border); border-radius: 10px; color: var(--ink); background: var(--cream); padding: 20px; }
+.connection-sheet::backdrop { background: rgb(20 22 28 / .36); }
+.connection-sheet h3 { color: var(--muted); font-size: 12px; font-weight: 550; margin: 16px 0 8px; }
+.connection-sheet .dialog-head { border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+.connection-sheet button { padding: 6px 9px; }
+.connection-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.connection-grid button { align-items: flex-start; flex-direction: column; padding: 12px; border: 1px solid var(--border); background: var(--paper); }
+.connection-grid small, #device-help { color: var(--muted); }
+.connection-links { display: flex; flex-wrap: wrap; gap: 5px; }
+.connection-links button, #device-connect { border: 1px solid var(--border); }
+#device-form label { display: flex; align-items: center; justify-content: space-between; gap: 1em; margin-block: 7px; }
+#device-form :is(select, input:not([type=checkbox])) { box-sizing: border-box; width: 55%; min-width: 0; border: 1px solid var(--border); border-radius: 4px; padding: 5px; background: var(--cream); }
+#device-connect { color: var(--blue-dark); background: #ebf2f7; }
+#serial-fields { border: 1px solid var(--border); }
+#device-feedback { color: var(--blue-dark); }

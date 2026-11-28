@@ -74,10 +74,23 @@ jobs:
         env:
           HOMEBREW_NO_AUTO_UPDATE: '1'
         run: command -v tmux || brew install tmux
+      - name: Provide a local SFTP server for Windows file-transfer tests
+        if: matrix.platform == 'win'
+        shell: powershell
+        run: |
+          $server = Join-Path $env:SystemRoot 'System32/OpenSSH/sftp-server.exe'
+          if (!(Test-Path $server)) {
+            Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction Stop
+          }
+          if (!(Test-Path $server)) { throw 'The native Windows SFTP subsystem is unavailable.' }
       - run: npm run sync
       - run: node --test desktop/terminal-*.test.cjs
         shell: bash
         timeout-minutes: 3
+      - name: Verify local-only mode, two-account isolation and two-device sync
+        run: node scripts/verify-terminal-sync.cjs
+      - name: Exercise the graphical file browser with the local SFTP subsystem
+        run: node scripts/verify-terminal-sftp.cjs
       - run: npm run prepare:xhs
       - name: Build the desktop test installer
         env:

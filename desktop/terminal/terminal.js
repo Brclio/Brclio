@@ -612,6 +612,11 @@
     actions.close();
     newTab(name, { profile: kind, connection, cwd: nextDirectory, shellIntegration: false });
   });
+  const activateConnection = pane => { selectTab(pane.tab); selectPane(pane); };
+  window.BrclioForwardControls.bind({ newTab, activate: activateConnection, stop(pane) { activateConnection(pane); closeActive(); } });
+  window.BrclioIdentityControls.bind({ newTab, activate: activateConnection, stop(pane) { activateConnection(pane); closeActive(); } });
+  window.BrclioTerminalSync.bind(api);
+  window.BrclioConnectionCenter.bind({ api, newTab });
   window.BrclioVaultControls.bind(api, activePane);
   byId('actions-close').onclick = () => actions.close();
   actions.addEventListener('close', () => {
