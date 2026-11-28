@@ -984,3 +984,35 @@ test('terminal configuration belongs to the signed-in account, uses revisions an
   assert.equal((await f.call('logout','POST',{},as(alice))).status,200);
   assert.equal((await f.call(route,'GET',null,as(alice))).status,401);
 });
+
+test('personal snippets sync has its own revision and rejects private notes, stale writes and cross-account IDs', async () => {
+  const f = fixture(), route = 'apps/terminal/snippets';
+  const a = await f.register('snip-alice','snip-a@example.test',true);
+  const b = await f.register('snip-bob','snip-b@example.test',true);
+  const as = account => ({native:true,headers:{Authorization:'Bearer ' + account.token}});
+  const item = {id:'a',kind:'snippet',name:'current directory',text:'pwd',package:'info'};
+  const patch = {expectedUserId:a.user.id,revision:0,data:[item]};
+  assert.equal((await f.call(route)).status,401);
+  assert.equal((await f.call(route,'PUT',patch,as(a))).status,200);
+  assert.equal((await f.call(route,'PUT',patch,as(a))).status,409);
+  assert.deepEqual((await (await f.call(route,'GET',null,as(a))).json()).data,[item]);
+  assert.deepEqual((await (await f.call(route+'?userId='+a.user.id,'GET',null,as(b))).json()).data,[]);
+  assert.equal((await f.call(route,'PUT',patch,as(b))).status,409);
+  assert.equal((await f.call(route,'PUT',{...patch,revision:1,data:[{...item,kind:'note'}]},as(a))).status,400);
+  assert.deepEqual((await (await f.call('apps/terminal/data','GET',null,as(a))).json()).data,{hosts:[],forwards:[]});
+});
+
+test('a grant revoked between authentication and the personal terminal snapshot cannot read snippets', async () => {
+  const f = fixture();
+  const account = await f.register('read-grant','read-grant@example.test',true);
+  const options = {native:true, headers:{Authorization:'Bearer ' + account.token}};
+  const snapshot = f.store.snapshot.bind(f.store);
+  let snapshots = 0;
+  f.store.snapshot = () => {
+    if (++snapshots === 2) f.store.files.get('users/' + account.user.id + '/credentials.json').sessions = {};
+    return snapshot();
+  };
+  const response = await f.call('apps/terminal/snippets','GET',null,options);
+  assert.equal(response.status,401);
+  assert.equal('data' in await response.json(),false);
+});
