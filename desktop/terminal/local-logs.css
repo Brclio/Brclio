@@ -1,0 +1,12 @@
+.local-logs { width: min(850px, 94vw); max-height: 92vh; overflow: auto; padding: 16px; color: var(--ink); border: 1px solid var(--border); border-radius: 8px; background: var(--paper, #faf7ef); }
+.local-logs::backdrop { background: rgb(18 20 25 / .4); }
+.local-logs h2 { margin: 0; flex: 1; font-size: 18px; }
+.local-logs p { color: var(--muted); font-size: 12px; }
+.local-logs .log-row { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+.local-logs .log-grid { display: grid; grid-template-columns: minmax(170px, 1fr) minmax(0, 2fr); gap: 12px; }
+.local-logs .log-grid section { min-width: 0; }
+.local-logs select[size], .local-logs textarea, .local-logs input { box-sizing: border-box; width: 100%; }
+.local-logs select[size] { height: 8em; }
+.local-logs textarea { resize: vertical; min-height: 15em; white-space: pre; overflow-wrap: normal; font: 12px/1.5 var(--mono); }
+.local-logs [hidden], .log-indicator[hidden] { display: none; }
+@media (max-width: 600px) { .local-logs .log-grid { grid-template-columns: 1fr; } }

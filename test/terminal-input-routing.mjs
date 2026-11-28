@@ -59,6 +59,10 @@ for (const platform of ['darwin', 'win32']) {
         window.inputProbe = state;
         window.brclioTerminal = {
           platform, profiles: async () => [{ id: 'default', label: 'Shell' }],
+          async syncTerminal(operation) {
+            if (operation === 'local-session') return { known: true, user: null };
+            throw new Error('The signed-out terminal fixture must not contact account services.');
+          },
           create: async ({ id }) => ({ id, shell: 'test', pid: 1 }),
           write: async (id, data, binary) => { state.writes.push({ id, data, binary }); },
           close: async () => {}, resize: async () => {}, ack() {},

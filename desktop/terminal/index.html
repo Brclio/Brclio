@@ -36,6 +36,8 @@
   <script defer src="connection.js"></script>
   <script defer src="remote-controls.js"></script>
   <script defer src="vault-controls.js"></script>
+  <link rel="stylesheet" href="local-logs.css">
+  <script defer src="local-logs-ui.js"></script>
   <link rel="stylesheet" href="host-library.css">
   <link rel="stylesheet" href="forward.css">
   <link rel="stylesheet" href="sftp-browser.css">
@@ -118,7 +120,7 @@
     </div></section>
     <section aria-label="连接设置"><h3>连接设置</h3><div class="connection-links">
       <button data-center="identities">SSH 身份</button><button data-center="trust">主机指纹</button>
-      <button data-center="passwords">本机密码库</button><button data-center="sync">账号同步</button>
+      <button data-center="logs">会话日志与书签</button><button data-center="passwords">本机密码库</button><button data-center="sync">账号同步</button>
     </div></section>
   </dialog>
   <dialog id="device-dialog" class="connection-sheet" aria-labelledby="device-title">

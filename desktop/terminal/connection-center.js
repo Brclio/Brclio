@@ -10,6 +10,7 @@ window.BrclioConnectionCenter = { bind({ api, newTab }) {
     hosts: () => window.BrclioRemoteConnections.open(),
     files: () => window.BrclioRemoteConnections.open('files'),
     forward: () => window.BrclioForwardControls.open(),
+    logs: () => window.BrclioLocalLogs.open(),
     trust: () => window.BrclioKnownHosts.open(),
     identities: () => window.BrclioIdentityControls.open(),
     sync: () => window.BrclioTerminalSync.open(),

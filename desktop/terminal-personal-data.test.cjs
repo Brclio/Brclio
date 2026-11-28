@@ -16,6 +16,8 @@ test('unassociated notes, layouts and dynamic profile bindings remain local unti
   const layout = { tabs:[{ name:'target.ref', root:{ profile:'bash', cwd:'/old/work', shellIntegration:false }, activePane:0 }], activeTab:0 };
   const scoped = partitions.storage;
   partitions.activate(null);
+  const profiles = 'brclio.terminal.profiles.v1';
+  scoped.setItem(profiles,JSON.stringify({active:'review',presets:[{name:'review',cwd:'/unassociated'}]}));
   store(scoped).save('workspace',layout);
   scoped.setItem(notes,JSON.stringify([snippet]));
   scoped.setItem(dynamic,JSON.stringify([preset]));
@@ -28,6 +30,7 @@ test('unassociated notes, layouts and dynamic profile bindings remain local unti
   assert.deepEqual(store(scoped).names(),[]);
   scoped.setItem(notes,JSON.stringify([{...snippet,text:'account note'}]));
   scoped.setItem(dynamic,JSON.stringify([{...preset,name:'account name'}]));
+  scoped.setItem(profiles,JSON.stringify({active:'review',presets:[{name:'review',cwd:'/account'}]}));
   store(scoped).save('workspace',{...layout, tabs:[{...layout.tabs[0],name:'existing'}]});
   partitions.moveUnbound();
   assert.equal(partitions.hasUnbound(),false);
@@ -35,7 +38,10 @@ test('unassociated notes, layouts and dynamic profile bindings remain local unti
   const savedNotes = JSON.parse(scoped.getItem(notes));
   assert.equal(new Set(savedNotes.map(item => item.id)).size,2);
   assert.deepEqual(savedNotes.map(item => item.text),['account note','guest note']);
-  assert.deepEqual(JSON.parse(scoped.getItem(rules)),[rule]);
+  assert.deepEqual(JSON.parse(scoped.getItem(rules)),[{...rule,profile:'review (本机 1)'}]);
+  const movedProfiles = JSON.parse(scoped.getItem(profiles));
+  assert.equal(movedProfiles.active,'review');
+  assert.equal(movedProfiles.presets[1].cwd,'/unassociated');
   assert.equal(new Set(JSON.parse(scoped.getItem(dynamic)).map(item => item.guid)).size,2);
   partitions.activate('bob');
   assert.equal(scoped.getItem(notes),null);

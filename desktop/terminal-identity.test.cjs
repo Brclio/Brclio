@@ -4,13 +4,14 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createHash, randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
+const { once } = require('node:events');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { promisify } = require('node:util');
 const { store } = require('./terminal/identity-model.js');
 const { register, keygen, publicPart } = require('./terminal/identity-host.cjs');
-const { createPtySessions } = require('./terminal/pty.cjs');
+const { createPtyService, forkService } = require('./terminal/service.cjs');
 const run = promisify(execFile);
 
 test('local SSH identity presets persist only name, user and path, and reject accidental replacement', () => {
@@ -54,9 +55,15 @@ test('system ssh-keygen in a real PTY generates a protected Ed25519 key and iden
   try { binary = keygen({ keyPath:file },process.platform,process.env).file; }
   catch (error) { if (/未找到/.test(error.message)) return t.skip('OpenSSH keygen unavailable'); throw error; }
   const id = randomUUID(), passphrase = 'test-only-' + randomUUID();
-  let stage = 0, output = '', onExit;
-  const exited = new Promise(resolve => { onExit = resolve; });
-  const sessions = createPtySessions({ home, env: { ...process.env, LC_ALL:'C', LANG:'C' }, send(kind,payload) {
+  let stage = 0, output = '', onExit, onFailure, workerExit;
+  const exited = new Promise((resolve, reject) => { onExit = resolve; onFailure = reject; });
+  // ConPTY owns native worker handles. Exercise the same child lifecycle as the
+  // desktop application, including retirement after the last terminal exits.
+  const sessions = createPtyService({ home, launch(root) {
+    const child = forkService(root, { ...process.env, LC_ALL:'C', LANG:'C' });
+    workerExit = once(child, 'exit');
+    return child;
+  }, send(kind,payload) {
     if (kind === 'exit') return onExit(payload);
     output += payload.data;
     sessions.ack(id,payload.data.length);
@@ -65,11 +72,11 @@ test('system ssh-keygen in a real PTY generates a protected Ed25519 key and iden
     if (stage < 2 && ask.test(text)) {
       stage++;
       output = '';
-      sessions.write(id,passphrase + '\r');
+      sessions.write(id,passphrase + '\r').catch(onFailure);
     }
   } });
   t.after(() => sessions.closeAll());
-  sessions.create({ id, profile:'ssh-keygen', connection:{ keyPath:file } });
+  await sessions.create({ id, profile:'ssh-keygen', connection:{ keyPath:file } });
   const result = await exited;
   assert.equal(result.exitCode,0);
   assert.equal(stage,2);
@@ -81,4 +88,6 @@ test('system ssh-keygen in a real PTY generates a protected Ed25519 key and iden
   assert.ok(derived.stdout.startsWith(pub.text));
   await assert.rejects(run(binary,['-y','-P','wrong','-f',file], { timeout: 5000, windowsHide: true }));
   assert.throws(() => keygen({ keyPath:file },process.platform,process.env), /已存在/);
+  const [workerCode] = await workerExit;
+  assert.equal(workerCode, 0, 'the native PTY service retires after the keygen session exits');
 });

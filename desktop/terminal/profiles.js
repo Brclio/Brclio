@@ -3,6 +3,8 @@
 window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySession, readSession, refit }) {
   const $ = key => document.getElementById('preset-' + key);
   const status = text => { $('status').textContent = text; };
+  const storage = window.BrclioTerminalPartitions?.storage || localStorage;
+  let generation = 0;
   const key = 'brclio.terminal.profiles.v1';
   const defaults = { name: '默认', tags: '', font: '"SFMono-Regular", Consolas, Menlo, "Liberation Mono", monospace',
     size: 14, scrollback: 10000, cursor: 'block', blink: true, contrast: 1, autocopy: false, follow: false, colors: {} };
@@ -35,15 +37,20 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
     value.integration = input.integration === true;
     return value;
   }
-  try {
-    const data = JSON.parse(localStorage.getItem(key));
-    if (Array.isArray(data?.presets)) {
-      for (const item of data.presets.slice(0,64)) { const value = normalize(item); presets.set(value.name, value); }
-      current = presets.get(data.active) || defaults;
-    }
-  } catch { /* Invalid or obsolete settings fall back to the built-in profile. */ }
+  function load() {
+    presets.clear();
+    current = defaults;
+    try {
+      const data = JSON.parse(storage.getItem(key));
+      if (Array.isArray(data?.presets)) {
+        for (const item of data.presets.slice(0,64)) { const value = normalize(item); presets.set(value.name, value); }
+        current = presets.get(data.active) || defaults;
+      }
+    } catch { /* Invalid or obsolete settings fall back to the built-in profile. */ }
+  }
+  load();
   function persist() {
-    localStorage.setItem(key, JSON.stringify({ active: current.name, presets: [...presets.values()] }));
+    storage.setItem(key, JSON.stringify({ active: current.name, presets: [...presets.values()] }));
   }
   function refreshList(selected) {
     const filter = $('filter').value.toLowerCase();
@@ -112,9 +119,11 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
   $('colors').onchange = async () => {
     const file = $('colors').files[0];
     if (!file) return;
+    const revision = generation;
     try {
       if (file.size > 256 * 1024) throw new Error('配色文件过大。');
       const xml = new DOMParser().parseFromString(await file.text(), 'application/xml');
+      if (revision !== generation) return;
       const dict = xml.querySelector('plist > dict');
       if (!dict || xml.querySelector('parsererror')) throw new Error('请选择 XML 格式的 .itermcolors 配色。');
       const imported = {};
@@ -136,6 +145,17 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
       status('已读取配色，点击应用或保存。');
     } catch (error) { status(error.message); }
   };
+  function reset() {
+    generation++;
+    load();
+    $('filter').value = '';
+    refreshList(current.name);
+    edit(current);
+    applySession(current);
+    status('');
+  }
+  window.addEventListener('brclio-terminal-account-changed', reset);
+  window.addEventListener('brclio-terminal-library-moved', reset);
   refreshList(current.name);
   edit(current);
   return { options, get current() { return current; },

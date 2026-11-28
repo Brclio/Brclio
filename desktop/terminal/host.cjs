@@ -25,6 +25,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   const touchBar = process.platform === 'darwin' && require('./touch-bar.cjs').terminalTouchBar(id => send('toolbar-action', id));
 
   function send(channel, payload) {
+    logs.observe(channel, payload);
     const contents = view?.webContents;
     if (contents && !contents.isDestroyed() && isLocalDocument(contents.getURL(), documentPath)) {
       contents.send(prefix + channel, payload);
@@ -52,6 +53,12 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
   handle('serial-ports', () => require('./device-session.cjs').serialPorts());
   const { syncAccount, localIdentity } = require('./sync-account.cjs');
   const identity = localIdentity(app.getPath('userData'));
+  async function localUser() {
+    const cached = await identity.current();
+    return (cached.known ? cached : await identity.verify(accountRequest)).user;
+  }
+  const logs = require('./local-logs.cjs').registerLogs({ handle, directory: app.getPath('userData'),
+    storage: require('electron').safeStorage, target: sessions.target, owner: async () => (await localUser())?.id });
   handle('sync-config', async (op, payload) => {
     const targetView = view;
     const result = op === 'local-session' ? await identity.current() :
@@ -121,8 +128,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
     const terminal = view;
     const isActive = () => view === terminal && view?.getVisible() && owner?.isFocused();
     if (!isActive()) throw new Error('请先返回终端窗口。');
-    const cached = await identity.current();
-    const { user } = cached.known ? cached : await identity.verify(accountRequest);
+    const user = await localUser();
     if (!isActive()) throw new Error('账号或活动窗口已变化。');
     const id = user?.id || '';
     if (vault?.owner !== id) {
@@ -189,6 +195,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
 
   function closeTerminal() {
     vault = undefined;
+    logs.reset();
     sftp.close();
     dynamic.stop();
     if (!view) return;
@@ -279,7 +286,7 @@ function createTerminalHost({ app, BrowserWindow, WebContentsView, ipcMain, dial
       contents.setIgnoreMenuShortcuts(recording || Boolean(shortcut));
     });
     contents.on('did-start-navigation', details => {
-      if (view === terminal && details.isMainFrame && !details.isSameDocument) { sftp.close(); dynamic.stop(); sessions.closeAll(); }
+      if (view === terminal && details.isMainFrame && !details.isSameDocument) { logs.reset(); sftp.close(); dynamic.stop(); sessions.closeAll(); }
     });
     contents.on('render-process-gone', () => { if (view === terminal) closeTerminal(); });
     contents.once('destroyed', () => { if (view === terminal) closeTerminal(); });

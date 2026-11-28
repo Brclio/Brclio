@@ -10,7 +10,8 @@
   const dynamic = 'brclio.terminal.dynamic-import.v1';
   const rules = 'brclio.terminal.profile-rules.v1';
   const extras = [snippets, arrangements, dynamic, rules];
-  const keys = [legacy, hostKey, forwardKey, identityKey, ...extras];
+  const profiles = 'brclio.terminal.profiles.v1';
+  const keys = [legacy, hostKey, forwardKey, identityKey, profiles, ...extras];
 
   function combined(existing, imported, maximum) {
     const names = new Map(existing.map(item => [item.name, item]));
@@ -95,7 +96,7 @@
       hasUnbound() {
         const library = hosts(raw);
         return !!(library.hosts.length || library.recent.length || parse(raw, forwardKey, []).length || parse(raw, identityKey, []).length ||
-          extras.some(key => { const value = raw.getItem(key); return value !== null && value !== '[]'; }));
+          parse(raw, profiles, {}).presets?.length || extras.some(key => { const value = raw.getItem(key); return value !== null && value !== '[]'; }));
       },
       moveUnbound() {
         if (!ready || !owner) throw new Error('请先确认移入资料的 Brclio 账号。');
@@ -108,8 +109,18 @@
           [forwardKey, combined(parse(storage, forwardKey, []), parse(raw, forwardKey, []), 128).items],
           [identityKey, combined(parse(storage, identityKey, []), parse(raw, identityKey, []), 128).items],
         ];
+        let profileNames = new Map();
+        if (raw.getItem(profiles) !== null) {
+          const from = parse(raw, profiles, {}), to = parse(storage, profiles, {});
+          const mergedProfiles = combined(to.presets || [], from.presets || [], 64);
+          profileNames = mergedProfiles.mapped;
+          values.push([profiles, { presets: mergedProfiles.items, active: to.active || profileNames.get(from.active) || '默认' }]);
+        }
         for (const key of extras) {
-          if (raw.getItem(key) !== null) values.push([key, combineExtras(key, parse(storage, key, []), parse(raw, key, []))]);
+          if (raw.getItem(key) === null) continue;
+          let imported = parse(raw, key, []);
+          if (key === rules) imported = imported.map(rule => ({ ...rule, profile: profileNames.get(rule.profile) || rule.profile }));
+          values.push([key, combineExtras(key, parse(storage, key, []), imported)]);
         }
         const before = values.map(([key]) => storage.getItem(key));
         try {

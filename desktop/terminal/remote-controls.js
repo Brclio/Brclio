@@ -10,6 +10,7 @@ window.BrclioRemoteConnections = {
     const fields = ['name', 'host', 'user', 'port', 'group', 'tags', 'jump', 'identityFile'];
     const kindLabels = { ssh: 'SSH', sftp: 'SFTP 命令行', files: '文件浏览' };
     let selected = '';
+    let original = null;
     let activeRecent = null;
     let accountGeneration = 0;
     let available = {};
@@ -21,6 +22,7 @@ window.BrclioRemoteConnections = {
 
     function showItem(item, name = '') {
       selected = name;
+      original = name ? item : null;
       for (const field of fields) {
         const value = item?.[field];
         byId(field).value = Array.isArray(value) ? value.join(', ') : value ?? '';
@@ -149,7 +151,15 @@ window.BrclioRemoteConnections = {
     window.addEventListener('brclio-terminal-library-applied', () => {
       if (!dialog.open) return;
       guarded(() => {
-        if (selected && !storage.all().some(record => record.name === selected)) showItem();
+        if (selected) {
+          const current = storage.all().find(record => record.name === selected);
+          if (JSON.stringify(current) !== JSON.stringify(original)) {
+            let pristine = false;
+            try { pristine = JSON.stringify(library.named(form())) === JSON.stringify(original); } catch { /* Unfinished edits stay in the form. */ }
+            if (pristine) showItem(current, current?.name);
+            else status('此主机的已保存配置已更新。可将当前编辑复制为新主机，或重新选择列表中的主机。');
+          }
+        }
         render();
       });
     });
@@ -195,6 +205,9 @@ window.BrclioRemoteConnections = {
     byId('form').onsubmit = event => {
       event.preventDefault();
       guarded(() => {
+        if (original && JSON.stringify(storage.all().find(item => item.name === selected)) !== JSON.stringify(original)) {
+          throw new Error('此主机的已保存配置已更新。请重新选择，或复制为新主机以保留当前编辑。');
+        }
         const saved = storage.save(form(), selected || null);
         activeRecent = null;
         showItem(saved, saved.name);

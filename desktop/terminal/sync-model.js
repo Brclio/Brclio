@@ -28,6 +28,10 @@
     return result;
   }
 
+  function fitsUpload(data) {
+    return new TextEncoder().encode(JSON.stringify(data)).length <= 112 * 1024;
+  }
+
   function merge(base, local, cloud, choices = {}) {
     const result = empty();
     const conflicts = [];
@@ -93,7 +97,7 @@
     };
   }
 
-  const api = { empty, equal, portable, merge, localLibraries };
+  const api = { empty, equal, portable, fitsUpload, merge, localLibraries };
   if (node) module.exports = api;
   else window.BrclioTerminalSyncModel = api;
 })();

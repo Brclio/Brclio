@@ -27,6 +27,7 @@ window.BrclioTerminalSync = {
     let running = false;
     let queued = false;
     let failures = 0;
+    let sizeBlocked = false;
     let conflict = null;
     let resolution = null;
     const status = message => { field('status').textContent = message; };
@@ -47,7 +48,11 @@ window.BrclioTerminalSync = {
       field('disable').hidden = field('refresh').hidden = !settings.enabled;
       field('account').textContent = account ? '当前账号 · ' + (account.email || account.id) : '当前未登录 Brclio';
       field('conflicts').hidden = !conflict;
-      field('migration').hidden = !account || !partitions.ready || !partitions.hasUnbound();
+      field('migration').hidden = true;
+      if (dialog.open && account && partitions.ready) {
+        try { field('migration').hidden = !partitions.hasUnbound(); }
+        catch { field('migration').hidden = false; }
+      }
     }
     function clearConflict() { conflict = resolution = null; field('items').replaceChildren(); render(); }
     function showConflicts(entries, revision, snapshot) {
@@ -82,7 +87,7 @@ window.BrclioTerminalSync = {
 
     function schedule(delay = 0) {
       clearTimeout(timer);
-      if (!settings.enabled) return;
+      if (!settings.enabled || sizeBlocked) return;
       timer = setTimeout(() => { if (running) queued = true; else void sync(); }, delay);
     }
     function invalidateAccount() {
@@ -90,6 +95,7 @@ window.BrclioTerminalSync = {
       clearTimeout(timer);
       account = null;
       settings = { enabled: false, owner: '', base: model.empty() };
+      sizeBlocked = false;
       partitions.lock();
       clearConflict();
       status('');
@@ -103,7 +109,8 @@ window.BrclioTerminalSync = {
       if (epoch !== generation) return;
       const next = session?.user || null;
       if (!partitions.ready || partitions.owner !== (next?.id || null)) {
-        invalidateAccount();
+        if (partitions.ready) invalidateAccount();
+        else generation++;
         partitions.activate(next?.id || null);
         loadSettings();
         window.dispatchEvent(new Event('brclio-terminal-account-changed'));
@@ -124,12 +131,12 @@ window.BrclioTerminalSync = {
       try {
         const session = await api.syncTerminal('session');
         if (!valid()) return;
-        account = session?.user || null;
-        render();
-        if (!account || account.id !== owner) {
+        if (session?.user?.id !== owner) {
           await refreshAccount(true);
           return;
         }
+        account = session.user;
+        render();
         const cloud = await api.syncTerminal('read', { expectedUserId: owner });
         if (!valid()) return;
         if (cloud?.userId !== owner) throw new Error('云端账号已变更，同步暂停。');
@@ -139,18 +146,29 @@ window.BrclioTerminalSync = {
         const choices = resolution?.signature === signature ? resolution.choices : {};
         const merged = model.merge(settings.base, local, remote, choices);
         if (merged.conflicts.length) { showConflicts(merged.conflicts, cloud.revision, local); return; }
-        let result = cloud;
         if (!model.equal(merged.data, remote)) {
-          result = await api.syncTerminal('write', { expectedUserId: owner, revision: cloud.revision, data: merged.data });
+          if (!model.fitsUpload(merged.data)) {
+            sizeBlocked = true;
+            status('主机和转发模板超过 112 KiB，上传已暂停。精简配置后会自动重试。');
+            return;
+          }
+          const result = await api.syncTerminal('write', { expectedUserId: owner, revision: cloud.revision, data: merged.data });
           if (!valid()) return;
           if (result?.userId !== owner || !model.equal(model.portable(result.data), merged.data)) throw new Error('云端保存结果与请求不一致。');
         }
         // A user may edit another host while the network request is in flight.
         // Reconcile again from the original base before replacing any local data.
-        if (!model.equal(local, libraries.read())) { queued = true; return; }
-        libraries.apply(merged.data);
-        persist({ enabled: true, owner, base: merged.data });
-        if (!model.equal(local, merged.data)) window.dispatchEvent(new Event('brclio-terminal-library-applied'));
+        const current = libraries.read();
+        let next = merged.data;
+        if (!model.equal(local, current)) {
+          queued = true;
+          const edits = model.merge(local, current, merged.data);
+          if (edits.conflicts.length) return;
+          next = edits.data;
+        }
+        libraries.apply(next);
+        if (!model.equal(settings.base, merged.data)) persist({ enabled: true, owner, base: merged.data });
+        if (!model.equal(current, next)) window.dispatchEvent(new Event('brclio-terminal-library-applied'));
         clearConflict();
         failures = 0;
         status('已同步 · ' + new Date().toLocaleTimeString() + ' · ' + merged.data.hosts.length + ' 台主机，' + merged.data.forwards.length + ' 条转发');
@@ -182,12 +200,14 @@ window.BrclioTerminalSync = {
       clearConflict();
       status('正在同步…');
       failures = 0;
+      sizeBlocked = false;
       schedule();
     }
     function guard(action) { return () => Promise.resolve().then(action).catch(error => status(error.message)); }
     field('enable').onclick = guard(enable);
     field('move').onclick = guard(async () => {
-      const session = await api.syncTerminal('session');
+      const device = await api.syncTerminal('local-session');
+      const session = device.known ? device : await api.syncTerminal('session');
       if (!session?.user?.id || !partitions.ready || partitions.owner !== session.user.id || account?.id !== session.user.id) {
         await refreshAccount(true);
         status('账号已变更，请重新确认移入。');
@@ -207,7 +227,7 @@ window.BrclioTerminalSync = {
       clearConflict();
       status('自动同步已关闭。');
     });
-    field('refresh').onclick = () => schedule();
+    field('refresh').onclick = () => { sizeBlocked = false; schedule(); };
     field('resolve').onclick = () => {
       if (!conflict) return;
       const selects = [...field('items').querySelectorAll('select')];
@@ -222,12 +242,12 @@ window.BrclioTerminalSync = {
       refreshAccount().catch(error => status(error.message));
     };
     api.onSyncAccountChanged?.(() => { refreshAccount(true).catch(error => status(error.message)); });
-    window.addEventListener('brclio-terminal-library-changed', () => schedule(350));
+    window.addEventListener('brclio-terminal-library-changed', () => { sizeBlocked = false; schedule(350); });
     window.addEventListener('focus', () => {
       refreshAccount().catch(error => status(error.message));
     });
     window.addEventListener('online', () => schedule());
     render();
-    refreshAccount().catch(error => status(error.message));
+    window.BrclioTerminalSync.ready = refreshAccount().catch(error => status(error.message));
   },
 };

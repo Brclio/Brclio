@@ -88,7 +88,10 @@ jobs:
         shell: bash
         timeout-minutes: 3
       - name: Verify local-only mode, two-account isolation and two-device sync
-        run: node scripts/verify-terminal-sync.cjs
+        run: |
+          node scripts/verify-terminal-sync.cjs
+          node scripts/verify-terminal-account-switch.cjs
+          node scripts/verify-terminal-local-logs.cjs
       - name: Exercise the graphical file browser with the local SFTP subsystem
         run: node scripts/verify-terminal-sftp.cjs
       - run: npm run prepare:xhs

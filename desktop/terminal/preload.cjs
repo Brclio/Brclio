@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('brclioTerminal', Object.freeze({
   remoteClients: () => ipcRenderer.invoke(prefix + 'remote-clients'),
   onSyncAccountChanged: callback => subscribe('sync-account-changed', callback),
   syncTerminal: (op, payload) => ipcRenderer.invoke(prefix + 'sync-config', op, payload),
+  localLogs: (op, data) => ipcRenderer.invoke(prefix + 'local-logs', op, data),
   serialPorts: () => ipcRenderer.invoke(prefix + 'serial-ports'),
   sftp: (op, payload) => ipcRenderer.invoke(prefix + 'sftp', op, payload),
   chooseIdentity: mode => ipcRenderer.invoke(prefix + 'identity-choose', mode),
