@@ -16,15 +16,25 @@ def terminal_input():
         api.GetStdHandle.restype = wintypes.HANDLE
         api.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
         api.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        handle = api.GetStdHandle(-10)
-        mode = wintypes.DWORD()
-        if not api.GetConsoleMode(handle, ctypes.byref(mode)):
-            raise OSError("console input not available")
+        stdin = api.GetStdHandle(-10)
+        stdout = api.GetStdHandle(-11)
+        input_mode, output_mode = wintypes.DWORD(), wintypes.DWORD()
+        if not api.GetConsoleMode(stdin, ctypes.byref(input_mode)) or not api.GetConsoleMode(stdout, ctypes.byref(output_mode)):
+            raise OSError("console mode not available")
+        # The calling PowerShell may leave VT output processing off.
+        if not api.SetConsoleMode(stdout, output_mode.value | 0x0001 | 0x0004):
+            raise OSError("cannot enter VT output mode")
         # Enable VT input and mouse reporting, with Quick Edit and line/echo off.
-        flags = (mode.value | 0x0200 | 0x0080 | 0x0010) & ~(0x0040 | 0x0002 | 0x0004)
-        if not api.SetConsoleMode(handle, flags):
+        flags = (input_mode.value | 0x0200 | 0x0080 | 0x0010) & ~(0x0040 | 0x0002 | 0x0004)
+        if not api.SetConsoleMode(stdin, flags):
+            api.SetConsoleMode(stdout, output_mode.value)
             raise OSError("cannot enter VT input mode")
-        return lambda: api.SetConsoleMode(handle, mode.value)
+
+        def restore():
+            api.SetConsoleMode(stdin, input_mode.value)
+            api.SetConsoleMode(stdout, output_mode.value)
+
+        return restore
     import termios
     import tty
     fd = sys.stdin.fileno()
