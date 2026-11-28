@@ -19,9 +19,9 @@
 | 即时回放 | 部分 | 开启临时记录，输出或滚动几次后拖动时间轴查看文字快照。每窗格最多 120 帧并受总容量限制。颜色、图片、光标及逐帧画面还原尚缺。 |
 | 可配置性 | 部分 | 可保存 Shell、起始目录、字体、历史行数、光标、对比度和颜色等参数，并读取 XML 格式的 .itermcolors。终端内可另设受支持操作的快捷键。完整配置导入、所有键映射动作及鼠标动作编辑尚缺。 |
 | Unix 风格交互 | 部分 | 可启用焦点跟随鼠标和选中即复制，可用快捷键管理标签及分屏。跨平台中键粘贴、修饰键映射和原生选择行为未全验收。 |
-| 24 位色彩 | 可用 | 真实 PTY 中的程序发送 SGR 指定前景和背景 RGB，Electron 回归检查对应 xterm 文字实际渲染样式。Apple silicon 已实测，Windows 与 Intel macOS 以对应提交的打包 CI 为准。 |
+| 24 位色彩 | 可用 | Windows x64 和两种 macOS 架构的打包应用均已实测。前台程序通过真实 PTY 指定 24 位前景和背景，测试分别核对显示文字的 RGB 值。 |
 | 可读性 | 部分 | 修改最低对比度、光标形状、文本及光标颜色，观察低对比度输出。上游智能光标取色策略尚未比对。 |
-| 鼠标事件上报 | 部分 | TUI 打开 SGR 鼠标模式，点击后由真实前台进程读回坐标，再关闭模式、双击选词并通过 Brclio 复制按钮校验其内容。Apple silicon 已实测。拖动、滚轮、其他协议和跨版本 TUI 的行为尚未穷举。 |
+| 鼠标事件上报 | 部分 | 在 Windows x64 和两种 macOS 架构的打包应用中，前台程序启用 SGR 鼠标模式后能从 PTY 读回点击坐标。程序关闭鼠标模式后，双击可选词，Brclio 复制按钮取得所选文本。拖动、滚轮、其他鼠标协议及其他 TUI 的交互还需分别验收。 |
 | 系统通知 | 部分 | 可配置终端 BEL 的系统通知，通知最多每十秒一次，点击时可打开终端。作业结束、活动和静默等独立通知条件尚缺。系统通知展示取决于通知权限。 |
 | 全局搜索 | 部分 | 在不同标签输出独特文字，从“搜索所有窗格”定位结果。当前搜索打开的终端缓冲区，最多显示 50 项。会话归档及元数据查询尚缺。 |
 | 带标签的配置 | 部分 | 创建两个带标签的命名配置，按名称或标签筛选并载入。最多保留 64 个。上游结构化查询语法和配置层级尚缺。 |
@@ -73,10 +73,10 @@
 
 | 环境 | 已验证的行为与待测边界 |
 | --- | --- |
-| macOS | 以临时目录中的 tmux 3.8 和独立套接字实测 DCS 1000p、协议响应、二窗口三窗格、目标输入与尺寸、分离后原 PID/输出仍在。开发模式及 Apple silicon 打包应用通过相同的 Electron 操作用例。 |
-| Windows | 需要默认 WSL 发行版及其中的 tmux。应用显式启动 wsl.exe 并使用 tmux -C 的标准输入输出；该形式按协议没有 DCS 外层。macOS 实测了相同管道适配器与真实 tmux 之间的握手、查询和分离。原生 Windows + WSL 仍需单独验收，纯 PowerShell/cmd 环境无法充当 tmux 服务端。 |
-| SSH / SFTP | 可在当前系统已安装 OpenSSH 时使用。连接预设存储主机、用户名及端口。连接到真实个人服务器、远端密钥策略和任意服务器的兼容性均需单独验收。SFTP 文件操作由用户在单独会话内提出。 |
-| 密码库与系统密钥 | 展开或搜索密码库不会读取系统密钥。macOS 当前安装包使用临时签名，升级后钥匙串可能再次请求授权。系统保护不可用时，已有密码文件会被保留。原生验收使用生成的测试值，Windows 托管 CI 还会验证系统加密解密往返。 |
+| macOS | 本机使用 tmux 3.8 和独立套接字验证了 DCS 1000p、协议响应、指定窗格的输入及尺寸，以及分离后仍可连回原进程。Intel 和 Apple silicon 打包应用的 Electron 测试均完成两个窗口、三个窗格、独立输入、分离并重连后再次读取原有输出。 |
+| Windows | Windows Server 2022 x64 打包应用通过 wsl.exe 连接默认的 WSL 1 Alpine 3.22。真实 tmux -C 通过管道收发，协议没有 -CC 的 DCS 外层。测试在两个窗口、三个窗格中核对输入隔离、分离及重连后的原有输出。WSL 2、其他发行版及没有 WSL 的主机未获相同验证。此入口需要发行版内已安装 tmux。 |
+| SSH / SFTP | 系统 OpenSSH 的 ssh 和 sftp 已通过本机回环测试。两个客户端读取临时的 Host 别名和端口配置，向 127.0.0.1 建立连接并交换 SSH 版本标识，随后测试服务端主动关闭。该用例尚未覆盖主机密钥、用户认证、远端 Shell 或 SFTP 文件传输。 |
+| 密码库与系统密钥 | Windows x64 的打包和开发应用均使用原生 DPAPI 对随机生成值成功加密和解密。密码库界面另以独立测试密钥及生成的密码核对定向填入。macOS UI 测试沿用独立测试密钥，个人钥匙串授权和升级后能否继续解密仍待实测。现有 macOS 安装包使用临时签名，升级后钥匙串可能再次请求授权。 |
 
 升级这一部分时可对照同一提交的实现与测试。[tmux 协议和传输测试](../desktop/terminal-tmux.test.cjs) · [真实 Electron tmux 测试](../scripts/verify-terminal-tmux.cjs) · [SSH 启动测试](../desktop/terminal-remote.test.cjs) · [上游 SSH 启动与集成说明](https://iterm2.com/documentation-preferences-profiles-general.html)
 
@@ -87,16 +87,16 @@
 | 环境 | 可验证行为与限制 |
 | --- | --- |
 | macOS zsh | 登录模式加载原有 .zshenv、.zprofile、.zshrc、.zlogin。precmd/preexec 提供命令结束与输出边界。实际 PTY 回归覆盖带单引号的路径、定制 prompt、上一条命令返回 23、下一条命令读到 23 以及退出码 19。 |
-| macOS Bash | 保留登录模式及已有 PROMPT_COMMAND。系统 Bash 3.2 支持提示符导航。Bash 4.4 及以上通过 PS0 补充命令开始边界。用户启动文件重置这些变量时可能不产生标记。系统 Bash 实际 PTY 回归验证既有 prompt hook、登录文件与退出状态。 |
+| macOS / Linux Bash | macOS 系统 Bash 3.2 支持提示符导航。Bash 4.4 及以上通过 PS0 补充命令开始边界。两种 Mac 架构与 Ubuntu 的真实 PTY 回归验证了原登录文件及提示符、原有 PROMPT_COMMAND 与下一条命令均收到退出状态 23，Shell 最终以 19 退出。用户启动文件重置这些变量时可能不产生标记。Linux 验收限于该后端测试。 |
 | Windows PowerShell / PowerShell 7 | 继续加载本机配置。支持时包装现有 prompt 与 PSConsoleHostReadLine。无 PSReadLine 时只标记提示符；执行策略及受限语言模式可能阻止启动集成。Windows x64 原生回归已验证自定义提示、读取器、成功/失败标记及原生命令退出码。完整 ConPTY/PSReadLine 组合需按系统版本实测。 |
 | Windows cmd.exe | 保留原有 PROMPT 并加入提示符首尾标记。缺少可靠的命令执行前后钩子，默认无法自动划定命令输出范围。 |
 | 其他登录 Shell、嵌套 Shell、SSH | 本地会话仍按原 Shell 启动。若相应 Shell 自行发送兼容控制序列，渲染器可处理。fish、tcsh、xonsh 和远端安装不在内置辅助脚本覆盖范围。 |
 
-已完成的 Windows PowerShell 包装器与两个 macOS 登录 Shell 原生回归，可查阅提交 6332f5a 的工作流记录。[该提交的三平台测试](https://github.com/Brclio/Brclio/actions/runs/46108478612)
+提交 `004e56c` 的 Windows 作业包含 PowerShell 命令边界、DPAPI、WSL 1 和打包界面测试。两项 Mac 作业包含 zsh、Bash、打包界面及原生 tmux。Ubuntu 作业运行 Bash 与 OpenSSH 回环回归。真实 PTY 的 RGB、鼠标和复制断言均在三个打包应用中运行。[Windows x64](https://github.com/Brclio/Brclio/actions/runs/46110241147/job/140872765930) · [macOS Intel](https://github.com/Brclio/Brclio/actions/runs/46110241147/job/140872766167) · [macOS Apple silicon](https://github.com/Brclio/Brclio/actions/runs/46110241147/job/140872765736) · [Ubuntu](https://github.com/Brclio/Brclio/actions/runs/46110241147/job/140872766000)
 
 ## 复查方法
 
 1. 在项目根目录运行 `npm ci`，再运行 `node --test desktop/terminal-*.test.cjs`。Windows 可在 Git Bash 中执行，或显式传入测试文件。真实 PTY 用例使用临时工作目录。[PTY 测试](../desktop/terminal-pty.test.cjs) · [命令标记测试](../desktop/terminal-marks.test.cjs) · [布局测试](../desktop/terminal-arrangements.test.cjs) · [动态配置读写测试](../desktop/terminal-dynamic.test.cjs)
 2. 在 macOS 或 Windows 上运行 `npm run sync` 和 `node scripts/verify-terminal.cjs`。用 `BRCLIO_SMOKE_EXECUTABLE` 指向当前架构已打包的可执行文件，可复查发行布局及原生模块。UI 测试覆盖的具体交互以脚本断言为准。[桌面端到端测试](../scripts/verify-terminal.cjs) · [图片与 Unicode 像素测试](../scripts/verify-terminal-output.cjs) · [真彩色、鼠标与复制测试](../scripts/verify-terminal-devices.cjs) · [动态配置界面测试](../scripts/verify-terminal-dynamic.cjs)
-3. 在已安装 tmux 的 macOS 上运行 `node scripts/verify-terminal-tmux.cjs`，可用同一环境变量改测打包应用。脚本使用独立套接字目录并验证实际命名会话、窗格和重新连接。
+3. 在已安装 tmux 的 macOS 或默认 WSL 发行版已安装 tmux 的 Windows 上运行 `node scripts/verify-terminal-tmux.cjs`，可用同一环境变量改测打包应用。脚本使用独立套接字目录并验证实际命名会话、窗格和重新连接。
 4. 三平台构建由同一工作流分别检查，看对应提交的 Windows x64、macOS Intel、macOS Apple silicon 三项结果。较早版本的通过记录只能证明该次构建。[打包验收工作流](../.github/workflows/desktop-terminal.yml)
