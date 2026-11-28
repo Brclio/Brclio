@@ -103,3 +103,18 @@ test('unassociated data moves expressly to current user, preserving account-side
   assert.equal(records.all().length, 0);
   assert.throws(() => p.moveUnbound());
 });
+
+test('moving local connection attempts keeps the latest time for each destination and protocol', () => {
+  const partitions = create(memory());
+  const key = 'brclio.terminal.host-library.v2';
+  const saveHistory = entries => partitions.storage.setItem(key, JSON.stringify({ hosts: [], recent: entries }));
+  const target = { host: 'test.example', kind: 'ssh' };
+  partitions.activate(null);
+  saveHistory([{ ...target, openedAt: 3000 }, { ...target, kind: 'sftp', openedAt: 1000 }]);
+  partitions.activate('A');
+  saveHistory([{ ...target, openedAt: 2000 }, { host: 'legacy.example', kind: 'ssh' }]);
+  partitions.moveUnbound();
+  assert.deepEqual(store(partitions.storage).recents().map(item => [item.kind, item.openedAt]), [
+    ['ssh', 3000], ['sftp', 1000], ['ssh', undefined],
+  ]);
+});

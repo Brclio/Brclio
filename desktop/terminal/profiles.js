@@ -15,9 +15,50 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
     'Cursor Text Color': 'cursorAccent', 'Selection Color': 'selectionBackground', 'Selected Text Color': 'selectionForeground' };
   palette.forEach((name, i) => { colors['Ansi ' + i + ' Color'] = name; });
   const allowedColors = new Set(Object.values(colors));
+  const schemes = new Map([
+    ['brclio', { name: 'Brclio 深色', colors: {} }],
+    ['paper', { name: '纸张浅色', colors: {
+      background: '#faf7ee', foreground: '#302e36', cursor: '#714716', cursorAccent: '#ffffff',
+      selectionBackground: '#c7d9ef', selectionForeground: '#1c2839',
+      black: '#292832', red: '#a0353c', green: '#366534', yellow: '#835a13',
+      blue: '#28578e', magenta: '#794881', cyan: '#225f68', white: '#73706c',
+      brightBlack: '#655f59', brightRed: '#ad263a', brightGreen: '#327137', brightYellow: '#94540d',
+      brightBlue: '#1b63a9', brightMagenta: '#8c3b88', brightCyan: '#10707c', brightWhite: '#53515a',
+    } }],
+    ['ocean', { name: '深海蓝', colors: {
+      background: '#102337', foreground: '#d8e7f2', cursor: '#80e0cf', cursorAccent: '#102337',
+      selectionBackground: '#365974', selectionForeground: '#ffffff',
+      black: '#1e354d', red: '#ff9e9a', green: '#8fdbb0', yellow: '#e6c581',
+      blue: '#8ec5ff', magenta: '#d8abed', cyan: '#81d5dc', white: '#cfdfeb',
+      brightBlack: '#889fb7', brightRed: '#ffb3af', brightGreen: '#adf2c7', brightYellow: '#ffe1a2',
+      brightBlue: '#b0daff', brightMagenta: '#efcaff', brightCyan: '#a8edf0', brightWhite: '#f3f8fc',
+    } }],
+  ]);
+  const customOption = new Option('自定义配色', 'custom');
+  $('theme').replaceChildren(...Array.from(schemes, ([id, scheme]) => new Option(scheme.name, id)), customOption);
   const presets = new Map();
   let current = defaults;
   let editColors = {};
+  let customColors = null;
+  function selectColors(value) {
+    const matches = ([, scheme]) => Object.keys(value).length === Object.keys(scheme.colors).length &&
+      Object.entries(value).every(([name, color]) => color.toLowerCase() === scheme.colors[name]);
+    const selected = [...schemes].find(matches);
+    editColors = value;
+    customColors = selected ? null : value;
+    customOption.disabled = !customColors;
+    $('theme').value = selected?.[0] || 'custom';
+    preview();
+  }
+  function preview() {
+    const style = $('preview').style;
+    const colors = { ...theme, ...editColors };
+    style.color = colors.foreground;
+    style.backgroundColor = colors.background;
+    style.fontFamily = $('font').value.trim() || defaults.font;
+    const size = Number($('size').value);
+    style.fontSize = (size >= 8 && size <= 40 ? size : defaults.size) + 'px';
+  }
   function normalize(input = {}) {
     const value = { ...defaults, colors: {} };
     for (const [field, max] of [['name', 64], ['tags', 180], ['font', 200]]) {
@@ -60,11 +101,20 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
     $('load').disabled = $('delete').disabled = list.length === 0;
   }
   function edit(value) {
+    generation++;
     for (const field of ['name','tags','font','size','scrollback','cursor','contrast']) $(field).value = value[field];
     for (const field of ['blink','autocopy','follow']) $(field).checked = value[field];
-    editColors = { ...value.colors };
+    selectColors(value.colors);
     $('colors').value = '';
   }
+  $('theme').onchange = () => {
+    generation++;
+    const selected = schemes.get($('theme').value);
+    editColors = selected ? selected.colors : customColors;
+    preview();
+    status('点击应用或保存以使用所选配色。');
+  };
+  $('font').oninput = $('size').oninput = preview;
   function fromForm() {
     const value = { colors: editColors, ...readSession() };
     for (const field of ['name','tags','font','cursor']) value[field] = $(field).value;
@@ -82,6 +132,7 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
   function apply(pane, value) {
     if (!pane) return;
     Object.assign(pane.terminal.options, options(value));
+    pane.node.style.backgroundColor = pane.terminal.options.theme.background;
     pane.appearance = value;
     refit(pane);
   }
@@ -119,7 +170,7 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
   $('colors').onchange = async () => {
     const file = $('colors').files[0];
     if (!file) return;
-    const revision = generation;
+    const revision = ++generation;
     try {
       if (file.size > 256 * 1024) throw new Error('配色文件过大。');
       const xml = new DOMParser().parseFromString(await file.text(), 'application/xml');
@@ -141,9 +192,9 @@ window.BrclioTerminalProfiles = function profiles({ theme, activePane, applySess
           imported[field] = '#' + rgb.map(v => Math.round(v * 255).toString(16).padStart(2,'0')).join('');
       }
       if (!Object.keys(imported).length) throw new Error('配色文件未包含可识别的 RGB 颜色。');
-      editColors = imported;
+      selectColors(imported);
       status('已读取配色，点击应用或保存。');
-    } catch (error) { status(error.message); }
+    } catch (error) { if (revision === generation) status(error.message); }
   };
   function reset() {
     generation++;

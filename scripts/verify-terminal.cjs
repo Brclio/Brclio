@@ -202,6 +202,7 @@ async function main() {
     await expect(fresh.locator('#tabs [role=tab]')).toHaveCount(1);
     await expect(fresh.locator('.pane')).toHaveCount(1);
     await expect(fresh.locator('#preset-name')).toHaveValue('QA profile');
+    await require('./verify-terminal-profile.cjs').verifyRestoredProfile(fresh);
     if (!windows) {
       await fresh.locator('#presentation').click();
       await expect.poll(countWindows).toBe(2);

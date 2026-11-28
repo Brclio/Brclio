@@ -188,6 +188,7 @@
     terminal.open(host);
     window.BrclioSmartSelection.attach(terminal, host);
     pane.appearance = appearance.current;
+    node.style.backgroundColor = terminal.options.theme.background;
     node.addEventListener('pointerenter', event => {
       if (pane.appearance.follow && event.pointerType === 'mouse' && !document.querySelector('dialog[open]')) selectPane(pane);
     });
@@ -232,6 +233,10 @@
     });
     selectPane(pane);
     function start(options) {
+      if (['default','zsh','bash','powershell','pwsh'].includes(options.profile) &&
+          !options.shellIntegration && window.BrclioCommandLibrary.needsShellIntegration()) {
+        options = { ...options, shellIntegration: true };
+      }
       pane.launch = options;
       window.BrclioSftp.attachSession(pane,heading);
       if (pane.state !== 'starting') setState(pane,'starting','正在启动会话…');
@@ -574,13 +579,16 @@
     nextTab: ['下一个标签', () => cycleTab(1)], prevTab: ['上一个标签', () => cycleTab(-1)],
     splitRight: ['左右分屏', () => splitPane('right')], splitDown: ['上下分屏', () => splitPane('down')],
     find: ['搜索当前窗格', () => showSearch(true)], operations: ['打开终端操作', () => byId('terminal-actions').click()],
+    sshHosts: ['SSH 主机', () => byId('quick-ssh').click()],
+    commands: ['常用命令', () => byId('quick-commands').click()],
+    appearance: ['终端外观', () => byId('quick-appearance').click()],
     presentation: ['弹出或收回终端', () => byId('presentation').click()],
     mark: ['添加标记', () => activePane()?.marks.add()],
     nextMark: ['下一个标记', () => activePane()?.marks.next()], prevMark: ['上一个标记', () => activePane()?.marks.previous()],
   });
   window.BrclioAdvancedPaste({ api, activePane, actions, paste: paneTools.pasteOnly });
   const snippets = window.BrclioSnippets({ activePane, actions, paste: paneTools.pasteOnly });
-  window.BrclioCommandLibrary.bind(activePane, paneTools.pasteOnly, snippets.draft, sendInput);
+  window.BrclioCommandLibrary.bind(activePane, paneTools.pasteOnly, snippets.draft, sendInput, snippets.editCommand);
   const filter = byId('actions-filter');
   const actionList = byId('actions-list');
   const actionGroups = [...actionList.querySelectorAll('fieldset, details')];
@@ -619,7 +627,14 @@
     byId('actions-empty').hidden = !text || matches.length > 0;
   }
   filter.oninput = filterActions;
-  actions.addEventListener('close', () => { filter.value = ''; filterActions(); });
+  const actionsTitle = byId('actions-title');
+  const defaultTitle = actionsTitle.textContent;
+  actions.addEventListener('close', () => {
+    actions.classList.remove('appearance-only');
+    actionsTitle.textContent = defaultTitle;
+    filter.value = '';
+    filterActions();
+  });
   window.BrclioTranscript.bind(activePane, api);
   const bufferKeyboard = window.BrclioBufferTools({ panes, activePane, dialog: actions, copy: api.copy, paste: paneTools.pasteOnly, message,
     activate: pane => { selectTab(pane.tab); selectPane(pane); } });
@@ -632,6 +647,14 @@
     };
   }
   byId('terminal-actions').onclick = () => { inspector.refresh(); locations.render(); tabGroups.render(); actions.showModal(); };
+  byId('quick-ssh').onclick = () => window.BrclioRemoteConnections.open('ssh');
+  byId('quick-commands').onclick = () => window.BrclioCommandLibrary.open();
+  byId('quick-appearance').onclick = () => {
+    actions.classList.add('appearance-only');
+    actionsTitle.textContent = '终端外观';
+    actions.showModal();
+    byId('preset-theme').focus();
+  };
   window.BrclioRemoteConnections.bind(api, activePane, (kind, name, connection, startupSnippet, savedHost) => {
     actions.close();
     const pane = newTab(name, { profile: kind, connection, cwd: nextDirectory, shellIntegration: false });
@@ -678,7 +701,7 @@
     copy: '复制所选文本 · ' + modifier + 'C', paste: '粘贴 · ' + modifier + 'V',
   };
   for (const [id, title] of Object.entries(hints)) byId(id).title = title;
-  api.profiles().then(profiles => {
+  Promise.all([api.profiles(), window.BrclioTerminalSync.localReady]).then(([profiles]) => {
     if (closing) return;
     const options = profiles.map(profile => new Option(profile.label, profile.id));
     if (options.length) byId('profile').replaceChildren(...options);

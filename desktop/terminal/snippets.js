@@ -58,6 +58,17 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
     try { const items = read(); loaded = true; display(items, ''); }
     catch (error) { closeEditor(); $('status').textContent = error.message; }
   }
+  function editCommand(id) {
+    document.getElementById('terminal-actions').click();
+    const search = document.getElementById('actions-filter');
+    search.value = details.querySelector('summary').textContent;
+    search.dispatchEvent(new Event('input'));
+    syncEditor();
+    if (!loaded) return;
+    query.value = filter.value = '';
+    display(entries, id || '');
+    name.focus();
+  }
   window.addEventListener('brclio-terminal-library-moved', () => { closeEditor(); syncEditor(); });
   details.addEventListener('toggle', syncEditor);
   details.addEventListener('focusin', syncEditor);
@@ -170,5 +181,5 @@ window.BrclioSnippets = function installSnippets({ activePane, actions, paste })
     epoch++; details.open = false; closeEditor(); if (dialog.open) dialog.close(); resetDraft();
     for (const button of pending) button.remove(); pending.clear();
   });
-  return { draft, startup };
+  return { draft, startup, editCommand };
 };

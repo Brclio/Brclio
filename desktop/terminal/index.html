@@ -89,6 +89,9 @@
   <header>
     <h1><img src="../../web/assets/icon.png" alt="">Brclio <span>终端</span></h1>
     <div class="actions" role="group" aria-label="会话操作">
+      <button id="quick-ssh" type="button" aria-haspopup="dialog" title="已保存的主机和最近的连接">SSH 主机</button>
+      <button id="quick-commands" type="button" aria-haspopup="dialog" title="收藏、查找和填入命令">常用命令</button>
+      <button id="quick-appearance" type="button" aria-haspopup="dialog" title="配色、字体和光标">外观</button>
       <button id="connection-center" aria-haspopup="dialog">连接中心</button>
       <button id="new-tab" class="primary"><svg aria-hidden="true"><use href="#plus"/></svg>新建标签</button>
       <button id="split-right" aria-label="左右分屏"><svg aria-hidden="true"><use href="#columns"/></svg></button>
@@ -216,12 +219,14 @@
       <button id="paste-send">粘贴到当前窗格</button><button id="paste-cancel" disabled>停止粘贴</button>
       <span id="paste-progress" role="status"></span>
     </fieldset>
-    <fieldset><legend>配置文件</legend>
+    <fieldset id="terminal-appearance"><legend>终端外观与配置文件</legend>
       <label>搜索配置<input id="preset-filter" type="search" placeholder="名称或标签"></label>
       <select id="preset-list" aria-label="已保存的配置"></select>
       <button id="preset-load">载入</button><button id="preset-delete">删除配置</button>
       <label>名称<input id="preset-name" maxlength="64" placeholder="默认"></label>
       <label>标签<input id="preset-tags" maxlength="180" placeholder="用逗号分隔"></label>
+      <label>配色主题<select id="preset-theme"></select></label>
+      <samp id="preset-preview" aria-label="终端外观预览">user@host ~ $ ls</samp>
       <label>字体<input id="preset-font" maxlength="200"></label>
       <label>字号<input id="preset-size" type="number" min="8" max="40"></label>
       <label>历史行数<input id="preset-scrollback" type="number" min="100" max="50000"></label>

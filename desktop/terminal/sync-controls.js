@@ -115,10 +115,10 @@ window.BrclioTerminalSync = {
       status('');
       window.dispatchEvent(new Event('brclio-terminal-account-changed'));
     }
-    async function refreshAccount(lock = false) {
+    async function refreshAccount(lock = false, deviceSession) {
       if (lock) invalidateAccount();
       const epoch = generation;
-      const device = await api.syncTerminal('local-session');
+      const device = await (deviceSession || api.syncTerminal('local-session'));
       const session = device.known ? device : await api.syncTerminal('session');
       if (epoch !== generation) return;
       if (session?.temporary) {
@@ -261,6 +261,11 @@ window.BrclioTerminalSync = {
     window.addEventListener('blur', () => clearTimeout(timer));
     window.addEventListener('online', () => schedule());
     render();
-    window.BrclioTerminalSync.ready = refreshAccount().catch(error => status(error.message));
+    const deviceSession = api.syncTerminal('local-session');
+    const ready = refreshAccount(false, deviceSession).catch(error => status(error.message));
+    window.BrclioTerminalSync.ready = ready;
+    // Restore this device's preferences before the first shell. An uncached login
+    // may require a network request and must still allow an offline local shell.
+    window.BrclioTerminalSync.localReady = deviceSession.then(device => device.known ? ready : undefined, () => undefined);
   },
 };

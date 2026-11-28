@@ -10,6 +10,7 @@ window.BrclioRemoteConnections = {
     const dialog = byId('library');
     const fields = ['name', 'host', 'user', 'port', 'group', 'tags', 'jump', 'proxy', 'proxyUser', 'identityFile', 'certificateFile'];
     const kindLabels = { ssh: 'SSH', sftp: 'SFTP 命令行', files: '文件浏览' };
+    const localDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' });
     let selected = '';
     let original = null;
     const authFields = ['host', 'user', 'port', 'jump', 'proxy', 'proxyUser'];
@@ -149,11 +150,39 @@ window.BrclioRemoteConnections = {
             const saved = records.find(record => record.name === item.name);
             activeRecent = recents ? item : null;
             showItem(saved || item, saved?.name);
-            for (const button of list.children) button.setAttribute('aria-pressed', String(button === row));
+            for (const button of list.querySelectorAll('button[aria-pressed]')) button.setAttribute('aria-pressed', String(button === row));
             status('');
           });
         };
-        list.append(row);
+        if (!recents) {
+          list.append(row);
+          continue;
+        }
+        if (item.openedAt) {
+          const time = document.createElement('time');
+          time.dateTime = new Date(item.openedAt).toISOString();
+          time.textContent = '上次发起 ' + localDate.format(item.openedAt);
+          row.append(time);
+        }
+        const reconnect = document.createElement('button');
+        reconnect.type = 'button';
+        reconnect.textContent = item.kind === 'files' ? '重新浏览' : '重连';
+        reconnect.setAttribute('aria-label', reconnect.textContent + ' ' + kindLabels[item.kind] + ' ' + library.format(item));
+        reconnect.onclick = () => guarded(async () => {
+          reconnect.disabled = true;
+          try {
+            const saved = item.name && storage.all().find(host => host.name === item.name);
+            if (item.name && (!saved || library.routing(storage.resolve(saved)) !== library.routing(item))) {
+              render();
+              throw new Error('此主机的连接配置已更新，请从全部主机重新选择。');
+            }
+            await connect(item.kind, saved || item, item.name);
+          } finally { reconnect.disabled = false; }
+        });
+        const group = document.createElement('div');
+        group.className = 'host-recent-row';
+        group.append(row, reconnect);
+        list.append(group);
       }
     }
 
@@ -216,7 +245,13 @@ window.BrclioRemoteConnections = {
       if (!dialog.open) dialog.showModal();
       status('');
       snippetChoices();
-      guarded(render);
+      guarded(() => {
+        if (mode === 'ssh' || mode === 'recent') {
+          byId('group-filter').value = byId('search').value = '';
+          byId('view').value = mode === 'recent' || storage.recents().length ? 'recent' : 'all';
+        }
+        render();
+      });
       byId('files').classList.toggle('host-files-primary', mode === 'files');
       if (mode === 'files') status('选择或填写主机后，点击「浏览文件」。');
       guarded(clients);

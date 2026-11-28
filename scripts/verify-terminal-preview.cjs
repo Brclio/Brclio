@@ -28,6 +28,27 @@ async function verify(executablePath) {
     const windowCount = () => app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().length);
     await expect.poll(windowCount).toBe(1);
     await expect(pane).toHaveAttribute('data-state','running',{timeout:20000});
+    for (const width of [800, 1220]) {
+      await homeWindow.evaluate((win, width) => win.setContentSize(width, 850), width);
+      await expect.poll(() => terminal.evaluate(() => {
+        const tabsTop = document.getElementById('tabs').getBoundingClientRect().top;
+        return [...document.querySelectorAll('header button')].every(button => {
+          const {left, right, bottom} = button.getBoundingClientRect();
+          return left >= 0 && right <= innerWidth && bottom <= tabsTop + 1;
+        });
+      })).toBe(true);
+      await expect(footer).toBeInViewport({ratio:1});
+    }
+    await terminal.getByRole('button', {name:'SSH 主机', exact:true}).click();
+    await expect(terminal.locator('#remote-library')).toBeVisible();
+    await terminal.locator('#remote-close').click();
+    await terminal.getByRole('button', {name:'常用命令', exact:true}).click();
+    await expect(terminal.locator('#command-library-query')).toBeFocused();
+    await terminal.locator('#command-library-close').click();
+    await terminal.getByRole('button', {name:'外观', exact:true}).click();
+    await expect(terminal.locator('#preset-theme')).toBeFocused();
+    await expect(terminal.locator('#preset-preview')).toBeVisible();
+    await terminal.locator('#actions-close').click();
     const windows = process.platform === 'win32';
     await expect(pane.locator('.xterm-rows')).toContainText(windows ? /PS [^>]*>/ : /[%#$]/,{timeout:20000});
     const session = await pane.getAttribute('data-id');

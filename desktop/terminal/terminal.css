@@ -30,8 +30,8 @@ button:hover:not(:disabled) { background: #e9edf0; color: var(--blue-dark); }
 button:disabled { opacity: .4; cursor: default; }
 button:focus-visible, select:focus-visible, #find-input:focus-visible, .splitter:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.actions { gap: 3px; }
-.actions button { padding: 5px; min-width: 31px; height: 32px; }
+.actions { gap: 3px; flex-wrap: wrap; }
+.actions button { padding: 5px; min-width: 31px; height: 32px; white-space: nowrap; }
 .actions .primary, #empty-new { padding: 5px 10px; color: var(--blue-dark); background: #ebf2f7; border-color: #c6d9ea; font-weight: 600; }
 .rule { height: 18px; border-left: 1px solid var(--border); margin: 0 4px; }
 #tabs { min-height: 37px; flex: none; background: var(--paper); border-block: 1px solid var(--border); overflow-x: auto; padding: 0 8px; }
@@ -98,6 +98,7 @@ footer { flex: none; min-height: 32px; gap: 12px; justify-content: space-between
 #presentation { white-space: nowrap; border-color: var(--border); margin-inline-start: 3px; }
 #actions-dialog { width: min(440px, 86vw); max-height: 80vh; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--cream); color: var(--ink); }
 #actions-dialog[open] { display: flex; flex-direction: column; }
+#actions-dialog.appearance-only :is(#actions-filter, #actions-list > :not(#terminal-appearance)) { display: none; }
 #actions-list { min-height: 0; overflow: auto; overscroll-behavior: contain; margin-top: 6px; }
 #actions-dialog > :not(#actions-list) { flex-shrink: 0; }
 #actions-dialog::backdrop { background: rgb(20 22 28 / .3); }
@@ -112,6 +113,7 @@ footer { flex: none; min-height: 32px; gap: 12px; justify-content: space-between
 #actions-dialog label { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center; margin: 4px; }
 #actions-dialog input:not([type=checkbox]), #actions-dialog select { max-width: 170px; }
 #actions-dialog input[type=number] { width: 64px; }
+#preset-preview { display: block; padding: 8px 12px; margin: 4px; border-radius: 4px; overflow: auto; white-space: pre; }
 #actions-dialog [role=status] { display: block; color: var(--blue-dark); }
 .pane { position: relative; }
 .session-badge { position: absolute; top: 34px; right: 18px; color: #b3bfd1; opacity: .48; font: 600 16px var(--mono); max-width: 75%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; z-index: 4; }

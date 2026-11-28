@@ -178,8 +178,9 @@
         const merged = combined(destination.hosts, adjusted, 2048);
         const recent = [...destination.recent, ...source.recent.map(item =>
           item.name && merged.mapped.has(item.name) ? { ...item, name: merged.mapped.get(item.name) } : item)];
+        const connections = typeof module === 'object' && module.exports ? require('./connection.js') : window.BrclioConnection;
         const values = [
-          [hostKey, { hosts: merged.items, recent: [...new Map(recent.map(item => [JSON.stringify(item), item])).values()].slice(0, 24),
+          [hostKey, { hosts: merged.items, recent: connections.mergeRecents(recent),
             ...(groupConfigs.length && { groupConfigs }), ...(destination.groupKeyGrants?.length && {groupKeyGrants:destination.groupKeyGrants}) }],
           [forwardKey, combined(parse(storage, forwardKey, []), parse(input, forwardKey, []).map(({groupKeyHost, ...rule}) => rule), 128).items],
           [identityKey, identities.items],

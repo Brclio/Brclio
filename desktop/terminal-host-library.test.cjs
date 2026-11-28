@@ -51,9 +51,10 @@ test('legacy hosts survive their first edit; rename and removal update related r
   const data = storageFixture([{ name: 'old', host: 'legacy' }]);
   assert.deepEqual(data.all(), [{ name: 'old', host: 'legacy', port: null, user: '' }]);
   data.recordUse('ssh', data.all()[0], 'old');
-  const updated = data.save({ ...data.all()[0], name: 'new', host: 'replacement', group: 'work / prod', tags: 'API，build', favorite: true }, 'old');
+  const time = data.recents()[0].openedAt;
+  const updated = data.save({ ...data.all()[0], name: 'new', group: 'work / prod', tags: 'API，build', favorite: true }, 'old');
   assert.deepEqual(data.all(), [updated]);
-  assert.deepEqual(data.recents(), [{ kind: 'ssh', name: 'new', host: 'replacement', user: '', port: null }]);
+  assert.deepEqual(data.recents(), [{ kind: 'ssh', name: 'new', host: 'legacy', user: '', port: null, openedAt: time }]);
   assert.equal(updated.group, 'work/prod');
   data.save({ name: 'other', host: 'other' }, null);
   assert.throws(() => data.save({ ...updated, name: 'other' }, 'new'));
@@ -87,5 +88,24 @@ test('recent launches deduplicate and stay bounded, unused fields and credential
   assert.ok(!data.recents().some(x => x.host === 'host-0'));
   assert.doesNotMatch([...data.saved.values()].join(' '), /SECRET/);
   data.clearRecent();
+  assert.deepEqual(data.recents(), []);
+});
+
+test('recent launch times survive reopening and renaming, old records retain unknown times, and replacing the destination drops its history', () => {
+  const data = storageFixture();
+  const key = 'brclio.terminal.host-library.v2';
+  const host = { name: 'dev', host: 'dev.example', user: 'dev', port: 2201 };
+  data.saved.set(key, JSON.stringify({ hosts: [host], recent: [{ ...host, kind: 'ssh' }] }));
+  assert.equal(data.recents()[0].openedAt, undefined);
+  const before = Date.now();
+  data.recordUse('ssh', host, host.name);
+  const recorded = data.recents()[0].openedAt;
+  assert.ok(recorded >= before && recorded <= Date.now());
+  const renamed = data.save({ ...host, name: 'new name' }, host.name);
+  assert.equal(store({ getItem: k => data.saved.get(k) }).recents()[0].openedAt, recorded);
+  const edited = data.save({ ...renamed, host: 'edit.example' });
+  assert.deepEqual(data.recents(), []);
+  data.recordUse('ssh', edited, edited.name);
+  data.replace([{ ...edited, host: 'new.example' }]);
   assert.deepEqual(data.recents(), []);
 });

@@ -188,7 +188,22 @@
     const result = { kind: value.kind, ...endpoint(value) };
     delete result.environment;
     if (value.name) result.name = label(value.name, 64, '最近连接的主机名称无效。');
+    if (Number.isSafeInteger(value.openedAt) && value.openedAt > 0 && value.openedAt <= 8640000000000000) result.openedAt = value.openedAt;
     return result;
+  }
+
+  function uniqueRecents(records) {
+    const seen = new Set();
+    return records.filter(item => {
+      const key = JSON.stringify([item.kind, routing(item), item.identityFile, item.certificateFile, item.agentForwarding, item.requirePostQuantum]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 24);
+  }
+
+  function mergeRecents(records) {
+    return uniqueRecents(records.map(recent).sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0)));
   }
 
   function store(storage) {
@@ -286,12 +301,16 @@
       replace(items) {
         if (!Array.isArray(items) || items.length > 2048) throw new Error('主机库格式无效。');
         const hosts = items.map(named);
-        const names = new Set(hosts.map(item => item.name));
-        if (hosts.length !== names.size) throw new Error('主机名称重复。');
+        const saved = new Map(hosts.map(host => [host.name, host]));
+        if (hosts.length !== saved.size) throw new Error('主机名称重复。');
         const library = read();
         library.hosts = hosts;
         prune(library);
-        library.recent = library.recent.filter(item => !item.name || names.has(item.name));
+        library.recent = library.recent.filter(item => {
+          if (!item.name) return true;
+          const host = saved.get(item.name);
+          return host && routing(connection(host, library)) === routing(item);
+        });
         write(library);
       },
       save(value, previous = value?.name?.trim()) {
@@ -305,8 +324,14 @@
           library.hosts.push(item);
         } else {
           library.hosts[index] = item;
-          library.recent = library.recent.map(entry => entry.name === previous ?
-            recent({ ...resolve(item, library.groupConfigs), name: item.name, kind: entry.kind }) : entry);
+          const target = connection(item, library);
+          library.recent = library.recent.flatMap(entry => {
+            if (entry.name !== previous) return [entry];
+            if (routing(entry) !== routing(target)) return [];
+            const updated = recent({ ...target, name: item.name, kind: entry.kind, openedAt: entry.openedAt });
+            if (target.groupKeySource) delete updated.identityFile;
+            return [updated];
+          });
         }
         prune(library);
         write(library);
@@ -323,10 +348,9 @@
       },
       recordUse(kind, target, name) {
         const library = read();
-        const item = recent({ ...target, kind, name });
+        const item = recent({ ...target, kind, name, openedAt: Date.now() });
         if (target.groupKeySource) delete item.identityFile;
-        const signature = value => JSON.stringify([value.kind, value.host, value.user, value.port, value.jump, value.proxy, value.proxyUser, value.identityFile, value.certificateFile, value.agentForwarding, value.requirePostQuantum]);
-        library.recent = [item, ...library.recent.filter(entry => signature(entry) !== signature(item))].slice(0, 24);
+        library.recent = uniqueRecents([item, ...library.recent]);
         write(library);
       },
       clearRecent() {
@@ -357,7 +381,7 @@
     }).sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite) || a.name.localeCompare(b.name));
   }
 
-  const api = { endpoint, quick, format, named, store, groups, select, groupPath, environment, resolve, routing };
+  const api = { endpoint, quick, format, named, store, groups, select, groupPath, environment, resolve, routing, mergeRecents };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else window.BrclioConnection = api;
 })();

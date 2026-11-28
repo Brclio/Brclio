@@ -19,7 +19,7 @@ async function verifyHostLibrary(terminal) {
   await dialog.locator('#remote-view').selectOption('all');
   await dialog.locator('#remote-group-filter').selectOption('');
   await dialog.locator('#remote-search').fill('');
-  const rows = dialog.locator('#remote-list button');
+  const rows = dialog.locator('#remote-list button[aria-pressed]');
   await rows.filter({ hasText: '旧版主机' }).click();
   await expect(dialog.locator('#remote-host')).toHaveValue('old-test.invalid');
   await dialog.locator('#remote-name').fill('开发主机');
@@ -91,12 +91,26 @@ async function verifyHostLibrary(terminal) {
   await expect(dialog).toBeHidden();
   await expect(terminal.locator('#tabs [role=tab]')).toHaveCount(count + 1);
   await terminal.locator('#tabs .tab:has([aria-selected=true]) .tab-close').click();
-  await terminal.evaluate(() => window.BrclioRemoteConnections.open());
-  await dialog.locator('#remote-view').selectOption('recent');
-  await dialog.locator('#remote-search').fill('');
+  await terminal.evaluate(() => window.BrclioRemoteConnections.open('ssh'));
+  await expect(dialog.locator('#remote-view')).toHaveValue('recent');
+  await expect(dialog.locator('#remote-search')).toHaveValue('');
   await expect(rows.first()).toContainText('127.0.0.1:1');
+  await expect(rows.first().locator('time')).toContainText('上次发起');
+  const firstOpen = await rows.first().locator('time').getAttribute('datetime');
+  await dialog.getByRole('button', { name: '重连 SSH 127.0.0.1:1', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(terminal.locator('#tabs [role=tab]')).toHaveCount(count + 1);
+  await expect(terminal.locator('#tabs [aria-selected=true]')).toContainText('SSH');
+  await terminal.locator('#tabs .tab:has([aria-selected=true]) .tab-close').click();
+  await terminal.evaluate(() => window.BrclioRemoteConnections.open('ssh'));
+  await expect(rows.filter({ hasText: '127.0.0.1:1' })).toHaveCount(1);
+  assert.ok(Date.parse(await rows.first().locator('time').getAttribute('datetime')) > Date.parse(firstOpen));
   await dialog.locator('#remote-clear-recent').click();
   await expect(rows).toHaveCount(0);
+  await dialog.locator('#remote-close').click();
+  await terminal.evaluate(() => window.BrclioRemoteConnections.open('ssh'));
+  await expect(dialog.locator('#remote-view')).toHaveValue('all');
+  await expect(rows.filter({ hasText: '开发主机' })).toHaveCount(1);
   await dialog.locator('#remote-close').click();
   assert.equal(await terminal.locator('#tabs [role=tab]').count(), count);
 }
