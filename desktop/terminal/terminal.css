@@ -114,6 +114,12 @@ footer { flex: none; min-height: 32px; gap: 12px; justify-content: space-between
 #actions-dialog input:not([type=checkbox]), #actions-dialog select { max-width: 170px; }
 #actions-dialog input[type=number] { width: 64px; }
 #preset-preview { display: block; padding: 8px 12px; margin: 4px; border-radius: 4px; overflow: auto; white-space: pre; }
+#terminal-appearance :is(input:not([type=checkbox],[type=file]), select) { padding: 4px 6px; color: var(--ink); background: var(--cream); border: 1px solid var(--border); border-radius: 4px; }
+#terminal-appearance :is(#preset-apply, #preset-save) { margin: 3px 0; border: 1px solid var(--border); }
+#terminal-appearance #preset-save { color: var(--blue-dark); background: #ebf2f7; border-color: #c6d9ea; }
+#command-library > label { display: flex; align-items: center; gap: 6px; margin-block: 7px; }
+#command-library .network-actions { margin-top: 8px; }
+#command-library .forward-hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
 #actions-dialog [role=status] { display: block; color: var(--blue-dark); }
 .pane { position: relative; }
 .session-badge { position: absolute; top: 34px; right: 18px; color: #b3bfd1; opacity: .48; font: 600 16px var(--mono); max-width: 75%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; z-index: 4; }

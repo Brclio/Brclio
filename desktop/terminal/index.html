@@ -220,11 +220,6 @@
       <span id="paste-progress" role="status"></span>
     </fieldset>
     <fieldset id="terminal-appearance"><legend>终端外观与配置文件</legend>
-      <label>搜索配置<input id="preset-filter" type="search" placeholder="名称或标签"></label>
-      <select id="preset-list" aria-label="已保存的配置"></select>
-      <button id="preset-load">载入</button><button id="preset-delete">删除配置</button>
-      <label>名称<input id="preset-name" maxlength="64" placeholder="默认"></label>
-      <label>标签<input id="preset-tags" maxlength="180" placeholder="用逗号分隔"></label>
       <label>配色主题<select id="preset-theme"></select></label>
       <samp id="preset-preview" aria-label="终端外观预览">user@host ~ $ ls</samp>
       <label>字体<input id="preset-font" maxlength="200"></label>
@@ -236,8 +231,13 @@
       <label><input id="preset-autocopy" type="checkbox">选中即复制</label>
       <label><input id="preset-follow" type="checkbox">焦点跟随鼠标</label>
       <label>导入 iTerm2 配色<input id="preset-colors" type="file" accept=".itermcolors"></label>
+      <label>配置名称<input id="preset-name" maxlength="64" placeholder="默认"></label>
+      <label>标签<input id="preset-tags" maxlength="180" placeholder="用逗号分隔"></label>
       <button id="preset-apply">应用到当前窗格</button><button id="preset-save">保存为新会话默认配置</button>
       <span id="preset-status" role="status"></span>
+      <label>搜索配置<input id="preset-filter" type="search" placeholder="名称或标签"></label>
+      <select id="preset-list" aria-label="已保存的配置"></select>
+      <button id="preset-load">载入</button><button id="preset-delete">删除配置</button>
       <details id="dynamic-details"><summary>iTerm2 动态配置</summary>
         <button type="button" id="dynamic-import">选择本地 JSON</button>
         <label><input type="checkbox" id="dynamic-watch">跟踪所选文件的变化</label>
