@@ -117,14 +117,17 @@ jobs:
             runner: windows-2022
             platform: win
             arch: x64
+            executable: release/win-unpacked/Brclio.exe
           - name: macOS Apple silicon
             runner: macos-15
             platform: mac
             arch: arm64
+            executable: release/mac-arm64/Brclio.app/Contents/MacOS/Brclio
           - name: macOS Intel
             runner: macos-15-intel
             platform: mac
             arch: x64
+            executable: release/mac/Brclio.app/Contents/MacOS/Brclio
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     steps:
@@ -202,6 +205,11 @@ jobs:
           BUILD_ARCH: ${{ matrix.arch }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --mac --"$BUILD_ARCH" --publish never --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false --config.forceCodeSigning=true
+      - name: Exercise a real shell in the packaged Brclio terminal
+        timeout-minutes: 3
+        env:
+          BRCLIO_SMOKE_EXECUTABLE: ${{ matrix.executable }}
+        run: node scripts/verify-terminal.cjs
       - name: Verify final macOS packages and launch the packaged client
         if: matrix.platform == 'mac'
         shell: bash

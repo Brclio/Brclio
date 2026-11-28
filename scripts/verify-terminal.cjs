@@ -36,6 +36,12 @@ async function main() {
     assert.equal(await home.evaluate(() => typeof window.brclioTerminal), 'undefined');
     await home.locator('#manual-paths').fill('Brclio terminal smoke');
     await home.locator('#open-search').click();
+    await home.locator('#global-search').fill('分');
+    await home.locator('#global-search').press('Enter');
+    await expect(home.locator('#view-suggestions')).toBeVisible();
+    assert.equal(app.windows().length, 1, 'Existing search results keep their Enter shortcut');
+    await home.locator('.nav-item[data-view=copy]').click();
+    await home.locator('#open-search').click();
     await home.locator('#global-search').fill('powershell');
     await expect(home.locator('#search-terminal')).toBeVisible();
     const windowPromise = app.waitForEvent('window');
@@ -115,6 +121,28 @@ async function main() {
     const fresh = await reopened;
     await expect(fresh.locator('#tabs [role=tab]')).toHaveCount(1);
     await expect(fresh.locator('.pane')).toHaveCount(1);
+    if (!windows) {
+      await home.close();
+      const copyResult = await app.evaluate(async ({ app, clipboard }, selectedPath) => {
+        const writeText = clipboard.writeText;
+        let timer;
+        try {
+          const copiedText = new Promise((resolve, reject) => {
+            // Exercise Finder dispatch without changing the user's clipboard.
+            clipboard.writeText = resolve;
+            timer = setTimeout(() => reject(new Error('Finder did not copy the selection')), 5000);
+          });
+          const payload = Buffer.from(JSON.stringify([selectedPath])).toString('base64url');
+          app.emit('open-url', { preventDefault() {} }, 'brclio://copy-path?payload=' + payload);
+          return { text: await copiedText, dockVisible: app.dock.isVisible() };
+        } finally {
+          clearTimeout(timer);
+          clipboard.writeText = writeText;
+        }
+      }, temporary);
+      assert.ok(copyResult.text.includes(path.basename(temporary)), 'Finder still copies the selected directory');
+      assert.equal(copyResult.dockVisible, true, 'Keep the terminal accessible from the Dock when it is the only window');
+    }
     console.log(`Verified Brclio terminal (${process.platform}/${process.arch}, ${executable ? 'packaged' : 'development'}), PTY columns ${originalSize} → ${splitSize}.`);
   } finally {
     try { if (app) await app.close(); }

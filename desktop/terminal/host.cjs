@@ -118,7 +118,7 @@ function createTerminalHost({ app, BrowserWindow, ipcMain, dialog, clipboard }) 
     if (window && !window.isDestroyed()) window.destroy();
   }
   app.once('will-quit', dispose);
-  return { open, dispose };
+  return { open, dispose, hasWindow: () => Boolean(window && !window.isDestroyed()) };
 }
 
 module.exports = { createTerminalHost };

@@ -329,7 +329,7 @@ if (!gotLock) {
       if (!paths) return;
       if (!app.isReady()) pendingOpenURLs.push(paths);
       else {
-        if (!mainWindow && process.platform === 'darwin') app.dock?.hide();
+        if (process.platform === 'darwin' && !mainWindow && !terminalHost?.hasWindow()) app.dock?.hide();
         copyFromMenu(paths);
       }
     } catch (error) {
